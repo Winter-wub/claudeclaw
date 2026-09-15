@@ -556,6 +556,22 @@ export async function start(args: string[] = []) {
           updateState();
             console.log(`[${ts()}] Heartbeat settings updated from Web UI`);
           },
+          onRuntimeSettingsChanged: async () => {
+            // buildClaudeCommand() reads getSettings() -- the module-level cache in
+            // config.ts -- not this `currentSettings` binding. Re-reading from disk
+            // replaces that cache, so the new launcher applies to the very next spawn
+            // instead of waiting for the 30s hot-reload tick.
+            currentSettings = await reloadSettings();
+            // updateState() reads jobLastResult, which is declared well after the web
+            // server starts -- a request arriving during that startup window would hit
+            // its temporal dead zone. The settings reload above is the part that must
+            // succeed, so never let the cosmetic state refresh fail the request; the
+            // 30s loop refreshes it regardless.
+            try { updateState(); } catch {}
+            const l = currentSettings.runtime?.launcher;
+            const desc = l?.kind === "ccs" ? `ccs ${l.profile}` : "claude (direct)";
+            console.log(`[${ts()}] Runtime launcher set to ${desc} from Web UI -- session reset`);
+          },
           onJobsChanged: async () => {
             currentJobs = await loadJobs();
             scheduleHeartbeat();

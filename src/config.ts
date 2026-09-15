@@ -89,6 +89,7 @@ const DEFAULT_SETTINGS: Settings = {
   watchdog: { maxConsecutiveTimeouts: null, maxRuntimeSeconds: null },
   session: { autoRotate: false, maxMessages: 50, maxAgeHours: 24, summaryPath: "" },
   plugins: {},
+  runtime: { launcher: { kind: "direct", directFallback: true } },
 };
 
 export interface HeartbeatExcludeWindow {
@@ -188,6 +189,19 @@ export interface Settings {
   plugins: Record<string, PluginEntry>;
   session: SessionConfig;
   jobsDir?: string;
+  runtime?: RuntimeConfig;
+}
+
+export type LauncherKind = "direct" | "ccs";
+
+export interface RuntimeLauncherConfig {
+  kind: LauncherKind;
+  profile?: string;
+  directFallback: boolean;
+}
+
+export interface RuntimeConfig {
+  launcher: RuntimeLauncherConfig;
 }
 
 
@@ -428,6 +442,16 @@ function parseSettings(
     },
     apiToken: typeof raw.apiToken === "string" && raw.apiToken.trim() ? raw.apiToken.trim() : undefined,
     ...(typeof raw.jobsDir === "string" && raw.jobsDir.trim() ? { jobsDir: raw.jobsDir.trim() } : {}),
+    runtime: (() => {
+      const rawLauncher = raw.runtime?.launcher;
+      if (!rawLauncher || typeof rawLauncher !== "object") return { launcher: { kind: "direct" as const, directFallback: true } };
+      const kind = typeof rawLauncher.kind === "string" && (rawLauncher.kind === "direct" || rawLauncher.kind === "ccs")
+        ? rawLauncher.kind
+        : "direct";
+      const profile = kind === "ccs" && typeof rawLauncher.profile === "string" ? rawLauncher.profile.trim() : undefined;
+      const directFallback = rawLauncher.directFallback === true;
+      return { launcher: { kind, profile, directFallback } };
+    })(),
   };
 }
 
@@ -499,6 +523,11 @@ export async function reloadSettings(): Promise<Settings> {
   const raw = JSON.parse(rawText);
   cached = parseSettings(raw, extractDiscordUserIds(rawText));
   return cached;
+}
+
+/** Clear the settings cache so the next loadSettings() call re-reads from disk. */
+export function resetSettingsCache(): void {
+  cached = null;
 }
 
 export function getSettings(): Settings {

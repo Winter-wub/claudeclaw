@@ -58,6 +58,16 @@ ${pageStyles}
       </div>
       <div class="setting-item">
         <div class="setting-main">
+          <div class="settings-label">⚙️ Runtime</div>
+          <div class="settings-meta" id="rt-info">syncing...</div>
+        </div>
+        <div class="setting-actions">
+          <select class="rt-select" id="rt-profile" aria-label="CCS profile"></select>
+          <button class="hb-toggle" id="rt-toggle" type="button">Loading...</button>
+        </div>
+      </div>
+      <div class="setting-item">
+        <div class="setting-main">
           <div class="settings-label">🕒 Clock</div>
           <div class="settings-meta" id="clock-info">24-hour format</div>
         </div>

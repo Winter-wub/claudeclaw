@@ -3,29 +3,14 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { peekSession, backupSession, resetSession } from "./sessions";
 import type { GlobalSession } from "./sessions";
+import { buildClaudeCommand } from "./runtime-launcher";
+import { cleanSpawnEnv } from "./runner";
+import type { SessionConfig } from "./config";
 
 const SUMMARY_TIMEOUT_MS = 60_000;
-import type { SessionConfig } from "./config";
 
 const PROMPTS_DIR = join(import.meta.dir, "..", "prompts");
 const SUMMARY_PROMPT_FILE = join(PROMPTS_DIR, "SUMMARY.md");
-
-// Env vars injected by a parent Claude Code session that break detached child auth.
-// Mirror of the stripping done in runner.ts cleanSpawnEnv().
-const STRIPPED_ENV_KEYS = new Set([
-  "CLAUDECODE",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
-]);
-
-function cleanEnv(): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (STRIPPED_ENV_KEYS.has(key)) continue;
-    if (typeof value === "string") out[key] = value;
-  }
-  return out;
-}
 
 export function needsRotation(session: GlobalSession, config: SessionConfig): boolean {
   if (!config.autoRotate) return false;
@@ -76,8 +61,8 @@ async function generateSummary(sessionId: string, summaryPath: string): Promise<
   }
 
   const proc = Bun.spawn(
-    ["claude", "-p", summaryPrompt, "--resume", sessionId, "--output-format", "text"],
-    { stdout: "pipe", stderr: "pipe", env: cleanEnv() }
+    buildClaudeCommand(["-p", summaryPrompt, "--resume", sessionId, "--output-format", "text"]),
+    { stdout: "pipe", stderr: "pipe", env: cleanSpawnEnv() }
   );
 
   // Kill the subprocess and skip summary if it takes too long.

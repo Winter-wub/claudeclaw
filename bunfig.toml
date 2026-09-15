@@ -1,0 +1,4 @@
+[test]
+# Sandboxes process.cwd() so tests can never write to a real ClaudeClaw config.
+# See src/__tests__/_sandbox-cwd.ts for why this is required.
+preload = ["./src/__tests__/_sandbox-cwd.ts"]

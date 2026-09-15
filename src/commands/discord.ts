@@ -15,6 +15,7 @@ import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join, basename, sep } from "node:path";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
+import { buildClaudeCommand } from "../runtime-launcher";
 
 // --- Discord API constants ---
 
@@ -495,17 +496,18 @@ Rules:
 - Return ONLY valid JSON or the word null. No explanation.`;
 
   try {
-    const { execSync } = await import("node:child_process");
+    const { execFileSync } = await import("node:child_process");
     const input = `${systemPrompt}\n\n---\nUser message: ${text}`;
-    const result = execSync(
-      `claude --model claude-sonnet-4-20250514 --print --output-format text`,
-      {
-        input,
-        encoding: "utf-8",
-        timeout: 15000,
-        env: { ...process.env, HOME: homedir() },
-      },
-    ).trim();
+    // Route through the configured runtime launcher (e.g. `ccs <profile>`) instead of
+    // calling `claude` directly, so this shares the daemon's provider/quota. The model
+    // is left unset so the launcher's own default-tier mapping applies.
+    const [cmd, ...cmdArgs] = buildClaudeCommand(["--print", "--output-format", "text"]);
+    const result = execFileSync(cmd, cmdArgs, {
+      input,
+      encoding: "utf-8",
+      timeout: 60000,
+      env: { ...process.env, HOME: homedir() },
+    }).trim();
 
     if (!result || result === "null") return null;
     // Extract JSON from response (in case there's extra text)

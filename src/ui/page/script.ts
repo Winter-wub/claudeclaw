@@ -56,6 +56,9 @@ export const pageScript = String.raw`    // --- Token management (Task 1.1) ---
     const infoBody = $("info-body");
     const hbToggle = $("hb-toggle");
     const clockToggle = $("clock-toggle");
+    const rtToggle = $("rt-toggle");
+    const rtProfile = $("rt-profile");
+    const rtInfo = $("rt-info");
     const hbInfoEl = $("hb-info");
     const clockInfoEl = $("clock-info");
     const quickJobsView = $("quick-jobs-view");
@@ -715,6 +718,119 @@ export const pageScript = String.raw`    // --- Token management (Task 1.1) ---
           hbToggle.disabled = false;
         }
       });
+    }
+
+    // --- Runtime launcher: direct claude vs ccs profile ---
+    if (rtToggle && rtProfile && rtInfo) {
+      let rtKind = "direct";
+      let rtProfileName = "";
+      let rtBusy = false;
+      let rtNoteTimer = null;
+
+      const renderRt = (note) => {
+        const ccs = rtKind === "ccs";
+        rtToggle.textContent = ccs ? "CCS" : "Direct";
+        rtToggle.classList.toggle("on", ccs);
+        rtToggle.classList.toggle("off", !ccs);
+        rtProfile.disabled = !ccs || rtBusy;
+        if (rtProfileName) rtProfile.value = rtProfileName;
+        rtInfo.textContent = note || (ccs ? "ccs · " + (rtProfileName || "no profile") : "claude (direct)");
+      };
+
+      const flashRt = (msg) => {
+        if (rtNoteTimer) clearTimeout(rtNoteTimer);
+        renderRt(msg);
+        rtNoteTimer = setTimeout(() => { rtNoteTimer = null; renderRt(); }, 4000);
+      };
+
+      const fillProfiles = (groups, available) => {
+        rtProfile.innerHTML = "";
+        if (!available || !groups || !groups.length) {
+          // No ~/.ccs/config.yaml -- keep the control usable by accepting a typed name.
+          const input = document.createElement("input");
+          input.className = "rt-select";
+          input.id = "rt-profile-text";
+          input.placeholder = "profile name";
+          rtProfile.replaceWith(input);
+          return false;
+        }
+        for (const g of groups) {
+          const og = document.createElement("optgroup");
+          og.label = g.label;
+          for (const name of g.names) {
+            const opt = document.createElement("option");
+            opt.value = name;
+            opt.textContent = name;
+            og.appendChild(opt);
+          }
+          rtProfile.appendChild(og);
+        }
+        return true;
+      };
+
+      const saveRt = async (kind, profile) => {
+        if (rtBusy) return;
+        const prevKind = rtKind;
+        const prevProfile = rtProfileName;
+        rtBusy = true;
+        rtToggle.disabled = true;
+        rtKind = kind;
+        if (profile) rtProfileName = profile;
+        renderRt("saving...");
+        try {
+          const res = await fetch("/api/settings/runtime", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ kind, profile: profile || rtProfileName }),
+          });
+          const out = await res.json();
+          if (!out.ok) throw new Error(out.error || "save failed");
+          rtKind = out.launcher.kind;
+          rtProfileName = out.launcher.profile || "";
+          flashRt(out.sessionReset ? "saved · session reset" : "saved");
+          await refreshState();
+        } catch (err) {
+          rtKind = prevKind;
+          rtProfileName = prevProfile;
+          flashRt(String((err && err.message) || err));
+        } finally {
+          rtBusy = false;
+          rtToggle.disabled = false;
+        }
+      };
+
+      rtToggle.addEventListener("click", () => {
+        const next = rtKind === "ccs" ? "direct" : "ccs";
+        if (next === "ccs" && !rtProfileName) {
+          flashRt("pick a profile first");
+          return;
+        }
+        saveRt(next, rtProfileName);
+      });
+
+      rtProfile.addEventListener("change", () => {
+        const picked = String(rtProfile.value || "").trim();
+        if (!picked) return;
+        // Choosing a profile implies you want it used.
+        saveRt("ccs", picked);
+      });
+
+      (async () => {
+        try {
+          const res = await fetch("/api/settings/runtime");
+          const out = await res.json();
+          if (!out.ok) throw new Error(out.error || "load failed");
+          fillProfiles(out.profiles, out.profilesAvailable);
+          rtKind = out.launcher.kind;
+          rtProfileName = out.launcher.profile || "";
+          renderRt();
+        } catch {
+          rtInfo.textContent = "unavailable";
+          rtToggle.textContent = "n/a";
+          rtToggle.disabled = true;
+          rtProfile.disabled = true;
+        }
+      })();
     }
 
     if (hbForm && hbIntervalInput && hbPromptInput && hbModalStatus && hbSaveBtn && hbCancelBtn) {

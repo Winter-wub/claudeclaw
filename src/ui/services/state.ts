@@ -18,6 +18,7 @@ export function sanitizeSettings(snapshot: WebSnapshot["settings"]) {
       allowedUserCount: snapshot.discord.allowedUserIds.length,
     },
     web: snapshot.web,
+    runtime: snapshot.runtime,
   };
 }
 

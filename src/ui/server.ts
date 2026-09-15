@@ -3,7 +3,9 @@ import { clampInt, json } from "./http";
 import { checkToken } from "./auth";
 import type { StartWebUiOptions, WebServerHandle } from "./types";
 import { buildState, buildTechnicalInfo, sanitizeSettings } from "./services/state";
-import { readHeartbeatSettings, updateHeartbeatSettings } from "./services/settings";
+import { readHeartbeatSettings, updateHeartbeatSettings, readRuntimeSettings, updateRuntimeSettings } from "./services/settings";
+import { listCcsProfiles, knownCcsProfileNames } from "./services/ccs-profiles";
+import { resetSession } from "../sessions";
 import { createQuickJob, deleteJob } from "./services/jobs";
 import { readLogs } from "./services/logs";
 import { listSessions, readSessionMessages, listAgents } from "./services/sessions";
@@ -149,6 +151,44 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
           return json({ ok: true, heartbeat: next });
         } catch (err) {
           return json({ ok: false, error: String(err) });
+        }
+      }
+
+      if (url.pathname === "/api/settings/runtime" && req.method === "GET") {
+        try {
+          const [launcher, profiles] = await Promise.all([readRuntimeSettings(), listCcsProfiles()]);
+          return json({ ok: true, launcher, profiles: profiles.groups, profilesAvailable: profiles.available });
+        } catch (err) {
+          return json({ ok: false, error: String(err) });
+        }
+      }
+
+      if (url.pathname === "/api/settings/runtime" && req.method === "POST") {
+        try {
+          const body = (await req.json()) as { kind?: unknown; profile?: unknown };
+          const kind = body.kind === "ccs" ? "ccs" : body.kind === "direct" ? "direct" : null;
+          if (!kind) throw new Error("kind must be 'direct' or 'ccs'");
+          const profile = typeof body.profile === "string" ? body.profile.trim() : "";
+
+          // Only validate against the discovered list when discovery actually worked,
+          // so a machine without ~/.ccs/config.yaml can still set a profile by hand.
+          if (kind === "ccs" && profile) {
+            const known = await knownCcsProfileNames();
+            if (known.size > 0 && !known.has(profile)) {
+              throw new Error(`Unknown CCS profile: ${profile}`);
+            }
+          }
+
+          const launcher = await updateRuntimeSettings({ kind, profile });
+
+          // An existing session resumes under whatever runtime created it, so switching
+          // launchers without clearing it would --resume across providers.
+          await resetSession();
+          if (opts.onRuntimeSettingsChanged) await opts.onRuntimeSettingsChanged(launcher);
+
+          return json({ ok: true, launcher, sessionReset: true });
+        } catch (err) {
+          return json({ ok: false, error: err instanceof Error ? err.message : String(err) });
         }
       }
 

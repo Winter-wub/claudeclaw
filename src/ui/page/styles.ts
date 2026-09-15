@@ -719,6 +719,26 @@ export const pageStyles = String.raw`    :root {
       opacity: 0.9;
       letter-spacing: 0.03em;
     }
+    .rt-select {
+      border: 1px solid #ffffff2a;
+      background: #0f1725;
+      color: #dce7f8;
+      border-radius: 999px;
+      max-width: 150px;
+      padding: 7px 10px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 11px;
+      cursor: pointer;
+      transition: border-color 0.16s ease, opacity 0.16s ease;
+    }
+    .rt-select:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .rt-select:focus {
+      outline: none;
+      border-color: #4d8df955;
+    }
     .hb-toggle {
       border: 1px solid #ffffff2a;
       background: transparent;
