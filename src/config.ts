@@ -197,11 +197,23 @@ export type LauncherKind = "direct" | "ccs";
 export interface RuntimeLauncherConfig {
   kind: LauncherKind;
   profile?: string;
+  /**
+   * Reserved and currently unimplemented: nothing falls back to direct `claude`
+   * when a ccs launch fails. Deliberately not exposed per-scope, so it cannot be
+   * mistaken for a working per-thread escape hatch.
+   */
   directFallback: boolean;
 }
 
 export interface RuntimeConfig {
+  /** Default launcher, used when no scope in the chain has an override. */
   launcher: RuntimeLauncherConfig;
+  /**
+   * Per-scope overrides keyed by the same scope string the runner uses as `threadId`:
+   * a Discord channel/thread snowflake, a cron job name, or `agent:<agentName>`.
+   * Absent unless something has been overridden.
+   */
+  launchers?: Record<string, RuntimeLauncherConfig>;
 }
 
 
@@ -443,14 +455,32 @@ function parseSettings(
     apiToken: typeof raw.apiToken === "string" && raw.apiToken.trim() ? raw.apiToken.trim() : undefined,
     ...(typeof raw.jobsDir === "string" && raw.jobsDir.trim() ? { jobsDir: raw.jobsDir.trim() } : {}),
     runtime: (() => {
+      // Shared by the global default and every per-scope override, so a scoped entry
+      // gets exactly the same validation as the global one.
+      const parseLauncher = (rawLauncher: any): RuntimeLauncherConfig => {
+        const kind = typeof rawLauncher?.kind === "string" && (rawLauncher.kind === "direct" || rawLauncher.kind === "ccs")
+          ? rawLauncher.kind
+          : "direct";
+        const profile = kind === "ccs" && typeof rawLauncher?.profile === "string" ? rawLauncher.profile.trim() : undefined;
+        const directFallback = rawLauncher?.directFallback === true;
+        return { kind, profile, directFallback };
+      };
+
       const rawLauncher = raw.runtime?.launcher;
-      if (!rawLauncher || typeof rawLauncher !== "object") return { launcher: { kind: "direct" as const, directFallback: true } };
-      const kind = typeof rawLauncher.kind === "string" && (rawLauncher.kind === "direct" || rawLauncher.kind === "ccs")
-        ? rawLauncher.kind
-        : "direct";
-      const profile = kind === "ccs" && typeof rawLauncher.profile === "string" ? rawLauncher.profile.trim() : undefined;
-      const directFallback = rawLauncher.directFallback === true;
-      return { launcher: { kind, profile, directFallback } };
+      const launcher = !rawLauncher || typeof rawLauncher !== "object"
+        ? { kind: "direct" as const, profile: undefined, directFallback: true }
+        : parseLauncher(rawLauncher);
+
+      const rawLaunchers = raw.runtime?.launchers;
+      const launchers = rawLaunchers && typeof rawLaunchers === "object" && !Array.isArray(rawLaunchers)
+        ? Object.fromEntries(
+            Object.entries(rawLaunchers as Record<string, unknown>)
+              .filter(([, v]) => v && typeof v === "object")
+              .map(([k, v]) => [String(k), parseLauncher(v)]),
+          )
+        : undefined;
+
+      return launchers && Object.keys(launchers).length > 0 ? { launcher, launchers } : { launcher };
     })(),
   };
 }

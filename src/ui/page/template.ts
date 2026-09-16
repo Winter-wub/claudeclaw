@@ -62,6 +62,7 @@ ${pageStyles}
           <div class="settings-meta" id="rt-info">syncing...</div>
         </div>
         <div class="setting-actions">
+          <select class="rt-select" id="rt-scope" aria-label="Scope"></select>
           <select class="rt-select" id="rt-profile" aria-label="CCS profile"></select>
           <button class="hb-toggle" id="rt-toggle" type="button">Loading...</button>
         </div>

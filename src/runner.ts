@@ -937,14 +937,18 @@ export async function runCompact(
   baseEnv: Record<string, string>,
   securityArgs: string[],
   timeoutMs: number,
-  cwd?: string
+  cwd?: string,
+  scopeChain?: string[]
 ): Promise<boolean> {
+  // Must resolve the SAME launcher that created this session -- compacting hands
+  // `--resume <id>` to the binary, and a session created under one provider cannot
+  // be resumed by another.
   const compactArgs = buildClaudeCommand([
     "-p", "/compact",
     "--output-format", "text",
     "--resume", sessionId,
     ...securityArgs,
-  ]);
+  ], scopeChain);
   if (model.trim() && model.trim().toLowerCase() !== "glm") compactArgs.push("--model", model.trim());
   console.log(`[${new Date().toLocaleTimeString()}] Running /compact on session ${sessionId.slice(0, 8)}...`);
   const result = await runClaudeOnce(compactArgs, model, api, baseEnv, timeoutMs, cwd);
@@ -1004,7 +1008,8 @@ export async function compactCurrentThreadSession(
     baseEnv,
     securityArgs,
     timeoutMs,
-    compactCwd
+    compactCwd,
+    [threadId]
   );
 
   return ok
@@ -1021,8 +1026,13 @@ async function execClaude(
   agentName?: string,
   timeoutCategory?: string,
   onChunk?: (text: string) => void,
-  onToolEvent?: (line: string) => void
+  onToolEvent?: (line: string) => void,
+  scopeChain?: string[]
 ): Promise<RunResult> {
+  // Which launcher this run uses, most specific scope first. Defaults to this run's
+  // own thread; Discord passes [threadId, parentChannelId] so a thread inherits its
+  // parent channel's choice before falling back to the global default.
+  const launcherScope = scopeChain ?? (threadId ? [threadId] : undefined);
   mainRunCount++;
   persistRunCount();
   try {
@@ -1133,7 +1143,7 @@ async function execClaude(
 
   if (primaryConfig.model.trim() && primaryConfig.model.trim().toLowerCase() !== "glm") baseArgs.push("--model", primaryConfig.model.trim());
 
-  const args = buildClaudeCommand(baseArgs);
+  const args = buildClaudeCommand(baseArgs, launcherScope);
   const baseEnv = cleanSpawnEnv();
   const spawnCwd = agentName ? await ensureAgentDir(agentName) : undefined;
 
@@ -1154,7 +1164,7 @@ async function execClaude(
       fallbackBaseArgs.push("--append-system-prompt", appendParts.join("\n\n"));
     }
     if (fallbackConfig.model.trim() && fallbackConfig.model.trim().toLowerCase() !== "glm") fallbackBaseArgs.push("--model", fallbackConfig.model.trim());
-    const fallbackArgs = buildClaudeCommand(fallbackBaseArgs);
+    const fallbackArgs = buildClaudeCommand(fallbackBaseArgs, launcherScope);
     exec = await runClaudeStream(fallbackArgs, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs, spawnCwd);
     usedFallback = true;
     let fallbackRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
@@ -1166,7 +1176,7 @@ async function execClaude(
       console.warn(
         `[${new Date().toLocaleTimeString()}] Detected corrupted fallback session (thinking block signature mismatch). Reset${flabel}, retrying fallback fresh...`
       );
-      const freshFallbackArgs = buildClaudeCommand(fallbackBaseArgs.filter((a) => a !== "--resume" && a !== fallbackSession.sessionId));
+      const freshFallbackArgs = buildClaudeCommand(fallbackBaseArgs.filter((a) => a !== "--resume" && a !== fallbackSession.sessionId), launcherScope);
       exec = await runClaudeStream(freshFallbackArgs, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs, spawnCwd);
       fallbackRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
       if (!fallbackRateLimit && exec.sessionId) {
@@ -1204,7 +1214,7 @@ async function execClaude(
     console.warn(
       `[${new Date().toLocaleTimeString()}] Detected corrupted session (thinking block signature mismatch). Reset${label}, retrying with fresh session...`
     );
-    const freshArgs = buildClaudeCommand(args.filter((a) => a !== "--resume" && a !== existing?.sessionId));
+    const freshArgs = buildClaudeCommand(args.filter((a) => a !== "--resume" && a !== existing?.sessionId), launcherScope);
     const fmtIdx = freshArgs.indexOf("--output-format");
     if (fmtIdx !== -1 && fmtIdx + 1 < freshArgs.length) freshArgs[fmtIdx + 1] = "stream-json";
     exec = await runClaudeStream(freshArgs, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, spawnCwd);
@@ -1255,7 +1265,7 @@ async function execClaude(
       await backupSession();
     }
 
-    const retryArgs = buildClaudeCommand(withOutputFormat(stripResume(args), "stream-json"));
+    const retryArgs = buildClaudeCommand(withOutputFormat(stripResume(args), "stream-json"), launcherScope);
     const retryConfig = usedFallback ? fallbackConfig : primaryConfig;
     exec = await runClaudeStream(
       retryArgs,
@@ -1376,14 +1386,15 @@ async function execClaude(
       baseEnv,
       securityArgs,
       timeoutMs,
-      spawnCwd
+      spawnCwd,
+      launcherScope
     );
     emitCompactEvent({ type: "auto-compact-done", success: compactOk });
     if (compactOk && pm) pm.emitAsync("after_compaction", {}, ctx);
 
     if (compactOk) {
       console.log(`[${new Date().toLocaleTimeString()}] Retrying ${name} after compact...`);
-      const retryExec = await runClaudeStream(buildClaudeCommand(args), primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, spawnCwd);
+      const retryExec = await runClaudeStream(buildClaudeCommand(args, launcherScope), primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, spawnCwd);
       const retryResult: RunResult = {
         stdout: retryExec.rawStdout,
         stderr: retryExec.stderr,
@@ -1437,9 +1448,10 @@ export async function run(
   agentName?: string,
   timeoutCategory?: string,
   onChunk?: (text: string) => void,
-  onToolEvent?: (line: string) => void
+  onToolEvent?: (line: string) => void,
+  scopeChain?: string[]
 ): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId, modelOverride, timeoutMs, agentName, timeoutCategory, onChunk, onToolEvent), threadId);
+  return enqueue(() => execClaude(name, prompt, threadId, modelOverride, timeoutMs, agentName, timeoutCategory, onChunk, onToolEvent, scopeChain), threadId);
 }
 
 async function streamClaude(
@@ -1674,9 +1686,10 @@ export async function runUserMessage(
   agentName?: string,
   onChunk?: (text: string) => void,
   onToolEvent?: (line: string) => void,
-  modelOverride?: string
+  modelOverride?: string,
+  scopeChain?: string[]
 ): Promise<RunResult> {
-  return run(name, prefixUserMessageWithClock(prompt), threadId, modelOverride, undefined, agentName, undefined, onChunk, onToolEvent);
+  return run(name, prefixUserMessageWithClock(prompt), threadId, modelOverride, undefined, agentName, undefined, onChunk, onToolEvent, scopeChain);
 }
 
 // Path where Claude Code stores session JSONL transcripts for this project

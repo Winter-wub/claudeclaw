@@ -16,11 +16,24 @@ import { mkdir } from "node:fs/promises";
 import { extname, join, basename, sep } from "node:path";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
 import { buildClaudeCommand } from "../runtime-launcher";
+import { listCcsProfiles } from "../ui/services/ccs-profiles";
+import {
+  readRuntimeSettings,
+  updateRuntimeSettings,
+  readModelSetting,
+  updateModelSetting,
+  deleteRuntimeOverride,
+  hasRuntimeOverride,
+} from "../ui/services/settings";
+import { reloadSettings } from "../config";
 
 // --- Discord API constants ---
 
 const DISCORD_API = "https://discord.com/api/v10";
 const GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json";
+
+/** Reaction shown on the user's message while their request is being worked on. */
+const THINKING_REACTION = "\u{1F440}";
 
 const GatewayOp = {
   DISPATCH: 0,
@@ -87,12 +100,20 @@ const enum DiscordMessageType {
   ThreadCreated = 18,
 }
 
+interface InteractionOption {
+  name: string;
+  type: number;
+  value?: string | number | boolean;
+  options?: InteractionOption[];
+}
+
 interface DiscordInteraction {
   id: string;
   type: number; // 2=APPLICATION_COMMAND, 3=MESSAGE_COMPONENT
   data?: {
     name?: string;
     custom_id?: string;
+    options?: InteractionOption[];
   };
   channel_id?: string;
   guild_id?: string;
@@ -253,10 +274,6 @@ async function sendMessageToUser(
   await sendMessage(token, channel.id, text);
 }
 
-async function sendTyping(token: string, channelId: string): Promise<void> {
-  await discordApi(token, "POST", `/channels/${channelId}/typing`).catch(() => {});
-}
-
 async function sendReaction(
   token: string,
   channelId: string,
@@ -268,6 +285,22 @@ async function sendReaction(
     `${DISCORD_API}/channels/${channelId}/messages/${messageId}/reactions/${encoded}/@me`,
     {
       method: "PUT",
+      headers: { Authorization: `Bot ${token}` },
+    },
+  ).catch(() => {});
+}
+
+async function removeReaction(
+  token: string,
+  channelId: string,
+  messageId: string,
+  emoji: string,
+): Promise<void> {
+  const encoded = encodeURIComponent(emoji);
+  await fetch(
+    `${DISCORD_API}/channels/${channelId}/messages/${messageId}/reactions/${encoded}/@me`,
+    {
+      method: "DELETE",
       headers: { Authorization: `Bot ${token}` },
     },
   ).catch(() => {});
@@ -496,18 +529,30 @@ Rules:
 - Return ONLY valid JSON or the word null. No explanation.`;
 
   try {
-    const { execFileSync } = await import("node:child_process");
     const input = `${systemPrompt}\n\n---\nUser message: ${text}`;
     // Route through the configured runtime launcher (e.g. `ccs <profile>`) instead of
     // calling `claude` directly, so this shares the daemon's provider/quota. The model
     // is left unset so the launcher's own default-tier mapping applies.
-    const [cmd, ...cmdArgs] = buildClaudeCommand(["--print", "--output-format", "text"]);
-    const result = execFileSync(cmd, cmdArgs, {
-      input,
-      encoding: "utf-8",
-      timeout: 60000,
+    //
+    // Spawned ASYNCHRONOUSLY on purpose. This used to be execFileSync, which blocks the
+    // entire daemon event loop for the duration -- measured at ~11s per call, up to the
+    // full timeout when the provider is cold. The cron scheduler is a 60s setInterval
+    // that fires a job only when a tick lands inside the matching minute, so a long
+    // block here can push a tick past a job's minute and lose that run silently.
+    const proc = Bun.spawn(buildClaudeCommand(["--print", "--output-format", "text"]), {
+      stdin: new TextEncoder().encode(input),
+      stdout: "pipe",
+      stderr: "ignore",
       env: { ...process.env, HOME: homedir() },
-    }).trim();
+    });
+
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; try { proc.kill(); } catch {} }, 60000);
+    const stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+    clearTimeout(timer);
+    if (timedOut) throw new Error("intent classifier timed out after 60s");
+    const result = stdout.trim();
 
     if (!result || result === "null") return null;
     // Extract JSON from response (in case there's extra text)
@@ -560,8 +605,39 @@ async function downloadDiscordAttachment(
 
 // --- Slash command registration ---
 
+const MODEL_CHOICES = [
+  { label: "default (let Claude Code decide)", value: "" },
+  { label: "opus", value: "opus" },
+  { label: "sonnet", value: "sonnet" },
+  { label: "haiku", value: "haiku" },
+];
+
+const DIRECT_CHOICE_VALUE = "direct";
+const INHERIT_CHOICE_VALUE = "__inherit__";
+
+/** Build the /config profile dropdown: every CCS profile, plus the direct-claude escape. */
+async function buildProfileChoices(): Promise<Array<{ name: string; value: string }>> {
+  const choices = [
+    { name: "inherit — follow the global default", value: INHERIT_CHOICE_VALUE },
+    { name: "direct — plain claude binary", value: DIRECT_CHOICE_VALUE },
+  ];
+  try {
+    const { available, groups } = await listCcsProfiles();
+    if (available) {
+      for (const g of groups) {
+        for (const n of g.names) choices.push({ name: `${n} (${g.label})`, value: n });
+      }
+    }
+  } catch {
+    // Leave the direct option only -- registration must not fail because CCS is absent.
+  }
+  return choices;
+}
+
 async function registerSlashCommands(token: string): Promise<void> {
   if (!applicationId) return;
+
+  const profileChoices = await buildProfileChoices();
 
   const commands = [
     {
@@ -588,6 +664,49 @@ async function registerSlashCommands(token: string): Promise<void> {
       name: "context",
       description: "Show context window usage",
       type: 1,
+    },
+    {
+      name: "config",
+      description: "Show or change the model and CCS profile",
+      type: 1,
+      options: [
+        {
+          name: "show",
+          description: "Show the current model and runtime launcher",
+          type: 1, // SUB_COMMAND
+        },
+        {
+          name: "model",
+          description: "Set the model tier",
+          type: 1,
+          options: [
+            {
+              name: "value",
+              description: "Model tier to use",
+              type: 3, // STRING
+              required: true,
+              choices: MODEL_CHOICES.map((m) => ({ name: m.label, value: m.value })),
+            },
+          ],
+        },
+        {
+          name: "profile",
+          description: "Switch the runtime launcher (a CCS profile, or direct claude)",
+          type: 1,
+          options: [
+            {
+              name: "value",
+              description: "CCS profile, or 'direct' for the plain claude binary",
+              type: 3,
+              required: true,
+              // Choices are fixed at registration time, so a profile added to
+              // ~/.ccs/config.yaml afterwards needs a daemon restart to appear.
+              // Discord caps this at 25, hence the slice.
+              choices: profileChoices.slice(0, 25),
+            },
+          ],
+        },
+      ],
     },
   ];
 
@@ -859,12 +978,17 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     return;
   }
 
-  // Typing indicator loop (Discord typing lasts 10s, fire every 8s)
-  const typingInterval = setInterval(() => sendTyping(config.token, channelId), 8000);
+  // Progress indicator: react to the triggering message while we work, and drop the
+  // reaction when we are done. Preferred over the typing indicator because typing
+  // expires after ~10s and has to be re-sent on a timer, whereas a reaction persists
+  // for the whole run however long it takes -- and it stays attached to the message it
+  // belongs to, which matters when several messages are queued.
+  let thinkingReacted = false;
   let streamCb: DiscordStreamCallbacks | undefined;
 
   try {
-    await sendTyping(config.token, channelId);
+    await sendReaction(config.token, channelId, message.id, THINKING_REACTION);
+    thinkingReacted = true;
 
     let imagePath: string | null = null;
     let voicePath: string | null = null;
@@ -1068,6 +1192,11 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
           threadInfo?.agentName,
           streamCb?.onChunk,
           streamCb?.onToolEvent,
+          undefined,
+          // Launcher lookup order: this thread/channel first, then its parent channel,
+          // then the global default. A thread therefore inherits whatever its parent
+          // channel is set to unless it has been given its own profile.
+          sessionKey ? [sessionKey, ...(threadInfo?.parentId ? [threadInfo.parentId] : [])] : undefined,
         );
       } finally {
         if (streamCb) {
@@ -1101,7 +1230,9 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     if (streamCb) {
       await streamCb.finalize();
     }
-    clearInterval(typingInterval);
+    if (thinkingReacted) {
+      await removeReaction(config.token, channelId, message.id, THINKING_REACTION);
+    }
   }
 }
 
@@ -1156,6 +1287,106 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
           body: JSON.stringify({ content: result.message }),
         },
       );
+      return;
+    }
+
+    if (interaction.data.name === "config") {
+      const sub = interaction.data.options?.[0];
+      const describe = (model: string, launcher: { kind: string; profile: string }) => [
+        "⚙️ **Runtime configuration**",
+        `Model: \`${model || "default"}\``,
+        launcher.kind === "ccs"
+          ? `Launcher: \`ccs ${launcher.profile}\``
+          : "Launcher: `claude` (direct)",
+      ].join("\n");
+
+      // In a guild, /config acts on THIS channel/thread; in a DM it acts on the
+      // global default. Same branch /reset and /compact already use.
+      const isGuildCmd = !!interaction.guild_id && !!interaction.channel_id;
+      const scopeKey = isGuildCmd ? interaction.channel_id! : undefined;
+      const scopeLabel = isGuildCmd ? "this channel" : "global";
+
+      try {
+        if (!sub || sub.name === "show") {
+          const [model, launcher] = await Promise.all([readModelSetting(), readRuntimeSettings(scopeKey)]);
+          const own = scopeKey ? await hasRuntimeOverride(scopeKey) : true;
+          const origin = scopeKey
+            ? own
+              ? "_Channel override._"
+              : "_Inherited from the global default._"
+            : "_Global default._";
+          await respondToInteraction(interaction, {
+            content: `${describe(model, launcher)}\nScope: \`${scopeLabel}\`\n${origin}`,
+            flags: 64,
+          });
+          return;
+        }
+
+        const value = String(sub.options?.[0]?.value ?? "");
+
+        if (sub.name === "model") {
+          const model = await updateModelSetting(value);
+          // buildClaudeCommand and the run helpers read through getSettings(), the
+          // config module cache -- so re-read from disk rather than waiting for the
+          // 30s hot-reload tick.
+          await reloadSettings();
+          const launcher = await readRuntimeSettings(scopeKey);
+          await respondToInteraction(interaction, {
+            content: `${describe(model, launcher)}\n\n_Model set to \`${model || "default"}\` (global)._`,
+            flags: 64,
+          });
+          return;
+        }
+
+        if (sub.name === "profile") {
+          // Reset only the scope being changed: a guild channel clears its own thread
+          // session, a DM clears the global one. Threads that merely INHERIT the global
+          // default keep resuming their existing session until their own next reset.
+          const resetScope = async () => {
+            if (scopeKey) await removeThreadSession(scopeKey);
+            else await resetSession();
+          };
+
+          if (value === INHERIT_CHOICE_VALUE) {
+            if (!scopeKey) {
+              await respondToInteraction(interaction, {
+                content: "`inherit` only applies inside a channel — the global default has nothing to inherit from.",
+                flags: 64,
+              });
+              return;
+            }
+            await deleteRuntimeOverride(scopeKey);
+            await reloadSettings();
+            await resetScope();
+            const [model, launcher] = await Promise.all([readModelSetting(), readRuntimeSettings(scopeKey)]);
+            await respondToInteraction(interaction, {
+              content: `${describe(model, launcher)}\n\n_Override cleared — ${scopeLabel} now follows the global default. Channel session reset._`,
+              flags: 64,
+            });
+            return;
+          }
+
+          const launcher =
+            value === DIRECT_CHOICE_VALUE
+              ? await updateRuntimeSettings({ kind: "direct" }, scopeKey)
+              : await updateRuntimeSettings({ kind: "ccs", profile: value }, scopeKey);
+          await reloadSettings();
+          // A session resumes under whatever runtime created it, so switching
+          // launchers without clearing it would --resume across providers.
+          await resetScope();
+          const model = await readModelSetting();
+          await respondToInteraction(interaction, {
+            content: `${describe(model, launcher)}\nScope: \`${scopeLabel}\`\n\n_Switched — ${isGuildCmd ? "channel" : "global"} session reset, next message starts fresh._`,
+            flags: 64,
+          });
+          return;
+        }
+
+        await respondToInteraction(interaction, { content: `Unknown subcommand: \`${sub.name}\``, flags: 64 });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await respondToInteraction(interaction, { content: `Config change failed: ${msg}`, flags: 64 });
+      }
       return;
     }
 

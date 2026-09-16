@@ -92,3 +92,52 @@ describe("buildClaudeCommand ccs flag rewrite", () => {
     expect(out).toEqual(["claude", "-p", "hi"]);
   });
 });
+
+describe("scope chain resolution", () => {
+  async function withSettings(runtime: unknown) {
+    await writeFile(SETTINGS_FILE, JSON.stringify({ runtime }, null, 2) + "\n");
+    resetSettingsCache();
+    await loadSettings();
+  }
+
+  const GLOBAL_DIRECT = { launcher: { kind: "direct", directFallback: true } };
+
+  it("a scoped entry wins over the global default", async () => {
+    await withSettings({ ...GLOBAL_DIRECT, launchers: { "chan-1": { kind: "ccs", profile: "openrouter" } } });
+    expect(buildClaudeCommand(["-p", "hi"], ["chan-1"])).toEqual(["ccs", "openrouter", "--print", "hi"]);
+  });
+
+  it("falls back to the global default when the scope has no entry", async () => {
+    await withSettings({ ...GLOBAL_DIRECT, launchers: { "chan-1": { kind: "ccs", profile: "openrouter" } } });
+    expect(buildClaudeCommand(["-p", "hi"], ["chan-other"])).toEqual(["claude", "-p", "hi"]);
+  });
+
+  it("walks the chain thread -> parent channel -> global", async () => {
+    await withSettings({ ...GLOBAL_DIRECT, launchers: { parent: { kind: "ccs", profile: "codex" } } });
+    // thread itself has no entry, so it inherits the parent channel's
+    expect(getRuntimeLauncher(["thread", "parent"]).profile).toBe("codex");
+    // the thread's own entry takes precedence over the parent's
+    await withSettings({
+      ...GLOBAL_DIRECT,
+      launchers: { parent: { kind: "ccs", profile: "codex" }, thread: { kind: "ccs", profile: "agy" } },
+    });
+    expect(getRuntimeLauncher(["thread", "parent"]).profile).toBe("agy");
+    // neither present -> global
+    expect(getRuntimeLauncher(["nope", "also-nope"]).kind).toBe("direct");
+  });
+
+  it("ignores the map entirely when no scope is passed", async () => {
+    await withSettings({ ...GLOBAL_DIRECT, launchers: { "chan-1": { kind: "ccs", profile: "openrouter" } } });
+    expect(buildClaudeCommand(["-p", "hi"])).toEqual(["claude", "-p", "hi"]);
+  });
+
+  it("skips empty/undefined keys in the chain", async () => {
+    await withSettings({ ...GLOBAL_DIRECT, launchers: { parent: { kind: "ccs", profile: "codex" } } });
+    expect(getRuntimeLauncher(["", "parent"]).profile).toBe("codex");
+  });
+
+  it("a scoped ccs entry with no profile throws, like the global one", async () => {
+    await withSettings({ ...GLOBAL_DIRECT, launchers: { "chan-1": { kind: "ccs" } } });
+    expect(() => buildClaudeCommand(["-p", "hi"], ["chan-1"])).toThrow("CCS mode requires a profile");
+  });
+});

@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 import { mkdir, writeFile, readFile } from "fs/promises";
 import { join } from "path";
-import { readRuntimeSettings, updateRuntimeSettings } from "../ui/services/settings";
+import {
+  readRuntimeSettings,
+  updateRuntimeSettings,
+  readModelSetting,
+  updateModelSetting,
+  deleteRuntimeOverride,
+  hasRuntimeOverride,
+  listRuntimeOverrides,
+} from "../ui/services/settings";
 import { listCcsProfiles } from "../ui/services/ccs-profiles";
 
 
@@ -71,5 +79,76 @@ describe("listCcsProfiles", () => {
       expect(typeof g.label).toBe("string");
       expect(g.names.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("model setting", () => {
+  it("reads the model off disk", async () => {
+    expect(await readModelSetting()).toBe("opus");
+  });
+
+  it("sets a tier and preserves the rest of the file", async () => {
+    const m = await updateModelSetting("sonnet");
+    expect(m).toBe("sonnet");
+    const onDisk = JSON.parse(await readFile(SETTINGS_FILE, "utf-8"));
+    expect(onDisk.model).toBe("sonnet");
+    expect(onDisk.runtime.launcher.profile).toBe("codex");
+  });
+
+  it("treats empty string as 'let Claude Code decide' and trims input", async () => {
+    expect(await updateModelSetting("   ")).toBe("");
+    const onDisk = JSON.parse(await readFile(SETTINGS_FILE, "utf-8"));
+    expect(onDisk.model).toBe("");
+  });
+
+  it("defaults to empty when the key is absent", async () => {
+    await writeFile(SETTINGS_FILE, JSON.stringify({ runtime: {} }, null, 2) + "\n");
+    expect(await readModelSetting()).toBe("");
+  });
+});
+
+describe("per-scope launcher overrides", () => {
+  it("a scoped write lands in launchers[key] and leaves the global default alone", async () => {
+    const l = await updateRuntimeSettings({ kind: "ccs", profile: "agy" }, "chan-1");
+    expect(l.profile).toBe("agy");
+    const onDisk = JSON.parse(await readFile(SETTINGS_FILE, "utf-8"));
+    expect(onDisk.runtime.launchers["chan-1"].profile).toBe("agy");
+    expect(onDisk.runtime.launcher.profile).toBe("codex"); // global untouched
+  });
+
+  it("reads a scope's own entry, and inherits the global when it has none", async () => {
+    await updateRuntimeSettings({ kind: "ccs", profile: "agy" }, "chan-1");
+    expect((await readRuntimeSettings("chan-1")).profile).toBe("agy");
+    expect((await readRuntimeSettings("chan-other")).profile).toBe("codex");
+    expect((await readRuntimeSettings()).profile).toBe("codex");
+  });
+
+  it("applies the no-profile guard to scoped writes too", async () => {
+    await expect(updateRuntimeSettings({ kind: "ccs", profile: "" }, "chan-1")).rejects.toThrow(/profile must be selected/i);
+  });
+
+  it("changing the global default leaves scoped overrides intact", async () => {
+    await updateRuntimeSettings({ kind: "ccs", profile: "agy" }, "chan-1");
+    await updateRuntimeSettings({ kind: "direct" });
+    const onDisk = JSON.parse(await readFile(SETTINGS_FILE, "utf-8"));
+    expect(onDisk.runtime.launcher.kind).toBe("direct");
+    expect(onDisk.runtime.launchers["chan-1"].profile).toBe("agy");
+  });
+
+  it("deleteRuntimeOverride removes one key only, and no-ops when absent", async () => {
+    await updateRuntimeSettings({ kind: "ccs", profile: "agy" }, "chan-1");
+    await updateRuntimeSettings({ kind: "ccs", profile: "openrouter" }, "chan-2");
+    await deleteRuntimeOverride("chan-1");
+    const onDisk = JSON.parse(await readFile(SETTINGS_FILE, "utf-8"));
+    expect(onDisk.runtime.launchers["chan-1"]).toBeUndefined();
+    expect(onDisk.runtime.launchers["chan-2"].profile).toBe("openrouter");
+    await deleteRuntimeOverride("never-set"); // must not throw
+    expect((await listRuntimeOverrides()).sort()).toEqual(["chan-2"]);
+  });
+
+  it("hasRuntimeOverride distinguishes an override from inheritance", async () => {
+    await updateRuntimeSettings({ kind: "ccs", profile: "agy" }, "chan-1");
+    expect(await hasRuntimeOverride("chan-1")).toBe(true);
+    expect(await hasRuntimeOverride("chan-other")).toBe(false);
   });
 });

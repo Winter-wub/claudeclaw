@@ -59,6 +59,7 @@ export const pageScript = String.raw`    // --- Token management (Task 1.1) ---
     const rtToggle = $("rt-toggle");
     const rtProfile = $("rt-profile");
     const rtInfo = $("rt-info");
+    const rtScope = $("rt-scope");
     const hbInfoEl = $("hb-info");
     const clockInfoEl = $("clock-info");
     const quickJobsView = $("quick-jobs-view");
@@ -726,6 +727,8 @@ export const pageScript = String.raw`    // --- Token management (Task 1.1) ---
       let rtProfileName = "";
       let rtBusy = false;
       let rtNoteTimer = null;
+      let rtScopeKey = "";        // "" means the global default
+      let rtOverridden = false;   // whether the selected scope has its own entry
 
       const renderRt = (note) => {
         const ccs = rtKind === "ccs";
@@ -781,7 +784,7 @@ export const pageScript = String.raw`    // --- Token management (Task 1.1) ---
           const res = await fetch("/api/settings/runtime", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ kind, profile: profile || rtProfileName }),
+            body: JSON.stringify({ kind, profile: profile || rtProfileName, scope: rtScopeKey || undefined }),
           });
           const out = await res.json();
           if (!out.ok) throw new Error(out.error || "save failed");
@@ -815,12 +818,26 @@ export const pageScript = String.raw`    // --- Token management (Task 1.1) ---
         saveRt("ccs", picked);
       });
 
-      (async () => {
+      let rtProfilesFilled = false;
+      const loadRt = async () => {
         try {
-          const res = await fetch("/api/settings/runtime");
+          const qs = rtScopeKey ? "?scope=" + encodeURIComponent(rtScopeKey) : "";
+          const res = await fetch("/api/settings/runtime" + qs);
           const out = await res.json();
           if (!out.ok) throw new Error(out.error || "load failed");
-          fillProfiles(out.profiles, out.profilesAvailable);
+          if (!rtProfilesFilled) {
+            fillProfiles(out.profiles, out.profilesAvailable);
+            rtProfilesFilled = true;
+          }
+          if (rtScope && rtScope.options.length === 0) {
+            const mk = (v, t) => { const o = document.createElement("option"); o.value = v; o.textContent = t; return o; };
+            rtScope.appendChild(mk("", "global"));
+            for (const sc of out.scopes || []) {
+              rtScope.appendChild(mk(sc.key, (sc.overridden ? "\u25cf " : "") + sc.label));
+            }
+            rtScope.value = rtScopeKey;
+          }
+          rtOverridden = Array.isArray(out.overrides) && rtScopeKey ? out.overrides.indexOf(rtScopeKey) !== -1 : false;
           rtKind = out.launcher.kind;
           rtProfileName = out.launcher.profile || "";
           renderRt();
@@ -830,7 +847,16 @@ export const pageScript = String.raw`    // --- Token management (Task 1.1) ---
           rtToggle.disabled = true;
           rtProfile.disabled = true;
         }
-      })();
+      };
+
+      if (rtScope) {
+        rtScope.addEventListener("change", () => {
+          rtScopeKey = String(rtScope.value || "");
+          loadRt();
+        });
+      }
+
+      loadRt();
     }
 
     if (hbForm && hbIntervalInput && hbPromptInput && hbModalStatus && hbSaveBtn && hbCancelBtn) {
