@@ -1,10 +1,11 @@
 import { writeFile, unlink, mkdir } from "fs/promises";
+import { readFileSync as readFileSyncNode, readdirSync } from "fs";
 import { extractErrorDetail } from "../messaging";
 import { join } from "path";
 import { fileURLToPath } from "url";
 import { run, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate, isRateLimited, getRateLimitResetAt, wasRateLimitNotified, markRateLimitNotified } from "../runner";
 import { writeState, type StateData } from "../statusline";
-import { cronMatches, nextCronMatch } from "../cron";
+import { cronMatches, nextCronMatch, prevCronMatch } from "../cron";
 import { clearJobSchedule, loadJobs, snapshotJobFrontmatter } from "../jobs";
 import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
 import { initConfig, loadSettings, reloadSettings, resolvePrompt, type HeartbeatConfig, type Settings } from "../config";
@@ -875,6 +876,37 @@ export async function start(args: string[] = []) {
   // for crash-recovery + status displays. Resets on daemon restart (in-memory only).
   const jobLastResult = new Map<string, { result: "ok" | "error" | "skipped"; ranAt: number }>();
 
+  /**
+   * How far back a missed run is still worth firing. Long enough to cover a daemon
+   * restart or a blocked event loop, short enough that a multi-day outage does not
+   * dump a backlog of jobs the moment the daemon comes back.
+   */
+  const CATCHUP_WINDOW_MINUTES = 360;
+
+  // Seed last-run times, or catch-up would treat every already-completed run as
+  // missed and re-fire it on the next restart.
+  //
+  // The source is the LOGS DIRECTORY, not state.json. updateState() only writes
+  // lastRanAt when the in-memory jobLastResult has an entry, and that map starts
+  // empty on every boot -- so the first write after a restart erases it, and the
+  // value can never survive. One log file is written per run, named
+  // "<job>-<ISO>.log" with the run's start time, which is durable ground truth.
+  try {
+    const LOG_NAME = /^(.+)-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.log$/;
+    for (const file of readdirSync(join(HEARTBEAT_DIR, "logs"))) {
+      const m = LOG_NAME.exec(file);
+      if (!m) continue;
+      const [, jobName, date, hh, mm, ss, ms] = m;
+      const ranAt = Date.parse(`${date}T${hh}:${mm}:${ss}.${ms}Z`);
+      if (!Number.isFinite(ranAt)) continue;
+      const prev = jobLastResult.get(jobName);
+      if (!prev || ranAt > prev.ranAt) jobLastResult.set(jobName, { result: "ok", ranAt });
+    }
+  } catch {
+    // Unreadable logs directory: start clean. Catch-up then has nothing to compare
+    // against, so it may re-run a recent job once -- bounded by CATCHUP_WINDOW_MINUTES.
+  }
+
   updateState();
 
   function runJob(job: (typeof currentJobs)[0]) {
@@ -952,7 +984,21 @@ export async function start(args: string[] = []) {
         }
         if (cronMatches(job.schedule, now, currentSettings.timezoneOffsetMinutes)) {
           runJob(job);
+          continue;
         }
+
+        // Catch-up: the tick only asks "does THIS minute match", so a run whose minute
+        // passed while the daemon was restarting -- or while the event loop was blocked
+        // past a tick -- would otherwise be lost with no trace. Fire it late instead.
+        const due = prevCronMatch(job.schedule, now, currentSettings.timezoneOffsetMinutes, CATCHUP_WINDOW_MINUTES);
+        if (!due) continue;
+        const lastRan = jobLastResult.get(job.name)?.ranAt ?? 0;
+        if (lastRan >= due.getTime()) continue;
+        // In flight right now (or retrying) -- runJob's handler will record the run.
+        if (jobRetryState.get(job.name)?.retryAt === Number.MAX_SAFE_INTEGER) continue;
+        const lateBy = Math.round((now.getTime() - due.getTime()) / 60_000);
+        console.log(`[${ts()}] Missed run detected for ${job.name} (due ${due.toLocaleTimeString()}, ${lateBy}m late) -- running now`);
+        runJob(job);
       }
     } else {
       const skippedAt = Date.now();
