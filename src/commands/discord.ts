@@ -583,9 +583,24 @@ function isTextAttachment(a: DiscordAttachment): boolean {
   return ext === ".txt" || ext === ".md";
 }
 
+// Attachments past this size are not downloaded; Claude is told they exist instead.
+const MAX_FILE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+// Every attachment the dedicated image/voice/text paths don't consume -- any other file
+// type, plus each image/voice/text after the first -- is handed to Claude as a file on
+// disk to read and process, so nothing a user sends is silently dropped.
+export function pickFileAttachments(attachments: DiscordAttachment[]): DiscordAttachment[] {
+  const handled = new Set(
+    [attachments.find(isImageAttachment), attachments.find(isVoiceAttachment), attachments.find(isTextAttachment)]
+      .filter((a): a is DiscordAttachment => Boolean(a))
+      .map((a) => a.id),
+  );
+  return attachments.filter((a) => !handled.has(a.id));
+}
+
 async function downloadDiscordAttachment(
   attachment: DiscordAttachment,
-  type: "image" | "voice",
+  type: "image" | "voice" | "file",
 ): Promise<string | null> {
   const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "discord");
   await mkdir(dir, { recursive: true });
@@ -593,7 +608,9 @@ async function downloadDiscordAttachment(
   const response = await fetch(attachment.url);
   if (!response.ok) throw new Error(`Discord attachment download failed: ${response.status}`);
 
-  const ext = extname(attachment.filename) || (type === "voice" ? ".ogg" : ".jpg");
+  // The filename is user-controlled; only keep a plain extension so the local path stays clean.
+  const rawExt = extname(attachment.filename);
+  const ext = /^\.[A-Za-z0-9]{1,10}$/.test(rawExt) ? rawExt : type === "voice" ? ".ogg" : type === "image" ? ".jpg" : "";
   const filename = `${attachment.id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
 
@@ -920,15 +937,18 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
   const imageAttachments = message.attachments.filter(isImageAttachment);
   const voiceAttachments = message.attachments.filter(isVoiceAttachment);
   const textAttachments = message.attachments.filter(isTextAttachment);
+  const fileAttachments = pickFileAttachments(message.attachments);
   const hasImage = imageAttachments.length > 0;
   const hasVoice = voiceAttachments.length > 0;
   const hasText = textAttachments.length > 0;
+  const hasFile = fileAttachments.length > 0;
 
   const hasForwardedContent = !!message.message_snapshots?.[0]?.message?.content;
-  if (!content.trim() && !hasImage && !hasVoice && !hasText && !hasForwardedContent) return;
+  if (!content.trim() && !hasImage && !hasVoice && !hasText && !hasFile && !hasForwardedContent) return;
 
   const forwardKey = `${channelId}:${userId}`;
-  const isForwardOnly = message.message_reference?.type === 1 && !content.trim() && !hasImage && !hasVoice && !hasText;
+  const isForwardOnly =
+    message.message_reference?.type === 1 && !content.trim() && !hasImage && !hasVoice && !hasText && !hasFile;
 
   if (!skipCoalesce && isForwardOnly && hasForwardedContent) {
     // Pure forward with no accompanying text — hold it and wait for a follow-up comment
@@ -961,7 +981,12 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
   }
 
   const label = message.author.username;
-  const mediaParts = [hasImage ? "image" : "", hasVoice ? "voice" : "", hasText ? "text" : ""].filter(Boolean);
+  const mediaParts = [
+    hasImage ? "image" : "",
+    hasVoice ? "voice" : "",
+    hasText ? "text" : "",
+    hasFile ? `${fileAttachments.length} file` : "",
+  ].filter(Boolean);
   const mediaSuffix = mediaParts.length > 0 ? ` [${mediaParts.join("+")}]` : "";
   console.log(
     `[${new Date().toLocaleTimeString()}] Discord ${label}${mediaSuffix}: "${cleanContent.slice(0, 60)}${cleanContent.length > 60 ? "..." : ""}"`,
@@ -994,6 +1019,9 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     let voicePath: string | null = null;
     let voiceTranscript: string | null = null;
     let textContent: string | null = null;
+    const downloadedFiles: Array<{ localPath: string; originalName: string }> = [];
+    const failedFiles: string[] = [];
+    const oversizedFiles: Array<{ originalName: string; size: number }> = [];
 
     if (hasImage) {
       try {
@@ -1032,6 +1060,21 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
         }
       } catch (err) {
         console.error(`[Discord] Failed to fetch text attachment for ${label}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    for (const attachment of fileAttachments) {
+      if (attachment.size > MAX_FILE_ATTACHMENT_BYTES) {
+        oversizedFiles.push({ originalName: attachment.filename, size: attachment.size });
+        continue;
+      }
+      try {
+        const localPath = await downloadDiscordAttachment(attachment, "file");
+        if (localPath) downloadedFiles.push({ localPath, originalName: attachment.filename });
+        else failedFiles.push(attachment.filename);
+      } catch (err) {
+        failedFiles.push(attachment.filename);
+        console.error(`[Discord] Failed to download file ${attachment.filename} for ${label}: ${err instanceof Error ? err.message : err}`);
       }
     }
 
@@ -1145,6 +1188,28 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
       promptParts.push(`Attached text file (${textAttachments[0].filename}):\n${wrapUntrusted("user-attachment", textContent, 2000)}`);
     } else if (hasText) {
       promptParts.push("The user attached a text file, but downloading it failed. Ask them to resend.");
+    }
+    for (const file of downloadedFiles) {
+      promptParts.push(`Document path: ${file.localPath}`);
+      promptParts.push(`Original filename: ${wrapUntrusted("attachment-filename", file.originalName)}`);
+    }
+    if (downloadedFiles.length > 0) {
+      promptParts.push(
+        downloadedFiles.length === 1
+          ? "The user attached a document. Read and process this file directly."
+          : `The user attached ${downloadedFiles.length} documents. Read and process these files directly.`,
+      );
+    }
+    if (failedFiles.length > 0) {
+      promptParts.push(
+        `The user attached ${failedFiles.length} file(s) that could not be downloaded: ${wrapUntrusted("attachment-filename", failedFiles.join(", "))}. Tell them and ask them to resend.`,
+      );
+    }
+    for (const file of oversizedFiles) {
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+      promptParts.push(
+        `The user attached ${wrapUntrusted("attachment-filename", file.originalName)} (${sizeMb} MB), which exceeds the ${MAX_FILE_ATTACHMENT_BYTES / (1024 * 1024)} MB download limit and was not downloaded. Tell them.`,
+      );
     }
 
     // Include context from replied-to or forwarded messages
