@@ -72,3 +72,29 @@ describe("catch-up decision", () => {
     expect(shouldCatchUp("0 13 * * *", new Date("2026-09-15T13:00:00Z"), ranYesterday)).toBe(false);
   });
 });
+
+describe("in-flight guard", () => {
+  // Mirrors the scheduler's combined decision: fire on an exact cron match OR a
+  // still-due catch-up occurrence, but skip either while the job is already running.
+  // This is what stops a job whose run outlasts one 60s tick from being re-fired every
+  // tick until it finishes -- dreaming fired 3x on 2026-09-17, fs-sr62454-approval-check
+  // 29 of 41 total runs, before this guard existed.
+  const shouldFire = (schedule: string, now: Date, lastRanAt: number, inFlight: boolean) => {
+    if (inFlight) return false;
+    if (cronMatches(schedule, now, TZ)) return true;
+    const due = prevCronMatch(schedule, now, TZ, 360);
+    return !!due && lastRanAt < due.getTime();
+  };
+
+  it("suppresses catch-up while a long-running job from the same occurrence is still in flight", () => {
+    // 03:00 +07 == 20:00Z -- the dreaming job's schedule. Two ticks later it hasn't
+    // finished (lastRanAt is still 0), and without the guard this re-fires every tick.
+    const stillRunning = new Date("2026-09-17T20:02:00Z");
+    expect(shouldFire("0 3 * * *", stillRunning, 0, true)).toBe(false);
+  });
+
+  it("fires the catch-up normally once the job is no longer in flight", () => {
+    const stillDue = new Date("2026-09-17T20:02:00Z");
+    expect(shouldFire("0 3 * * *", stillDue, 0, false)).toBe(true);
+  });
+});

@@ -876,6 +876,10 @@ export async function start(args: string[] = []) {
   // for crash-recovery + status displays. Resets on daemon restart (in-memory only).
   const jobLastResult = new Map<string, { result: "ok" | "error" | "skipped"; ranAt: number }>();
 
+  // In-flight guard: a job whose run outlasts one 60s tick would otherwise be re-fired
+  // by catch-up (or even the exact-minute cron match) every tick until it finishes.
+  const inFlightJobs = new Set<string>();
+
   /**
    * How far back a missed run is still worth firing. Long enough to cover a daemon
    * restart or a blocked event loop, short enough that a multi-day outage does not
@@ -910,6 +914,7 @@ export async function start(args: string[] = []) {
   updateState();
 
   function runJob(job: (typeof currentJobs)[0]) {
+    inFlightJobs.add(job.name);
     const timeoutMs = job.timeoutSeconds ? job.timeoutSeconds * 1000 : undefined;
     snapshotJobFrontmatter(job.name)
       .then((restoreFrontmatter) =>
@@ -965,7 +970,10 @@ export async function start(args: string[] = []) {
               console.error(`[${ts()}] Failed to clear schedule for ${job.name}:`, err);
             }
           })
-      );
+      )
+      .finally(() => {
+        inFlightJobs.delete(job.name);
+      });
   }
 
   setInterval(() => {
@@ -983,6 +991,7 @@ export async function start(args: string[] = []) {
           continue;
         }
         if (cronMatches(job.schedule, now, currentSettings.timezoneOffsetMinutes)) {
+          if (inFlightJobs.has(job.name)) continue;
           runJob(job);
           continue;
         }
@@ -996,6 +1005,7 @@ export async function start(args: string[] = []) {
         if (lastRan >= due.getTime()) continue;
         // In flight right now (or retrying) -- runJob's handler will record the run.
         if (jobRetryState.get(job.name)?.retryAt === Number.MAX_SAFE_INTEGER) continue;
+        if (inFlightJobs.has(job.name)) continue;
         const lateBy = Math.round((now.getTime() - due.getTime()) / 60_000);
         console.log(`[${ts()}] Missed run detected for ${job.name} (due ${due.toLocaleTimeString()}, ${lateBy}m late) -- running now`);
         runJob(job);
