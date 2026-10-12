@@ -600,6 +600,12 @@ function formatToolCallSummary(name: string, input: Record<string, unknown>): st
   }
 }
 
+/** Tool name from a "● Name(...)" call line sent to onToolEvent; null for result lines. */
+export function parseToolCallLine(line: string): string | null {
+  const match = /^● ([^(\s]+)\(/.exec(line);
+  return match ? match[1] : null;
+}
+
 function extractToolResultText(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {

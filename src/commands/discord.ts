@@ -1,4 +1,4 @@
-import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, compactCurrentThreadSession, agentDirKey } from "../runner";
+import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, compactCurrentThreadSession, agentDirKey, parseToolCallLine } from "../runner";
 import { wrapUntrusted } from "../prompt-safety";
 import { isAllowed, isDiscordAuthorized } from "../allowlist";
 import { extractErrorDetail } from "../messaging";
@@ -34,6 +34,35 @@ const GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json";
 
 /** Reaction shown on the user's message while their request is being worked on. */
 const THINKING_REACTION = "\u{1F440}";
+
+/** Reaction added to the user's message for each category of tool Claude uses while working. */
+export function toolReactionEmoji(toolName: string): string {
+  if (toolName.startsWith("mcp__")) return "\u{1F50C}";
+  switch (toolName) {
+    case "Read":
+    case "Grep":
+    case "Glob":
+    case "LS":
+      return "\u{1F4D6}";
+    case "Edit":
+    case "MultiEdit":
+    case "Write":
+    case "NotebookEdit":
+      return "\u270F\uFE0F";
+    case "Bash":
+      return "\u{1F4BB}";
+    case "WebFetch":
+    case "WebSearch":
+      return "\u{1F310}";
+    case "Agent":
+    case "Task":
+      return "\u{1F916}";
+    case "Skill":
+      return "\u{1F9E9}";
+    default:
+      return "\u{1F6E0}\uFE0F";
+  }
+}
 
 const GatewayOp = {
   DISPATCH: 0,
@@ -304,6 +333,46 @@ async function removeReaction(
       headers: { Authorization: `Bot ${token}` },
     },
   ).catch(() => {});
+}
+
+// Discord rate-limits reactions per channel; space them out rather than firing in a burst.
+const TOOL_REACTION_SPACING_MS = 300;
+
+interface ToolReactionTracker {
+  onToolEvent: (line: string) => void;
+  clear: () => Promise<void>;
+}
+
+/**
+ * Collects one reaction per tool category on the triggering message while a run is in
+ * progress, then removes them all once it finishes. Reactions are sent one at a time
+ * through a queue so a burst of tool calls doesn't trip Discord's reaction rate limit.
+ */
+function makeToolReactionTracker(token: string, channelId: string, messageId: string): ToolReactionTracker {
+  const added = new Set<string>();
+  let queue: Promise<void> = Promise.resolve();
+  const spaced = (fn: () => Promise<void>) => {
+    queue = queue
+      .then(fn)
+      .catch(() => {})
+      .then(() => Bun.sleep(TOOL_REACTION_SPACING_MS));
+  };
+
+  return {
+    onToolEvent(line) {
+      const toolName = parseToolCallLine(line);
+      if (!toolName) return;
+      const emoji = toolReactionEmoji(toolName);
+      if (added.has(emoji)) return;
+      added.add(emoji);
+      spaced(() => sendReaction(token, channelId, messageId, emoji));
+    },
+    async clear() {
+      for (const emoji of added) spaced(() => removeReaction(token, channelId, messageId, emoji));
+      added.clear();
+      await queue;
+    },
+  };
 }
 
 // --- Reaction directive extraction (same as telegram.ts) ---
@@ -1247,6 +1316,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     if (config.streaming) {
       streamCb = makeDiscordStreamCallback(config.token, channelId);
     }
+    const toolReactions = makeToolReactionTracker(config.token, channelId, message.id);
 
     const result = await (async () => {
       try {
@@ -1256,7 +1326,10 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
           sessionKey,
           threadInfo?.agentName,
           streamCb?.onChunk,
-          streamCb?.onToolEvent,
+          (line) => {
+            toolReactions.onToolEvent(line);
+            streamCb?.onToolEvent(line);
+          },
           undefined,
           // Launcher lookup order: this thread/channel first, then its parent channel,
           // then the global default. A thread therefore inherits whatever its parent
@@ -1264,6 +1337,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
           sessionKey ? [sessionKey, ...(threadInfo?.parentId ? [threadInfo.parentId] : [])] : undefined,
         );
       } finally {
+        await toolReactions.clear();
         if (streamCb) {
           await streamCb.finalize();
           streamCb = undefined;
