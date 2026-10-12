@@ -3,7 +3,17 @@ import { clampInt, json } from "./http";
 import { checkToken } from "./auth";
 import type { StartWebUiOptions, WebServerHandle } from "./types";
 import { buildState, buildTechnicalInfo, sanitizeSettings } from "./services/state";
-import { readHeartbeatSettings, updateHeartbeatSettings } from "./services/settings";
+import {
+  readHeartbeatSettings,
+  updateHeartbeatSettings,
+  readRuntimeSettings,
+  updateRuntimeSettings,
+  deleteRuntimeOverride,
+  listRuntimeOverrides,
+} from "./services/settings";
+import { listCcsProfiles, knownCcsProfileNames } from "./services/ccs-profiles";
+import { resetSession } from "../sessions";
+import { listThreadSessions, removeThreadSession } from "../sessionManager";
 import { createQuickJob, deleteJob } from "./services/jobs";
 import { readLogs } from "./services/logs";
 import { listSessions, readSessionMessages, listAgents } from "./services/sessions";
@@ -11,6 +21,11 @@ import { getSessionUsage } from "./services/usage";
 import { runUserMessage } from "../runner";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
+
+/** Snapshot access that never throws, for optional display-only lookups. */
+function getSnapshotSafe(opts: StartWebUiOptions): any {
+  try { return opts.getSnapshot(); } catch { return undefined; }
+}
 
 export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
   const server = Bun.serve({
@@ -149,6 +164,84 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
           return json({ ok: true, heartbeat: next });
         } catch (err) {
           return json({ ok: false, error: String(err) });
+        }
+      }
+
+      if (url.pathname === "/api/settings/runtime" && req.method === "GET") {
+        try {
+          const scope = url.searchParams.get("scope") || undefined;
+          const [launcher, profiles, overrides] = await Promise.all([
+            readRuntimeSettings(scope),
+            listCcsProfiles(),
+            listRuntimeOverrides(),
+          ]);
+          // Scope keys the UI can offer: every live session key (Discord channels/threads
+          // and cron jobs both land here, since runJob passes its name as the threadId),
+          // plus anything that already carries an override.
+          const threads = await listThreadSessions();
+          const names = getSnapshotSafe(opts)?.settings?.discord?.channelNames ?? {};
+          const scopeKeys = Array.from(new Set([...threads.map((t: any) => t.threadId), ...overrides]));
+          const scopes = scopeKeys.map((key) => ({
+            key,
+            label: (names as Record<string, string>)[key] ?? key,
+            overridden: overrides.includes(key),
+          }));
+          return json({
+            ok: true,
+            scope: scope ?? null,
+            launcher,
+            profiles: profiles.groups,
+            profilesAvailable: profiles.available,
+            overrides,
+            scopes,
+          });
+        } catch (err) {
+          return json({ ok: false, error: String(err) });
+        }
+      }
+
+      if (url.pathname === "/api/settings/runtime" && req.method === "POST") {
+        try {
+          const body = (await req.json()) as { kind?: unknown; profile?: unknown; scope?: unknown; inherit?: unknown };
+          const kind = body.kind === "ccs" ? "ccs" : body.kind === "direct" ? "direct" : null;
+          if (!kind && body.inherit !== true) throw new Error("kind must be 'direct' or 'ccs'");
+          const profile = typeof body.profile === "string" ? body.profile.trim() : "";
+
+          // Only validate against the discovered list when discovery actually worked,
+          // so a machine without ~/.ccs/config.yaml can still set a profile by hand.
+          if (kind === "ccs" && profile) {
+            const known = await knownCcsProfileNames();
+            if (known.size > 0 && !known.has(profile)) {
+              throw new Error(`Unknown CCS profile: ${profile}`);
+            }
+          }
+
+          const scope = typeof body.scope === "string" && body.scope.trim() ? body.scope.trim() : undefined;
+
+          // An existing session resumes under whatever runtime created it, so switching
+          // launchers without clearing it would --resume across providers. Reset only
+          // the scope being changed -- a scoped change must not disturb other scopes.
+          const resetScope = async () => {
+            if (scope) await removeThreadSession(scope);
+            else await resetSession();
+          };
+
+          if (body.inherit === true) {
+            if (!scope) throw new Error("inherit requires a scope");
+            await deleteRuntimeOverride(scope);
+            await resetScope();
+            const launcher = await readRuntimeSettings(scope);
+            if (opts.onRuntimeSettingsChanged) await opts.onRuntimeSettingsChanged(launcher);
+            return json({ ok: true, launcher, scope, inherited: true, sessionReset: true });
+          }
+
+          const launcher = await updateRuntimeSettings({ kind, profile }, scope);
+          await resetScope();
+          if (opts.onRuntimeSettingsChanged) await opts.onRuntimeSettingsChanged(launcher);
+
+          return json({ ok: true, launcher, scope: scope ?? null, sessionReset: true });
+        } catch (err) {
+          return json({ ok: false, error: err instanceof Error ? err.message : String(err) });
         }
       }
 

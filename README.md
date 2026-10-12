@@ -141,9 +141,12 @@ See [docs/MULTI_SESSION.md](docs/MULTI_SESSION.md) for technical details.
 
 ### Reliability and Control
 - **GLM Fallback:** Automatically continue with GLM models if your primary limit is reached.
+- **Runtime Launcher:** Route Claude Code through a [CCS](https://github.com/kaitranntt/ccs) profile instead of your Anthropic quota, or switch back to the direct `claude` binary — from the Web UI, without restarting the daemon.
 - **Web Dashboard:** Manage jobs, monitor runs, and inspect logs in real time.
 - **Security Levels:** Four access levels from read-only to full system access.
 - **Model Selection:** Switch models based on your workload.
+
+See [docs/RUNTIME_LAUNCHER.md](docs/RUNTIME_LAUNCHER.md) for the runtime launcher's configuration and technical details.
 
 ## FAQ
 

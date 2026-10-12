@@ -51,3 +51,27 @@ export function nextCronMatch(expr: string, after: Date, timezoneOffsetMinutes =
   }
   return d;
 }
+
+/**
+ * Most recent time at or before `before` that matches `expr`, or null if there is
+ * none within `withinMinutes`.
+ *
+ * Used to detect a missed run: the scheduler only polls once a minute and asks
+ * "does this minute match", so a run whose minute passed while the daemon was down
+ * -- or while the event loop was blocked long enough to skip a tick -- is otherwise
+ * lost silently. The bound keeps a long outage from resurrecting days of backlog.
+ */
+export function prevCronMatch(
+  expr: string,
+  before: Date,
+  timezoneOffsetMinutes = 0,
+  withinMinutes = 360,
+): Date | null {
+  const d = new Date(before);
+  d.setSeconds(0, 0);
+  for (let i = 0; i <= withinMinutes; i++) {
+    if (cronMatches(expr, d, timezoneOffsetMinutes)) return new Date(d);
+    d.setMinutes(d.getMinutes() - 1);
+  }
+  return null;
+}

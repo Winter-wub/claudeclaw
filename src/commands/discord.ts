@@ -1,4 +1,4 @@
-import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, compactCurrentThreadSession, agentDirKey } from "../runner";
+import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, compactCurrentThreadSession, agentDirKey, parseToolCallLine } from "../runner";
 import { wrapUntrusted } from "../prompt-safety";
 import { isAllowed, isDiscordAuthorized } from "../allowlist";
 import { extractErrorDetail } from "../messaging";
@@ -15,11 +15,54 @@ import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join, basename, sep } from "node:path";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
+import { buildClaudeCommand } from "../runtime-launcher";
+import { listCcsProfiles } from "../ui/services/ccs-profiles";
+import {
+  readRuntimeSettings,
+  updateRuntimeSettings,
+  readModelSetting,
+  updateModelSetting,
+  deleteRuntimeOverride,
+  hasRuntimeOverride,
+} from "../ui/services/settings";
+import { reloadSettings } from "../config";
 
 // --- Discord API constants ---
 
 const DISCORD_API = "https://discord.com/api/v10";
 const GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json";
+
+/** Reaction shown on the user's message while their request is being worked on. */
+const THINKING_REACTION = "\u{1F440}";
+
+/** Reaction added to the user's message for each category of tool Claude uses while working. */
+export function toolReactionEmoji(toolName: string): string {
+  if (toolName.startsWith("mcp__")) return "\u{1F50C}";
+  switch (toolName) {
+    case "Read":
+    case "Grep":
+    case "Glob":
+    case "LS":
+      return "\u{1F4D6}";
+    case "Edit":
+    case "MultiEdit":
+    case "Write":
+    case "NotebookEdit":
+      return "\u270F\uFE0F";
+    case "Bash":
+      return "\u{1F4BB}";
+    case "WebFetch":
+    case "WebSearch":
+      return "\u{1F310}";
+    case "Agent":
+    case "Task":
+      return "\u{1F916}";
+    case "Skill":
+      return "\u{1F9E9}";
+    default:
+      return "\u{1F6E0}\uFE0F";
+  }
+}
 
 const GatewayOp = {
   DISPATCH: 0,
@@ -86,12 +129,20 @@ const enum DiscordMessageType {
   ThreadCreated = 18,
 }
 
+interface InteractionOption {
+  name: string;
+  type: number;
+  value?: string | number | boolean;
+  options?: InteractionOption[];
+}
+
 interface DiscordInteraction {
   id: string;
   type: number; // 2=APPLICATION_COMMAND, 3=MESSAGE_COMPONENT
   data?: {
     name?: string;
     custom_id?: string;
+    options?: InteractionOption[];
   };
   channel_id?: string;
   guild_id?: string;
@@ -252,10 +303,6 @@ async function sendMessageToUser(
   await sendMessage(token, channel.id, text);
 }
 
-async function sendTyping(token: string, channelId: string): Promise<void> {
-  await discordApi(token, "POST", `/channels/${channelId}/typing`).catch(() => {});
-}
-
 async function sendReaction(
   token: string,
   channelId: string,
@@ -270,6 +317,62 @@ async function sendReaction(
       headers: { Authorization: `Bot ${token}` },
     },
   ).catch(() => {});
+}
+
+async function removeReaction(
+  token: string,
+  channelId: string,
+  messageId: string,
+  emoji: string,
+): Promise<void> {
+  const encoded = encodeURIComponent(emoji);
+  await fetch(
+    `${DISCORD_API}/channels/${channelId}/messages/${messageId}/reactions/${encoded}/@me`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bot ${token}` },
+    },
+  ).catch(() => {});
+}
+
+// Discord rate-limits reactions per channel; space them out rather than firing in a burst.
+const TOOL_REACTION_SPACING_MS = 300;
+
+interface ToolReactionTracker {
+  onToolEvent: (line: string) => void;
+  clear: () => Promise<void>;
+}
+
+/**
+ * Collects one reaction per tool category on the triggering message while a run is in
+ * progress, then removes them all once it finishes. Reactions are sent one at a time
+ * through a queue so a burst of tool calls doesn't trip Discord's reaction rate limit.
+ */
+function makeToolReactionTracker(token: string, channelId: string, messageId: string): ToolReactionTracker {
+  const added = new Set<string>();
+  let queue: Promise<void> = Promise.resolve();
+  const spaced = (fn: () => Promise<void>) => {
+    queue = queue
+      .then(fn)
+      .catch(() => {})
+      .then(() => Bun.sleep(TOOL_REACTION_SPACING_MS));
+  };
+
+  return {
+    onToolEvent(line) {
+      const toolName = parseToolCallLine(line);
+      if (!toolName) return;
+      const emoji = toolReactionEmoji(toolName);
+      if (added.has(emoji)) return;
+      added.add(emoji);
+      spaced(() => sendReaction(token, channelId, messageId, emoji));
+    },
+    async clear() {
+      for (const emoji of added) spaced(() => removeReaction(token, channelId, messageId, emoji));
+      added.clear();
+      await queue;
+    },
+  };
 }
 
 // --- Reaction directive extraction (same as telegram.ts) ---
@@ -495,17 +598,30 @@ Rules:
 - Return ONLY valid JSON or the word null. No explanation.`;
 
   try {
-    const { execSync } = await import("node:child_process");
     const input = `${systemPrompt}\n\n---\nUser message: ${text}`;
-    const result = execSync(
-      `claude --model claude-sonnet-4-20250514 --print --output-format text`,
-      {
-        input,
-        encoding: "utf-8",
-        timeout: 15000,
-        env: { ...process.env, HOME: homedir() },
-      },
-    ).trim();
+    // Route through the configured runtime launcher (e.g. `ccs <profile>`) instead of
+    // calling `claude` directly, so this shares the daemon's provider/quota. The model
+    // is left unset so the launcher's own default-tier mapping applies.
+    //
+    // Spawned ASYNCHRONOUSLY on purpose. This used to be execFileSync, which blocks the
+    // entire daemon event loop for the duration -- measured at ~11s per call, up to the
+    // full timeout when the provider is cold. The cron scheduler is a 60s setInterval
+    // that fires a job only when a tick lands inside the matching minute, so a long
+    // block here can push a tick past a job's minute and lose that run silently.
+    const proc = Bun.spawn(buildClaudeCommand(["--print", "--output-format", "text"]), {
+      stdin: new TextEncoder().encode(input),
+      stdout: "pipe",
+      stderr: "ignore",
+      env: { ...process.env, HOME: homedir() },
+    });
+
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; try { proc.kill(); } catch {} }, 60000);
+    const stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+    clearTimeout(timer);
+    if (timedOut) throw new Error("intent classifier timed out after 60s");
+    const result = stdout.trim();
 
     if (!result || result === "null") return null;
     // Extract JSON from response (in case there's extra text)
@@ -536,9 +652,24 @@ function isTextAttachment(a: DiscordAttachment): boolean {
   return ext === ".txt" || ext === ".md";
 }
 
+// Attachments past this size are not downloaded; Claude is told they exist instead.
+const MAX_FILE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+// Every attachment the dedicated image/voice/text paths don't consume -- any other file
+// type, plus each image/voice/text after the first -- is handed to Claude as a file on
+// disk to read and process, so nothing a user sends is silently dropped.
+export function pickFileAttachments(attachments: DiscordAttachment[]): DiscordAttachment[] {
+  const handled = new Set(
+    [attachments.find(isImageAttachment), attachments.find(isVoiceAttachment), attachments.find(isTextAttachment)]
+      .filter((a): a is DiscordAttachment => Boolean(a))
+      .map((a) => a.id),
+  );
+  return attachments.filter((a) => !handled.has(a.id));
+}
+
 async function downloadDiscordAttachment(
   attachment: DiscordAttachment,
-  type: "image" | "voice",
+  type: "image" | "voice" | "file",
 ): Promise<string | null> {
   const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "discord");
   await mkdir(dir, { recursive: true });
@@ -546,7 +677,9 @@ async function downloadDiscordAttachment(
   const response = await fetch(attachment.url);
   if (!response.ok) throw new Error(`Discord attachment download failed: ${response.status}`);
 
-  const ext = extname(attachment.filename) || (type === "voice" ? ".ogg" : ".jpg");
+  // The filename is user-controlled; only keep a plain extension so the local path stays clean.
+  const rawExt = extname(attachment.filename);
+  const ext = /^\.[A-Za-z0-9]{1,10}$/.test(rawExt) ? rawExt : type === "voice" ? ".ogg" : type === "image" ? ".jpg" : "";
   const filename = `${attachment.id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
 
@@ -558,8 +691,39 @@ async function downloadDiscordAttachment(
 
 // --- Slash command registration ---
 
+const MODEL_CHOICES = [
+  { label: "default (let Claude Code decide)", value: "" },
+  { label: "opus", value: "opus" },
+  { label: "sonnet", value: "sonnet" },
+  { label: "haiku", value: "haiku" },
+];
+
+const DIRECT_CHOICE_VALUE = "direct";
+const INHERIT_CHOICE_VALUE = "__inherit__";
+
+/** Build the /config profile dropdown: every CCS profile, plus the direct-claude escape. */
+async function buildProfileChoices(): Promise<Array<{ name: string; value: string }>> {
+  const choices = [
+    { name: "inherit — follow the global default", value: INHERIT_CHOICE_VALUE },
+    { name: "direct — plain claude binary", value: DIRECT_CHOICE_VALUE },
+  ];
+  try {
+    const { available, groups } = await listCcsProfiles();
+    if (available) {
+      for (const g of groups) {
+        for (const n of g.names) choices.push({ name: `${n} (${g.label})`, value: n });
+      }
+    }
+  } catch {
+    // Leave the direct option only -- registration must not fail because CCS is absent.
+  }
+  return choices;
+}
+
 async function registerSlashCommands(token: string): Promise<void> {
   if (!applicationId) return;
+
+  const profileChoices = await buildProfileChoices();
 
   const commands = [
     {
@@ -586,6 +750,49 @@ async function registerSlashCommands(token: string): Promise<void> {
       name: "context",
       description: "Show context window usage",
       type: 1,
+    },
+    {
+      name: "config",
+      description: "Show or change the model and CCS profile",
+      type: 1,
+      options: [
+        {
+          name: "show",
+          description: "Show the current model and runtime launcher",
+          type: 1, // SUB_COMMAND
+        },
+        {
+          name: "model",
+          description: "Set the model tier",
+          type: 1,
+          options: [
+            {
+              name: "value",
+              description: "Model tier to use",
+              type: 3, // STRING
+              required: true,
+              choices: MODEL_CHOICES.map((m) => ({ name: m.label, value: m.value })),
+            },
+          ],
+        },
+        {
+          name: "profile",
+          description: "Switch the runtime launcher (a CCS profile, or direct claude)",
+          type: 1,
+          options: [
+            {
+              name: "value",
+              description: "CCS profile, or 'direct' for the plain claude binary",
+              type: 3,
+              required: true,
+              // Choices are fixed at registration time, so a profile added to
+              // ~/.ccs/config.yaml afterwards needs a daemon restart to appear.
+              // Discord caps this at 25, hence the slice.
+              choices: profileChoices.slice(0, 25),
+            },
+          ],
+        },
+      ],
     },
   ];
 
@@ -799,15 +1006,18 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
   const imageAttachments = message.attachments.filter(isImageAttachment);
   const voiceAttachments = message.attachments.filter(isVoiceAttachment);
   const textAttachments = message.attachments.filter(isTextAttachment);
+  const fileAttachments = pickFileAttachments(message.attachments);
   const hasImage = imageAttachments.length > 0;
   const hasVoice = voiceAttachments.length > 0;
   const hasText = textAttachments.length > 0;
+  const hasFile = fileAttachments.length > 0;
 
   const hasForwardedContent = !!message.message_snapshots?.[0]?.message?.content;
-  if (!content.trim() && !hasImage && !hasVoice && !hasText && !hasForwardedContent) return;
+  if (!content.trim() && !hasImage && !hasVoice && !hasText && !hasFile && !hasForwardedContent) return;
 
   const forwardKey = `${channelId}:${userId}`;
-  const isForwardOnly = message.message_reference?.type === 1 && !content.trim() && !hasImage && !hasVoice && !hasText;
+  const isForwardOnly =
+    message.message_reference?.type === 1 && !content.trim() && !hasImage && !hasVoice && !hasText && !hasFile;
 
   if (!skipCoalesce && isForwardOnly && hasForwardedContent) {
     // Pure forward with no accompanying text — hold it and wait for a follow-up comment
@@ -840,7 +1050,12 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
   }
 
   const label = message.author.username;
-  const mediaParts = [hasImage ? "image" : "", hasVoice ? "voice" : "", hasText ? "text" : ""].filter(Boolean);
+  const mediaParts = [
+    hasImage ? "image" : "",
+    hasVoice ? "voice" : "",
+    hasText ? "text" : "",
+    hasFile ? `${fileAttachments.length} file` : "",
+  ].filter(Boolean);
   const mediaSuffix = mediaParts.length > 0 ? ` [${mediaParts.join("+")}]` : "";
   console.log(
     `[${new Date().toLocaleTimeString()}] Discord ${label}${mediaSuffix}: "${cleanContent.slice(0, 60)}${cleanContent.length > 60 ? "..." : ""}"`,
@@ -857,17 +1072,25 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     return;
   }
 
-  // Typing indicator loop (Discord typing lasts 10s, fire every 8s)
-  const typingInterval = setInterval(() => sendTyping(config.token, channelId), 8000);
+  // Progress indicator: react to the triggering message while we work, and drop the
+  // reaction when we are done. Preferred over the typing indicator because typing
+  // expires after ~10s and has to be re-sent on a timer, whereas a reaction persists
+  // for the whole run however long it takes -- and it stays attached to the message it
+  // belongs to, which matters when several messages are queued.
+  let thinkingReacted = false;
   let streamCb: DiscordStreamCallbacks | undefined;
 
   try {
-    await sendTyping(config.token, channelId);
+    await sendReaction(config.token, channelId, message.id, THINKING_REACTION);
+    thinkingReacted = true;
 
     let imagePath: string | null = null;
     let voicePath: string | null = null;
     let voiceTranscript: string | null = null;
     let textContent: string | null = null;
+    const downloadedFiles: Array<{ localPath: string; originalName: string }> = [];
+    const failedFiles: string[] = [];
+    const oversizedFiles: Array<{ originalName: string; size: number }> = [];
 
     if (hasImage) {
       try {
@@ -906,6 +1129,21 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
         }
       } catch (err) {
         console.error(`[Discord] Failed to fetch text attachment for ${label}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    for (const attachment of fileAttachments) {
+      if (attachment.size > MAX_FILE_ATTACHMENT_BYTES) {
+        oversizedFiles.push({ originalName: attachment.filename, size: attachment.size });
+        continue;
+      }
+      try {
+        const localPath = await downloadDiscordAttachment(attachment, "file");
+        if (localPath) downloadedFiles.push({ localPath, originalName: attachment.filename });
+        else failedFiles.push(attachment.filename);
+      } catch (err) {
+        failedFiles.push(attachment.filename);
+        console.error(`[Discord] Failed to download file ${attachment.filename} for ${label}: ${err instanceof Error ? err.message : err}`);
       }
     }
 
@@ -1020,6 +1258,28 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     } else if (hasText) {
       promptParts.push("The user attached a text file, but downloading it failed. Ask them to resend.");
     }
+    for (const file of downloadedFiles) {
+      promptParts.push(`Document path: ${file.localPath}`);
+      promptParts.push(`Original filename: ${wrapUntrusted("attachment-filename", file.originalName)}`);
+    }
+    if (downloadedFiles.length > 0) {
+      promptParts.push(
+        downloadedFiles.length === 1
+          ? "The user attached a document. Read and process this file directly."
+          : `The user attached ${downloadedFiles.length} documents. Read and process these files directly.`,
+      );
+    }
+    if (failedFiles.length > 0) {
+      promptParts.push(
+        `The user attached ${failedFiles.length} file(s) that could not be downloaded: ${wrapUntrusted("attachment-filename", failedFiles.join(", "))}. Tell them and ask them to resend.`,
+      );
+    }
+    for (const file of oversizedFiles) {
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+      promptParts.push(
+        `The user attached ${wrapUntrusted("attachment-filename", file.originalName)} (${sizeMb} MB), which exceeds the ${MAX_FILE_ATTACHMENT_BYTES / (1024 * 1024)} MB download limit and was not downloaded. Tell them.`,
+      );
+    }
 
     // Include context from replied-to or forwarded messages
     const isForward = message.message_reference?.type === 1;
@@ -1056,6 +1316,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     if (config.streaming) {
       streamCb = makeDiscordStreamCallback(config.token, channelId);
     }
+    const toolReactions = makeToolReactionTracker(config.token, channelId, message.id);
 
     const result = await (async () => {
       try {
@@ -1065,9 +1326,18 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
           sessionKey,
           threadInfo?.agentName,
           streamCb?.onChunk,
-          streamCb?.onToolEvent,
+          (line) => {
+            toolReactions.onToolEvent(line);
+            streamCb?.onToolEvent(line);
+          },
+          undefined,
+          // Launcher lookup order: this thread/channel first, then its parent channel,
+          // then the global default. A thread therefore inherits whatever its parent
+          // channel is set to unless it has been given its own profile.
+          sessionKey ? [sessionKey, ...(threadInfo?.parentId ? [threadInfo.parentId] : [])] : undefined,
         );
       } finally {
+        await toolReactions.clear();
         if (streamCb) {
           await streamCb.finalize();
           streamCb = undefined;
@@ -1099,7 +1369,9 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     if (streamCb) {
       await streamCb.finalize();
     }
-    clearInterval(typingInterval);
+    if (thinkingReacted) {
+      await removeReaction(config.token, channelId, message.id, THINKING_REACTION);
+    }
   }
 }
 
@@ -1154,6 +1426,106 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
           body: JSON.stringify({ content: result.message }),
         },
       );
+      return;
+    }
+
+    if (interaction.data.name === "config") {
+      const sub = interaction.data.options?.[0];
+      const describe = (model: string, launcher: { kind: string; profile: string }) => [
+        "⚙️ **Runtime configuration**",
+        `Model: \`${model || "default"}\``,
+        launcher.kind === "ccs"
+          ? `Launcher: \`ccs ${launcher.profile}\``
+          : "Launcher: `claude` (direct)",
+      ].join("\n");
+
+      // In a guild, /config acts on THIS channel/thread; in a DM it acts on the
+      // global default. Same branch /reset and /compact already use.
+      const isGuildCmd = !!interaction.guild_id && !!interaction.channel_id;
+      const scopeKey = isGuildCmd ? interaction.channel_id! : undefined;
+      const scopeLabel = isGuildCmd ? "this channel" : "global";
+
+      try {
+        if (!sub || sub.name === "show") {
+          const [model, launcher] = await Promise.all([readModelSetting(), readRuntimeSettings(scopeKey)]);
+          const own = scopeKey ? await hasRuntimeOverride(scopeKey) : true;
+          const origin = scopeKey
+            ? own
+              ? "_Channel override._"
+              : "_Inherited from the global default._"
+            : "_Global default._";
+          await respondToInteraction(interaction, {
+            content: `${describe(model, launcher)}\nScope: \`${scopeLabel}\`\n${origin}`,
+            flags: 64,
+          });
+          return;
+        }
+
+        const value = String(sub.options?.[0]?.value ?? "");
+
+        if (sub.name === "model") {
+          const model = await updateModelSetting(value);
+          // buildClaudeCommand and the run helpers read through getSettings(), the
+          // config module cache -- so re-read from disk rather than waiting for the
+          // 30s hot-reload tick.
+          await reloadSettings();
+          const launcher = await readRuntimeSettings(scopeKey);
+          await respondToInteraction(interaction, {
+            content: `${describe(model, launcher)}\n\n_Model set to \`${model || "default"}\` (global)._`,
+            flags: 64,
+          });
+          return;
+        }
+
+        if (sub.name === "profile") {
+          // Reset only the scope being changed: a guild channel clears its own thread
+          // session, a DM clears the global one. Threads that merely INHERIT the global
+          // default keep resuming their existing session until their own next reset.
+          const resetScope = async () => {
+            if (scopeKey) await removeThreadSession(scopeKey);
+            else await resetSession();
+          };
+
+          if (value === INHERIT_CHOICE_VALUE) {
+            if (!scopeKey) {
+              await respondToInteraction(interaction, {
+                content: "`inherit` only applies inside a channel — the global default has nothing to inherit from.",
+                flags: 64,
+              });
+              return;
+            }
+            await deleteRuntimeOverride(scopeKey);
+            await reloadSettings();
+            await resetScope();
+            const [model, launcher] = await Promise.all([readModelSetting(), readRuntimeSettings(scopeKey)]);
+            await respondToInteraction(interaction, {
+              content: `${describe(model, launcher)}\n\n_Override cleared — ${scopeLabel} now follows the global default. Channel session reset._`,
+              flags: 64,
+            });
+            return;
+          }
+
+          const launcher =
+            value === DIRECT_CHOICE_VALUE
+              ? await updateRuntimeSettings({ kind: "direct" }, scopeKey)
+              : await updateRuntimeSettings({ kind: "ccs", profile: value }, scopeKey);
+          await reloadSettings();
+          // A session resumes under whatever runtime created it, so switching
+          // launchers without clearing it would --resume across providers.
+          await resetScope();
+          const model = await readModelSetting();
+          await respondToInteraction(interaction, {
+            content: `${describe(model, launcher)}\nScope: \`${scopeLabel}\`\n\n_Switched — ${isGuildCmd ? "channel" : "global"} session reset, next message starts fresh._`,
+            flags: 64,
+          });
+          return;
+        }
+
+        await respondToInteraction(interaction, { content: `Unknown subcommand: \`${sub.name}\``, flags: 64 });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await respondToInteraction(interaction, { content: `Config change failed: ${msg}`, flags: 64 });
+      }
       return;
     }
 

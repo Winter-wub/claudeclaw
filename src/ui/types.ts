@@ -28,6 +28,10 @@ export interface StartWebUiOptions {
     prompt?: string;
     excludeWindows?: Array<{ days?: number[]; start: string; end: string }>;
   }) => void | Promise<void>;
+  onRuntimeSettingsChanged?: (launcher: {
+    kind: "direct" | "ccs";
+    profile: string;
+  }) => void | Promise<void>;
   onJobsChanged?: () => void | Promise<void>;
   onChat?: (
     message: string,

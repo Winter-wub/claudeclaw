@@ -36,6 +36,22 @@ Before opening a PR:
 - [ ] Run the relevant checks locally
 - [ ] Update any docs or setup guidance affected by your change
 
+### Running the tests
+
+```bash
+bun test
+```
+
+Several modules derive their settings path from the working directory
+(`join(process.cwd(), ".claude", "claudeclaw", "settings.json")`), and some tests write to it.
+`bunfig.toml` therefore preloads `src/__tests__/_sandbox-cwd.ts`, which moves the process into a
+temporary directory before any test module is imported — so the suite can never touch a real
+ClaudeClaw config, even when run from inside a live daemon directory.
+
+If you add a test that reads or writes settings, rely on that sandbox rather than backing up and
+restoring the real file: an interrupted restore leaves the daemon to recreate the config from
+defaults, silently dropping bot tokens and job paths.
+
 ---
 
 ## Plugin version bumps (CI-enforced)
