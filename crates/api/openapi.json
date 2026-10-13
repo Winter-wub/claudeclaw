@@ -12,6 +12,201 @@
   "paths": {},
   "components": {
     "schemas": {
+      "AdapterState": {
+        "type": "string",
+        "enum": [
+          "connecting",
+          "connected",
+          "reconnecting",
+          "disconnected",
+          "disabled"
+        ]
+      },
+      "AgentArchived": {
+        "type": "object",
+        "description": "`agents.archive` → where the agent went (management-api §2.8). Its `jobs/` moves with it, so\nthose jobs stop being scheduled; its sessions are kept and resume on restore.",
+        "required": [
+          "entry",
+          "archived_to",
+          "jobs_unscheduled"
+        ],
+        "properties": {
+          "entry": {
+            "type": "string",
+            "description": "The new archive entry, as `ArchivedAgent.entry`."
+          },
+          "archived_to": {
+            "type": "string",
+            "description": "The archived dir, relative to the Daemon dir (`agents/.archive/<entry>`)."
+          },
+          "jobs_unscheduled": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The agent's jobs that are no longer scheduled.",
+            "minimum": 0
+          }
+        }
+      },
+      "AgentCreate": {
+        "type": "object",
+        "description": "`agents.create` body; `409 agent_exists` when the name is taken (management-api §2.8).",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "persona": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The persona, written to `agents/<name>/CLAUDE.md`. No persona file when absent."
+          }
+        }
+      },
+      "AgentInfo": {
+        "type": "object",
+        "description": "One agent: a dir under `agents/` (management-api §2.8). Its Scope is `agent:<name>`.",
+        "required": [
+          "name",
+          "kind",
+          "dir",
+          "thread",
+          "description",
+          "jobs",
+          "launcher",
+          "session"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The dir name: `<name>` for a named agent, `<slug>-<thread id>` for a thread's."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AgentKind"
+          },
+          "dir": {
+            "type": "string",
+            "description": "The agent dir, relative to the Daemon dir (`agents/<name>`)."
+          },
+          "thread": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AgentThread",
+                "description": "The Discord thread a `thread` agent was hired into; `null` for a `named` one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": "string",
+            "description": "The persona's first paragraph, cut to 200 chars; empty when there is no persona."
+          },
+          "jobs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The agent's jobs (`agents/<name>/jobs/`).",
+            "minimum": 0
+          },
+          "launcher": {
+            "$ref": "#/components/schemas/ScopeLauncher"
+          },
+          "session": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ScopeSession",
+                "description": "The session of the agent's effective Launcher; `null` when there is none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "AgentKind": {
+        "type": "string",
+        "enum": [
+          "named",
+          "thread"
+        ]
+      },
+      "AgentList": {
+        "type": "object",
+        "description": "`agents.list` → `{agents}` (management-api §2.8).",
+        "required": [
+          "agents"
+        ],
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentInfo"
+            }
+          }
+        }
+      },
+      "AgentPersona": {
+        "type": "object",
+        "description": "`agents.persona.get` and `agents.persona.put` → the raw `agents/<name>/CLAUDE.md` and its\nrevision (management-api §1.5, §2.8).",
+        "required": [
+          "text",
+          "revision"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision",
+            "description": "Send it back as `If-Match` with `agents.persona.put`."
+          }
+        }
+      },
+      "AgentPersonaPut": {
+        "type": "object",
+        "description": "`agents.persona.put` body: the whole new persona. `If-Match` is required (management-api\n§1.5, §2.8).",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentPurged": {
+        "type": "object",
+        "description": "`agents.purge` → `{deleted}` (management-api §2.8). Only archived entries can be deleted.",
+        "required": [
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AgentThread": {
+        "type": "object",
+        "description": "The Discord thread a `thread` agent belongs to (management-api §2.8).",
+        "required": [
+          "id",
+          "channel_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": "string"
+          }
+        }
+      },
       "AgenticMode": {
         "type": "object",
         "description": "One `agentic.modes[]` entry (TS `AgenticMode`).",
@@ -67,6 +262,33 @@
           }
         }
       },
+      "AllowedUsers": {
+        "type": "object",
+        "description": "Who may talk to the bot in a channel (management-api §2.7).",
+        "required": [
+          "source",
+          "users"
+        ],
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/AllowedUsersSource",
+            "description": "`global` when the channel has no list of its own and uses `dm_allowed_users`."
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscordUser"
+            }
+          }
+        }
+      },
+      "AllowedUsersSource": {
+        "type": "string",
+        "enum": [
+          "global",
+          "channel"
+        ]
+      },
       "ApiError": {
         "type": "object",
         "description": "`{\"error\": {\"code\", \"message\", \"hint\", \"details\"}}`.",
@@ -76,6 +298,55 @@
         "properties": {
           "error": {
             "$ref": "#/components/schemas/ErrorBody"
+          }
+        }
+      },
+      "ArchiveReason": {
+        "type": "string",
+        "enum": [
+          "fired",
+          "archived"
+        ]
+      },
+      "ArchivedAgent": {
+        "type": "object",
+        "description": "One entry of `agents/.archive/` (management-api §2.8, #16).",
+        "required": [
+          "entry",
+          "name",
+          "archived_at",
+          "reason"
+        ],
+        "properties": {
+          "entry": {
+            "type": "string",
+            "description": "The entry's dir name, `<name>-<UTC stamp>`; the `{entry}` of `agents.restore` and\n`agents.purge`."
+          },
+          "name": {
+            "type": "string",
+            "description": "The agent's name before it was archived; `agents.restore` brings it back under it."
+          },
+          "archived_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/ArchiveReason"
+          }
+        }
+      },
+      "ArchivedAgentList": {
+        "type": "object",
+        "description": "`agents.archived` → `{archived}`, fired threads included (management-api §2.8).",
+        "required": [
+          "archived"
+        ],
+        "properties": {
+          "archived": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ArchivedAgent"
+            }
           }
         }
       },
@@ -258,6 +529,61 @@
           }
         }
       },
+      "AvailableChannel": {
+        "type": "object",
+        "description": "One channel in the \"Listen in a channel…\" picker (management-api §2.7).",
+        "required": [
+          "id",
+          "name",
+          "guild_id",
+          "kind"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "guild_id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ChannelKind"
+          }
+        }
+      },
+      "AvailableChannelList": {
+        "type": "object",
+        "description": "`discord.available` → the channels the bot could listen in, from the gateway cache\n(management-api §2.7).",
+        "required": [
+          "channels"
+        ],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AvailableChannel"
+            }
+          }
+        }
+      },
+      "ChannelKind": {
+        "type": "string",
+        "enum": [
+          "text",
+          "announcement",
+          "forum",
+          "voice"
+        ]
+      },
+      "ChannelTrigger": {
+        "type": "string",
+        "enum": [
+          "mention",
+          "every_message"
+        ]
+      },
       "ClaudeCodeSeen": {
         "type": "object",
         "description": "The Claude Code version seen through a Launcher (#42 D5).",
@@ -314,6 +640,173 @@
           "managed",
           "estimate"
         ]
+      },
+      "DiscordBot": {
+        "type": "object",
+        "description": "The bot's own Discord user (management-api §2.7).",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "DiscordChannel": {
+        "type": "object",
+        "description": "A channel the bot listens in (management-api §2.7). Its Scope is `discord:<id>`.",
+        "required": [
+          "id",
+          "name",
+          "guild_id",
+          "trigger",
+          "allowed_users",
+          "launcher",
+          "threads"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "guild_id": {
+            "type": "string"
+          },
+          "trigger": {
+            "$ref": "#/components/schemas/ChannelTrigger"
+          },
+          "allowed_users": {
+            "$ref": "#/components/schemas/AllowedUsers"
+          },
+          "launcher": {
+            "$ref": "#/components/schemas/ScopeLauncher"
+          },
+          "threads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscordThread"
+            }
+          }
+        }
+      },
+      "DiscordChannelPatch": {
+        "type": "object",
+        "description": "`discord.channels.update` body: listen in a channel, or change how (management-api §2.7).\nWrites `listenChannels` and `channelAllowedUserIds`.",
+        "required": [
+          "trigger",
+          "allowed_user_ids"
+        ],
+        "properties": {
+          "trigger": {
+            "$ref": "#/components/schemas/ChannelTrigger"
+          },
+          "allowed_user_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The channel's own allow-list; `null` uses the global one."
+          }
+        }
+      },
+      "DiscordChannelRemoved": {
+        "type": "object",
+        "description": "`discord.channels.remove` → `{channel_id, sessions_kept}` (management-api §2.7). The channel\nleaves `listenChannels` and `channelAllowedUserIds`; its sessions are untouched.",
+        "required": [
+          "channel_id",
+          "sessions_kept"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": "string"
+          },
+          "sessions_kept": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The channel's and its threads' sessions, all kept.",
+            "minimum": 0
+          }
+        }
+      },
+      "DiscordGuild": {
+        "type": "object",
+        "description": "A guild the bot is in (management-api §2.7).",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "DiscordOverview": {
+        "type": "object",
+        "description": "`discord.get` → the Discord screen (management-api §2.7).",
+        "required": [
+          "state",
+          "since",
+          "bot",
+          "guilds",
+          "dm_allowed_users",
+          "channels"
+        ],
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/AdapterState",
+            "description": "The Discord adapter's connection."
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the adapter entered `state`."
+          },
+          "bot": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DiscordBot",
+                "description": "The bot's own user; `null` until the gateway's first `READY`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "guilds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscordGuild"
+            }
+          },
+          "dm_allowed_users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscordUser"
+            },
+            "description": "The users allowed to talk to the bot in DMs and in channels without their own list."
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscordChannel"
+            },
+            "description": "Every channel the bot listens in."
+          }
+        }
       },
       "DiscordSettings": {
         "type": "object",
@@ -389,6 +882,72 @@
           },
           "streaming": {
             "type": "boolean"
+          }
+        }
+      },
+      "DiscordThread": {
+        "type": "object",
+        "description": "A thread under a listened channel (management-api §2.7). Its Scope is `discord:<id>`.",
+        "required": [
+          "id",
+          "name",
+          "parent_id",
+          "agent_dir",
+          "last_active_at",
+          "session"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": "string",
+            "description": "The channel the thread is under."
+          },
+          "agent_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The thread's working dir, `agents/<slug>-<thread id>`; `null` for a thread that wasn't\nhired into and has none."
+          },
+          "last_active_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ScopeSession",
+                "description": "The session of the thread's effective Launcher; `null` when there is none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "DiscordUser": {
+        "type": "object",
+        "description": "A Discord user (management-api §2.7).",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` when the gateway cache doesn't know the user."
           }
         }
       },
@@ -744,6 +1303,37 @@
           }
         }
       },
+      "FireResult": {
+        "type": "object",
+        "description": "`discord.fire` → what was removed and where the agent dir went (management-api §2.7, #16).",
+        "required": [
+          "thread_id",
+          "discord_deleted",
+          "sessions_removed",
+          "archived_to"
+        ],
+        "properties": {
+          "thread_id": {
+            "type": "string"
+          },
+          "discord_deleted": {
+            "type": "boolean",
+            "description": "Whether the Discord thread was deleted; `false` when Discord had already lost it."
+          },
+          "sessions_removed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "archived_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The archived dir, `agents/.archive/<slug>-<id>-<UTC stamp>`; `null` when the thread had\nno agent dir. Listed and restorable in §2.8."
+          }
+        }
+      },
       "HeartbeatSettings": {
         "type": "object",
         "description": "`heartbeat` (TS `HeartbeatConfig`).",
@@ -770,6 +1360,36 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ExcludeWindow"
+            }
+          }
+        }
+      },
+      "HireRequest": {
+        "type": "object",
+        "description": "`discord.hire` body: one public thread per name under the channel (management-api §2.7).",
+        "required": [
+          "names"
+        ],
+        "properties": {
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "HireResult": {
+        "type": "object",
+        "description": "`discord.hire` → the new threads, each with its agent dir (management-api §2.7).",
+        "required": [
+          "threads"
+        ],
+        "properties": {
+          "threads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscordThread"
             }
           }
         }
@@ -2921,6 +3541,14 @@
         "enum": [
           "user",
           "assistant"
+        ]
+      },
+      "Transport": {
+        "type": "string",
+        "enum": [
+          "discord",
+          "telegram",
+          "slack"
         ]
       },
       "TurnAccepted": {

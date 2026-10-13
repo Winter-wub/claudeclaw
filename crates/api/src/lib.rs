@@ -4,7 +4,10 @@
 //! the error envelope, the route constants with their Deadlines, and the committed
 //! `openapi.json`. No tokio, axum or IO (architecture §4).
 
+pub mod adapter;
+pub mod agents;
 pub mod deadline;
+pub mod discord;
 pub mod error;
 pub mod export;
 pub mod logs;
@@ -20,7 +23,16 @@ pub mod turns;
 pub mod usage;
 mod wire;
 
+pub use adapter::{AdapterState, Transport};
+pub use agents::{
+    AgentArchived, AgentCreate, AgentInfo, AgentList, AgentPersona, AgentPersonaPut, AgentPurged,
+    ArchivedAgent, ArchivedAgentList,
+};
 pub use deadline::{Call, Deadline};
+pub use discord::{
+    AvailableChannelList, DiscordChannel, DiscordChannelPatch, DiscordChannelRemoved,
+    DiscordOverview, DiscordThread, DiscordUser, FireResult, HireRequest, HireResult,
+};
 pub use error::{ApiError, ErrorBody, ErrorCode};
 pub use permission::TokenPermission;
 pub use revision::Revision;
@@ -57,6 +69,7 @@ struct ApiDoc;
 /// per module, in management-api §2 order.
 pub fn openapi() -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
+    doc.merge(adapter::Doc::openapi());
     doc.merge(turns::Doc::openapi());
     doc.merge(scopes::Doc::openapi());
     doc.merge(sessions::Doc::openapi());
@@ -65,5 +78,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
     doc.merge(export::Doc::openapi());
     doc.merge(runs::Doc::openapi());
     doc.merge(usage::Doc::openapi());
+    doc.merge(discord::Doc::openapi());
+    doc.merge(agents::Doc::openapi());
     doc
 }
