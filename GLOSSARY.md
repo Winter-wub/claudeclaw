@@ -105,8 +105,16 @@ A Daemon run against a scrubbed copy of a live data dir with its own test bot, s
 _Avoid_: staging, canary, mirror
 
 **Recorder launcher**:
-A Launcher script that records the argv it receives and returns a canned stream-json result instead of running Claude Code, used to contain side effects and simulate failures.
+A Launcher that records the argv it receives and returns a canned or scripted stream-json result instead of running Claude Code; it contains side effects in a Shadow instance and replays fixtures in the Parity suite.
 _Avoid_: mock, dry-run mode, fake claude
+
+**Parity suite**:
+The offline test suite that feeds the same inputs to the TS daemon and the Rust Daemon and requires the same observable outputs, apart from registered divergences; passing it on the release candidate is cutover gate G1.
+_Avoid_: regression tests, golden tests, compat tests
+
+**Divergence registry**:
+The list (`parity/divergences.toml`) of every intended difference between TS and Rust behaviour, each citing the closed ticket that decided it; an uncovered mismatch, or an entry no fixture hits, fails the Parity suite.
+_Avoid_: allowlist, known failures, exceptions
 
 **Stability window**:
 The N consecutive incident-free days of Zero on the Rust Daemon that gate deleting the TS code from `main`.
