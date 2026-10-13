@@ -885,3 +885,11 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
   - `.deb` versions use `~rc.N`, because dpkg sorts `-rc.1` above the final release.
   - The `.deb` must `Depends: ca-certificates`, because the static musl binary has no OS CA store.
   - NSIS compares the full semver when upgrading.
+
+### From [Verify whether Claude Code's Bash tool runs commands in their own process group](https://github.com/Winter-wub/claudeclaw/issues/47)
+
+- **What the probe found** (2 real calls): on macOS every Bash-tool command, foreground or `run_in_background`, runs in its **own** process group, and `&` children are reparented to launchd. Settle never reaches them, so its default is unchanged. On Windows the Job object still stops them.
+- **Background tasks keep the run alive:** `claude --print` stays alive after its `result` while a background task runs, which ends in the run timeout. So:
+  - `runner` sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in every spawn.
+  - A `result` read before a timeout wins: the run counts as successful, not as a timeout.
+  - TERM-before-KILL is an invariant, because SIGKILL orphans background tasks.
