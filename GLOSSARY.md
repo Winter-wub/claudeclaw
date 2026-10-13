@@ -43,3 +43,22 @@ _Avoid_: client, session, user
 **API token**:
 A named, scope-limited, revocable credential that lets automation on another machine call a narrow part of the Management API.
 _Avoid_: apiToken (the legacy single setting it replaces), password, key
+
+## Cutover
+
+**Zero**:
+The maintainer's own Daemon instance; the reference install whose cutover and Stability window gate switching `main` to Rust.
+_Avoid_: prod, the live bot
+
+**Shadow instance**:
+A Daemon run against a scrubbed copy of a live data dir with its own test bot, so it never shares writable state, session IDs or the bot token with the live Daemon.
+_Avoid_: staging, canary, mirror
+
+**Recorder launcher**:
+A Launcher script that records the argv it receives and returns a canned stream-json result instead of running Claude Code, used to contain side effects and simulate failures.
+_Avoid_: mock, dry-run mode, fake claude
+
+**Stability window**:
+The N consecutive incident-free days of Zero on the Rust Daemon that gate deleting the TS code from `main`.
+_Avoid_: burn-in, soak period
+
