@@ -45,6 +45,7 @@ Display this help information to the user:
 ```markdown
 ---
 schedule: "0 9 * * *"
+recurring: true
 ---
 Your prompt here. Claude will run this at the scheduled time.
 ```
