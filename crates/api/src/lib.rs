@@ -4,6 +4,7 @@
 //! the error envelope, the route constants with their Deadlines, and the committed
 //! `openapi.json`. No tokio, axum or IO (architecture §4).
 
+pub mod adapter;
 pub mod deadline;
 pub mod error;
 pub mod export;
@@ -16,10 +17,13 @@ pub mod scope;
 pub mod scopes;
 pub mod sessions;
 pub mod settings;
+pub mod status;
+pub mod supervisor;
 pub mod turns;
 pub mod usage;
 mod wire;
 
+pub use adapter::{AdapterState, Transport};
 pub use deadline::{Call, Deadline};
 pub use error::{ApiError, ErrorBody, ErrorCode};
 pub use permission::TokenPermission;
@@ -30,6 +34,8 @@ pub use scope::Scope;
 pub use scopes::ScopeLauncher;
 pub use sessions::{ScopeSession, SessionStatus};
 pub use settings::SecretState;
+pub use status::{DaemonStatus, Health, Problem, ProblemKind, RunLocale};
+pub use supervisor::{DaemonReachability, RunRegistry, SupervisorStatus};
 pub use turns::{
     AttachmentUpload, SessionCompacted, TurnAccepted, TurnAgentState, TurnEvent, TurnOutcome,
     TurnPurpose, TurnRecord, TurnRequest, TurnSession, TurnState,
@@ -57,6 +63,9 @@ struct ApiDoc;
 /// per module, in management-api §2 order.
 pub fn openapi() -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
+    doc.merge(adapter::Doc::openapi());
+    doc.merge(status::Doc::openapi());
+    doc.merge(supervisor::Doc::openapi());
     doc.merge(turns::Doc::openapi());
     doc.merge(scopes::Doc::openapi());
     doc.merge(sessions::Doc::openapi());
