@@ -24,6 +24,18 @@ _Avoid_: bot, integration, channel (when meaning the transport)
 One inbound message or scheduled prompt handed to the Daemon for a Scope, queued behind that Scope's earlier Turns.
 _Avoid_: request, job (when meaning a chat message), task
 
+**Give-up**:
+The Watchdog's final stop after more than 5 Worker crashes in 10 minutes: it records the give-up, DMs the owner and exits, and nothing restarts the Daemon until a person chooses Restart anyway.
+_Avoid_: crash, fatal stop, shutdown
+
+**Crash record**:
+The bounded history of recent Worker crashes (time, exit, reported reason, redacted stderr tail) that the Watchdog keeps in its status file and the Management API serves.
+_Avoid_: crash report, crash log, core dump
+
+**Last-known snapshot**:
+The Desktop app's own cached copy of a Daemon's status, jobs and recent log lines, shown read-only and time-labelled while that Daemon is not answering.
+_Avoid_: offline mode, stale data, mirror
+
 **Launcher**:
 The path to a single runnable executable that the Daemon invokes in place of `claude`, passing the normal `claude` argv. It carries no name and no environment of its own; any wrapping (such as `ccs <profile>`) and its env live in the user's script.
 _Avoid_: wrapper, runtime, provider, profile
