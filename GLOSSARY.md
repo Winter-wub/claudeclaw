@@ -44,6 +44,10 @@ _Avoid_: shell env, GUI PATH, daemon PATH, launchd PATH
 The per-run file under `daemon/tmp/` holding the text the Daemon appends to Claude Code's system prompt, passed as `--append-system-prompt-file` and deleted when the run is reaped.
 _Avoid_: ASP file, prompt file, temp prompt
 
+**Statusline**:
+The one line Claude Code shows under its prompt in an interactive session opened in a Daemon's project dir, rendered by `claudeclaw statusline` from the Management API's status (or the offline status when the Daemon is down).
+_Avoid_: status bar, state.json, statusline.cjs (TS 1.x artefacts)
+
 **Launcher**:
 The path to a single runnable executable that the Daemon invokes in place of `claude`, passing the normal `claude` argv. It carries no name and no environment of its own; any wrapping (such as `ccs <profile>`) and its env live in the user's script.
 _Avoid_: wrapper, runtime, provider, profile
