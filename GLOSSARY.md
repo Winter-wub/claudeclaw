@@ -278,6 +278,20 @@ _Avoid_: track, ring, beta channel
 A `v2.X.Y-rc.N` release; its tag runs gate G1 (`parity-rc` plus a fresh capture check), and it is the build a Shadow instance and Day 0 run.
 _Avoid_: RC build, preview, beta
 
+## Verification
+
+**Verification register**:
+The committed `verification/checks.toml` listing every behaviour that needs proof beyond unit tests, with where it runs, what proves it and the gate it blocks; enforced by `cargo xtask verify` and the release workflow.
+_Avoid_: test plan, QA checklist
+
+**Known gap**:
+A Verification register entry the project does not verify on real hardware or by hand; every release's notes list it under "Not verified in this release".
+_Avoid_: unverified item, TODO, caveat
+
+**Self-test**:
+The Desktop app's hidden `--selftest` modes that run headless against the real bundle in CI, inside a temp dir, never touching known Daemons.
+_Avoid_: smoke mode, test mode, debug flag
+
 ## Cutover
 
 **Zero**:
