@@ -52,6 +52,14 @@ _Avoid_: ASP file, prompt file, temp prompt
 The one line Claude Code shows under its prompt in an interactive session opened in a Daemon's project dir, rendered by `claudeclaw statusline` from the Management API's status (or the offline status when the Daemon is down).
 _Avoid_: status bar, state.json, statusline.cjs (TS 1.x artefacts)
 
+**Auto-compact**:
+The Daemon's recovery for a resumed session's timed-out Turn: run `/compact` on the session with its own shorter timeout, then re-run the Turn once; done at most once per Failing stretch.
+_Avoid_: compaction retry, auto-summary, compact-on-timeout
+
+**Failing stretch**:
+A session's Turns since its last successful Turn; the Auto-compact budget and the Timeout breaker's time limit are measured over it, and a successful Turn or a session change ends it.
+_Avoid_: streak, outage, failure window
+
 **Timeout breaker**:
 The opt-in per-session guard that stops the Daemon auto-compacting and retrying a timed-out Turn once that (Scope, Launcher) session has timed out too often in a row or for too long; it never refuses or delays a Turn and closes on the session's next successful Turn.
 _Avoid_: watchdog (reserved for the process; TS's `watchdog.*` keys), circuit breaker, kill switch
