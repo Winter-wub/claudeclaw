@@ -450,3 +450,8 @@ For the coordinator to carry into the architecture spec and the listed tickets:
 - `PairingStart` gains `pairing_string`.
 - `device.paired` and `device.revoked` raise owner notices.
 - CLI: `pair --host <name>`. `pair --no-wait --json` prints the full `PairingStart`. The human-readable output ends with the Pairing string on its own line.
+
+### From [Specify the desktop app's own diagnostics and long API calls](https://github.com/Winter-wub/claudeclaw/issues/40)
+
+- `sessions.compact` becomes a Turn: it returns 202, with progress over SSE and an optional `?wait`. The app never uses `?wait`.
+- Every route has an `api::Deadline`. New error: `504 deadline_exceeded`.
