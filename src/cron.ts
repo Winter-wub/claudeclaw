@@ -21,7 +21,15 @@ function matchCronField(field: string, value: number): boolean {
   return false;
 }
 
+/** A schedule must have exactly five fields: minute hour day-of-month month day-of-week. */
+export function isValidCronExpr(expr: string): boolean {
+  return expr.trim().split(/\s+/).length === 5;
+}
+
 export function cronMatches(expr: string, date: Date, timezoneOffsetMinutes = 0): boolean {
+  // A malformed expression used to throw here, inside the scheduler tick, which skipped
+  // every remaining job for that tick. Job loading rejects these; never match defensively.
+  if (!isValidCronExpr(expr)) return false;
   const [minute, hour, dayOfMonth, month, dayOfWeek] = expr.trim().split(/\s+/);
   const shifted = shiftDateToOffset(date, timezoneOffsetMinutes);
   const d = {
