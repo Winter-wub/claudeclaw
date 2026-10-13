@@ -68,6 +68,18 @@ _Avoid_: streak, outage, failure window
 The opt-in per-session guard that stops the Daemon auto-compacting and retrying a timed-out Turn once that (Scope, Launcher) session has timed out too often in a row or for too long; it never refuses or delays a Turn and closes on the session's next successful Turn.
 _Avoid_: watchdog (reserved for the process; TS's `watchdog.*` keys), circuit breaker, kill switch
 
+**Awake time**:
+Time during which the machine and the Daemon's process were actually running; sleep, hibernation and a stopped process don't count. Run timeouts, the Hang kill and Stalls are measured in it; scheduler fire times use the wall clock.
+_Avoid_: uptime, CPU time, monotonic time, elapsed time
+
+**Resume**:
+The Worker noticing, from a 10-second or larger gap between its Awake clock and a suspend-counting clock, that it was not running (sleep, dark wake, VM pause, stopped process); it triggers the Wake grace and a schedule re-check.
+_Avoid_: wake event, wakeup, power event
+
+**Wake grace**:
+After a Resume, a running run's guarantee of at least 120 seconds more Awake time before its timeout, capped at 120 seconds extra over the run's lifetime.
+_Avoid_: grace period, timeout extension, sleep grace
+
 **Hang kill**:
 The Watchdog killing a Worker that has not answered its liveness ping for 45 seconds of awake time; recorded and counted as a crash (`cause: hung`).
 _Avoid_: timeout, health check failure, watchdog timeout
@@ -139,6 +151,18 @@ _Avoid_: old session, archived session
 **Attach**:
 The Desktop app adopting an already-running Daemon (e.g. one started from the CLI), so the app watches and revives it instead of starting a second one.
 _Avoid_: connect (for this meaning), adopt, take over
+
+**Transcript**:
+Claude Code's own JSONL record of a session at `<Config dir>/projects/<project dir>/<session id>.jsonl`, which the Daemon only reads (for Chat history) and never writes, copies or prunes.
+_Avoid_: run log, chat log, history file, session file
+
+**Config dir**:
+The directory where Claude Code keeps its settings, credentials and Transcripts: `CLAUDE_CONFIG_DIR` if set, else `~/.claude`. A Launcher may change it; the Daemon learns it from each run's `init` event.
+_Avoid_: profile dir, session namespace, home, claude dir
+
+**Cost baseline**:
+A session's cumulative Claude Code cost and per-model tokens after its last Daemon run; a resumed run's cost is its reported cumulative minus this baseline.
+_Avoid_: running total, session cost (for the per-run figure)
 
 ## Logs
 
