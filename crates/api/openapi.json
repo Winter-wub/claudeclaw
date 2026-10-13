@@ -1,0 +1,125 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ClaudeClaw Management API",
+    "description": "The Daemon's HTTP/JSON + SSE API, served on the local socket or pipe and, when enabled, on the pinned-TLS remote listener.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "1"
+  },
+  "paths": {},
+  "components": {
+    "schemas": {
+      "ApiError": {
+        "type": "object",
+        "description": "`{\"error\": {\"code\", \"message\", \"hint\", \"details\"}}`.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "type": "string",
+            "description": "Never echoes a Launcher's arguments, a secret or request content (#8, #23 D6)."
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "details": {
+            "type": "object",
+            "description": "Code-specific fields, e.g. `current` for `revision_mismatch`.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ErrorCode": {
+        "type": "string",
+        "enum": [
+          "bad_request",
+          "invalid_scope",
+          "invalid_cursor",
+          "unauthorized",
+          "unknown_device",
+          "device_revoked",
+          "pairing_code_invalid",
+          "missing_permission",
+          "local_only",
+          "not_found",
+          "transcript_not_found",
+          "revision_mismatch",
+          "job_exists",
+          "agent_exists",
+          "session_in_use",
+          "remote_disabled",
+          "plan_changed",
+          "use_job_frontmatter",
+          "export_busy",
+          "pairing_expired",
+          "payload_too_large",
+          "job_invalid",
+          "launcher_not_runnable",
+          "ts_only_key",
+          "unknown_key",
+          "invalid_value",
+          "invalid_permission_set",
+          "exe_check_failed",
+          "invalid_host",
+          "revision_required",
+          "internal",
+          "export_leak",
+          "daemon_starting",
+          "daemon_stopping",
+          "deadline_exceeded",
+          "insufficient_storage"
+        ]
+      },
+      "Revision": {
+        "type": "string",
+        "description": "The first 16 hex digits of SHA-256 over the file's bytes. Send it back as `If-Match`.",
+        "pattern": "^[0-9a-f]{16}$"
+      },
+      "Scope": {
+        "type": "string",
+        "description": "A Scope: `global`, `discord:<id>` (channel or thread), `job:<name>` (`<agent>/<stem>` for an agent's job) or `agent:<name>`.",
+        "examples": [
+          "global",
+          "discord:1234",
+          "job:researcher/paper-digest"
+        ],
+        "pattern": "^(global|discord:[0-9]+|job:[^/]+(/[^/]+)?|agent:[^/]+)$"
+      },
+      "TokenPermission": {
+        "type": "string",
+        "enum": [
+          "send",
+          "jobs:run",
+          "status:read",
+          "logs:read",
+          "runs:content"
+        ]
+      }
+    }
+  }
+}

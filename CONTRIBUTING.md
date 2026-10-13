@@ -48,6 +48,7 @@ The Rust workspace (`crates/`, `xtask/`) runs the same checks as CI:
 cargo fmt --all --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo xtask deps        # the crate dependency rules, architecture §3.1
+cargo xtask openapi --check   # crates/api/openapi.json is current; `cargo xtask openapi` rewrites it
 cargo test --locked
 cargo deny --locked check bans licenses sources
 ```
