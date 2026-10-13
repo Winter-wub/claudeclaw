@@ -9,8 +9,12 @@ The long-running `claudeclaw` process that owns the scheduler, the chat adapters
 _Avoid_: server, bot, service
 
 **Launcher**:
-The single runnable executable, plus an env overlay, that the Daemon invokes in place of `claude`, receiving the normal `claude` argv. Any wrapping such as `ccs <profile>` lives in a user-owned script that the Launcher points at.
-_Avoid_: wrapper, runtime, provider
+The path to a single runnable executable that the Daemon invokes in place of `claude`, passing the normal `claude` argv. It carries no name and no environment of its own; any wrapping (such as `ccs <profile>`) and its env live in the user's script.
+_Avoid_: wrapper, runtime, provider, profile
+
+**Scope**:
+The context a Launcher choice and a session attach to: a thread, a channel, a job, or the global default. A thread inherits from its parent channel, and the channel from global.
+_Avoid_: context, target
 
 **Plugin shim**:
 The Claude Code plugin's slash commands and skills, each of which only calls the `claudeclaw` binary on PATH and holds no logic of its own.
