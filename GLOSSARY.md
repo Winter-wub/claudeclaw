@@ -76,6 +76,20 @@ _Avoid_: old session, archived session
 The Desktop app adopting an already-running Daemon (e.g. one started from the CLI), so the app watches and revives it instead of starting a second one.
 _Avoid_: connect (for this meaning), adopt, take over
 
+## Logs
+
+**Daemon log**:
+The Worker's and Watchdog's own structured JSONL logs under `daemon/logs/`, recording what the Daemon did by identifiers, counts and outcomes, never secrets or prompt or message content.
+_Avoid_: daemon.log (TS's stdout file), system log, trace
+
+**Run log**:
+The markdown record of one Claude Code run in `logs/<name>-<iso>.log` (TS layout), which may hold that run's prompt and output but never secrets.
+_Avoid_: job log, transcript, output file
+
+**Run index**:
+The Rust-only append-only list of finished and Refused runs (`daemon/runs/<YYYY-MM>.jsonl`), one structured record per run linking to its Run log; back-filled from TS run logs.
+_Avoid_: run history file, run database, sibling file
+
 ## Jobs
 
 **Job**:
