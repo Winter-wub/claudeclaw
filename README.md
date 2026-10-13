@@ -133,7 +133,7 @@ ClaudeClaw 2.0 is a Rust rewrite, planned in the open before any code is written
 Further reading:
 
 - [GLOSSARY.md](GLOSSARY.md): the project's vocabulary
-- [Architecture spec](https://github.com/Winter-wub/claudeclaw/blob/spec/architecture/docs/spec/architecture.md)
+- [Architecture spec](docs/spec/architecture.md) and [Management API](docs/spec/management-api.md)
 - Research: [TS daemon contract](https://github.com/Winter-wub/claudeclaw/blob/research/ts-daemon-contract/docs/research/ts-daemon-contract.md), [Rust crates](https://github.com/Winter-wub/claudeclaw/blob/research/rust-crates/docs/research/rust-crates.md), [Claude Code launchers](https://github.com/Winter-wub/claudeclaw/blob/research/claude-code-launchers/docs/research/claude-code-launchers.md)
 
 ## Features
