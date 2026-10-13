@@ -688,3 +688,10 @@ These belong to the first implementation PRs and to #18's suite.
   - One new Tauri command, `daemon_offline_logs(daemon)`, which runs the bundled `claudeclaw logs --offline --json` with a fixed argv. This is the only read path outside the Management API.
   - Offline process actions go through the bundled `claudeclaw start` / `stop`.
 - **Example systemd unit:** `Restart=on-failure`, `RestartPreventExitStatus=70 73`.
+
+### From [Choose the parity test strategy](https://github.com/Winter-wub/claudeclaw/issues/18)
+
+- **New workspace member `crates/parity`** (`publish = false`, never released). It holds the `claudeclaw-recorder` binary and the differential test harness. A top-level `parity/` directory holds the corpus, scenarios, generated fixtures, `divergences.toml` and the bun generators.
+- **New `xtask deps` rule:** `parity → core, runner, store, jobs, ts-compat, chat, discord, api`. Nothing depends on `parity`.
+- **The `discord` adapter** takes a `DiscordEndpoints { gateway, rest }` constructor argument so replay can redirect it. It is not a settings key.
+- **Test tooling:** `proptest`, `similar-asserts`, tokio's paused clock and axum's `ws` feature. No snapshot crate.
