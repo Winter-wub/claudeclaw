@@ -806,3 +806,13 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
   - Once open, the breaker skips auto-compact and retry, but never refuses a Turn. It closes on the session's next successful Turn.
 - **`ts-compat::import`:** a "renamed settings" step.
 - **Logging events:** `session.breaker_open` (WARN), `session.breaker_closed` (INFO), `run.recovery_skipped` (INFO), `settings.legacy_key` (WARN). Each needs a `FIELD_CLASSES` entry.
+
+### From [Decide whether auto-compact on timeout stays unbounded by default](https://github.com/Winter-wub/claudeclaw/issues/33)
+
+- **§7 settings:** a new key `auto_compact {enabled, timeout_secs}`.
+  - Defaults: enabled, with `timeout_secs = min(300, run timeout)`.
+  - Auto-compact runs at most once per Failing stretch, i.e. between successful Turns.
+  - The Timeout breaker stays opt-in.
+- **Run index:** `RunRecord` gains `purpose` (`turn | compact | retry`), so compact and retry runs get their own records. The retry also writes its own Run log.
+- **First-start import** writes nothing for this. A Zero-like dir ends up with the breaker off and bounded compact on.
+- **Parity:** five `divergences.toml` rows, listed in the ticket comment.
