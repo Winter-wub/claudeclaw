@@ -893,3 +893,10 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
   - `runner` sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in every spawn.
   - A `result` read before a timeout wins: the run counts as successful, not as a timeout.
   - TERM-before-KILL is an invariant, because SIGKILL orphans background tasks.
+
+### From [Decide how to pair another Device with a headless daemon](https://github.com/Winter-wub/claudeclaw/issues/41)
+
+- **Pairing code:** 8 Crockford base32 characters, shown as `XXXX-XXXX`, valid for 10 minutes and burned after 5 wrong attempts. Codes are only created locally.
+- **Pairing string:** `pair` also prints `ccpair1.<code>.<fingerprint>.<port>[.<host>]`. `api` gains a shared `PairingString` parser.
+- **Desktop app:** `pair(host, code)` becomes `pair(PairTarget)`. With a Pairing string, the app pins the key before it connects.
+- **§5 `core::notify`:** every `device.paired` and `device.revoked` raises an owner notice.
