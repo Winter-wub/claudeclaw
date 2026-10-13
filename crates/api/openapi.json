@@ -922,6 +922,422 @@
           }
         }
       },
+      "DaemonEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "health",
+              "problems",
+              "kind"
+            ],
+            "properties": {
+              "health": {
+                "$ref": "#/components/schemas/DaemonHealth"
+              },
+              "problems": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "status.changed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "transport",
+              "state",
+              "kind"
+            ],
+            "properties": {
+              "transport": {
+                "$ref": "#/components/schemas/Transport"
+              },
+              "state": {
+                "$ref": "#/components/schemas/AdapterState"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "adapter.changed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "turn_id",
+              "scope",
+              "position",
+              "kind"
+            ],
+            "properties": {
+              "turn_id": {
+                "type": "string"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
+              },
+              "position": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "turn.queued"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "run_id",
+              "turn_id",
+              "scope",
+              "launcher",
+              "kind"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "string"
+              },
+              "turn_id": {
+                "type": "string"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
+              },
+              "job": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "launcher": {
+                "type": "string",
+                "description": "`direct` or the Launcher's file name."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "run.started"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "record",
+              "kind"
+            ],
+            "properties": {
+              "record": {
+                "$ref": "#/components/schemas/RunRecord"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "run.finished"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "turn_id",
+              "scope",
+              "outcome",
+              "kind"
+            ],
+            "properties": {
+              "turn_id": {
+                "type": "string"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/TurnOutcome"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "turn.finished"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "job",
+              "turn_id",
+              "catch_up",
+              "kind"
+            ],
+            "properties": {
+              "job": {
+                "type": "string"
+              },
+              "turn_id": {
+                "type": "string"
+              },
+              "catch_up": {
+                "type": "boolean",
+                "description": "A missed fire run late by catch-up."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "job.fired"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "job",
+              "change",
+              "source",
+              "revision",
+              "kind"
+            ],
+            "properties": {
+              "job": {
+                "type": "string"
+              },
+              "change": {
+                "$ref": "#/components/schemas/JobChange"
+              },
+              "source": {
+                "$ref": "#/components/schemas/JobChangeSource"
+              },
+              "revision": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Revision",
+                    "description": "The file's revision now; `null` once it is deleted."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "carried_from": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The old name, when an identical-bytes rename carried the job's state over."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "job.changed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "notice_kind",
+              "title",
+              "kind"
+            ],
+            "properties": {
+              "notice_kind": {
+                "$ref": "#/components/schemas/NoticeKind"
+              },
+              "scope": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Scope"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "job": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "notice"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "scope",
+              "launcher",
+              "kind"
+            ],
+            "properties": {
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
+              },
+              "launcher": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "session.changed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "scope",
+              "kind"
+            ],
+            "properties": {
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "launcher.changed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "launcher",
+              "ok",
+              "kind"
+            ],
+            "properties": {
+              "launcher": {
+                "type": "string"
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "launcher.tested"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The key paths whose values changed, never the values.",
+            "required": [
+              "changed_keys",
+              "kind"
+            ],
+            "properties": {
+              "changed_keys": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "settings.reloaded"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "device_id",
+              "kind"
+            ],
+            "properties": {
+              "device_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "device.paired"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "device_id",
+              "kind"
+            ],
+            "properties": {
+              "device_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "device.revoked"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "record_step",
+              "kind"
+            ],
+            "properties": {
+              "record_step": {
+                "type": "string",
+                "description": "The `ImportRecord.steps[].step` that finished."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "import.finished"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "One `event: daemon` on `events.stream`, tagged by `kind`. Content-free: no reply text,\nprompts, job bodies or heartbeat output."
+      },
       "DaemonHealth": {
         "type": "string",
         "enum": [
@@ -1831,6 +2247,14 @@
           }
         }
       },
+      "GapReason": {
+        "type": "string",
+        "enum": [
+          "lagged",
+          "restart",
+          "evicted"
+        ]
+      },
       "GaveUp": {
         "type": "object",
         "description": "`supervisor.json.gave_up`: the Give-up that holds every later start (#20 D2, #45 D1–D2).",
@@ -2329,6 +2753,25 @@
             "description": "The slot it would catch up; `null` when it wouldn't fire."
           }
         }
+      },
+      "JobChange": {
+        "type": "string",
+        "enum": [
+          "created",
+          "updated",
+          "deleted",
+          "invalid",
+          "restored"
+        ]
+      },
+      "JobChangeSource": {
+        "type": "string",
+        "enum": [
+          "api",
+          "daemon",
+          "external",
+          "startup"
+        ]
       },
       "JobCheck": {
         "type": "object",
@@ -3779,6 +4222,24 @@
           }
         }
       },
+      "LogStreamHello": {
+        "type": "object",
+        "description": "`event: hello` on `logs.stream` (management-api §2.9, #23 D5): also the newest `seq` the\nring holds, so `Last-Event-ID` resumes and backfill can be lined up.",
+        "required": [
+          "boot_id",
+          "last_seq"
+        ],
+        "properties": {
+          "boot_id": {
+            "type": "string"
+          },
+          "last_seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "LogSummary": {
         "type": "object",
         "description": "`logs.summary`: badges for the Logs and Status screens (management-api §2.9; #23 D5, #44).",
@@ -3906,6 +4367,21 @@
           "missing",
           "not_file",
           "not_executable"
+        ]
+      },
+      "NoticeKind": {
+        "type": "string",
+        "enum": [
+          "job_failed",
+          "job_finished",
+          "run_refused",
+          "job_invalid",
+          "settings_invalid",
+          "update_available",
+          "import_done",
+          "heartbeat_output",
+          "job_frontmatter_restored",
+          "disk_low"
         ]
       },
       "NotifyOnly": {
@@ -5855,6 +6331,39 @@
           }
         }
       },
+      "StreamGap": {
+        "type": "object",
+        "description": "`event: gap`, sent on every SSE stream instead of skipping events silently\n(management-api §1.6, §2.2; #23 D5). After it, the app re-fetches what it shows.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "$ref": "#/components/schemas/GapReason"
+          },
+          "missed": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many events were lost, when the server knows.",
+            "minimum": 0
+          }
+        }
+      },
+      "StreamHello": {
+        "type": "object",
+        "description": "`event: hello`, the first frame of `events.stream` and `turns.events` (management-api §1.6).\nA client that sees a new `boot_id` re-fetches.",
+        "required": [
+          "boot_id"
+        ],
+        "properties": {
+          "boot_id": {
+            "type": "string"
+          }
+        }
+      },
       "SupervisorState": {
         "type": "string",
         "enum": [
@@ -6555,6 +7064,136 @@
           "running",
           "done"
         ]
+      },
+      "UiLogEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "screen",
+              "name",
+              "frames",
+              "message_bytes",
+              "event"
+            ],
+            "properties": {
+              "screen": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string",
+                "description": "The JS error's `name`, e.g. `TypeError`."
+              },
+              "frames": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Stack frames as `assets/index-<hash>.js:<line>:<col>`."
+              },
+              "message_bytes": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "event": {
+                "type": "string",
+                "enum": [
+                  "ui.error"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "screen",
+              "name",
+              "frames",
+              "message_bytes",
+              "event"
+            ],
+            "properties": {
+              "screen": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "frames": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "message_bytes": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "event": {
+                "type": "string",
+                "enum": [
+                  "ui.unhandled_rejection"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "screen",
+              "name",
+              "frames",
+              "message_bytes",
+              "event"
+            ],
+            "properties": {
+              "screen": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "frames": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "message_bytes": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "event": {
+                "type": "string",
+                "enum": [
+                  "ui.render_error"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "screen",
+              "event"
+            ],
+            "properties": {
+              "screen": {
+                "type": "string"
+              },
+              "event": {
+                "type": "string",
+                "enum": [
+                  "ui.screen"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "One event the webview logs through `app_log(batch)`, tagged by `event`. JS error\nmessages are never sent, only the error's `name`, its stack `frames` and the message's\nsize."
       },
       "UpdateInfo": {
         "type": "object",
