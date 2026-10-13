@@ -674,3 +674,17 @@ These belong to the first implementation PRs and to #18's suite.
 8. **No statusline in Rust v2.0.** `.claude/statusline.cjs` and `state.json` aren't written; a follow-up should decide whether status moves to the API only. Today's TS statusline goes away at cutover.
 9. **`known-daemons.json` outside the project dir** (§9.2). It is a small new global file, needed only for `status --all` / `stop --all`.
 10. **twilight's `rustls-platform-verifier`** (OS trust store) instead of bundled webpki roots.
+
+## Amendments
+
+### From [Decide what the app can show when a daemon is not answering](https://github.com/Winter-wub/claudeclaw/issues/20)
+
+- **`supervisor.json` / `api::SupervisorStatus`** takes the #20 D2 shape: `schema`, `state`, `watchdog`, `worker.boot_id`, `next_restart_at`, `stop.by`, `gave_up`, and `crashes[]` (the last 20) with a redacted `stderr_tail`. It carries across Watchdog starts, and `/v1/status` embeds it along with `boot_id`.
+- **Watchdog**
+  - Retries `try_lock` on `daemon.lock` for up to 1s before exiting 73. Without the retry, a concurrent read-only lock probe from the app made a starting Watchdog exit 73 by mistake; with it, the Watchdog got the lock after ~222ms.
+  - Redacts known secret values in stderr tails.
+- **`client::offline_status`** adds a read-only, non-creating shared-lock probe and returns `api::DaemonReachability` (the 9 local / 7 remote states of #20 D1).
+- **Desktop crate**
+  - One new Tauri command, `daemon_offline_logs(daemon)`, which runs the bundled `claudeclaw logs --offline --json` with a fixed argv. This is the only read path outside the Management API.
+  - Offline process actions go through the bundled `claudeclaw start` / `stop`.
+- **Example systemd unit:** `Restart=on-failure`, `RestartPreventExitStatus=70 73`.
