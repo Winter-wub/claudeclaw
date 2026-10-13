@@ -10,8 +10,10 @@ pub mod deadline;
 pub mod discord;
 pub mod error;
 pub mod export;
+pub mod import;
 pub mod jobs;
 pub mod logs;
+pub mod pairing;
 pub mod permission;
 pub mod revision;
 pub mod routes;
@@ -35,7 +37,11 @@ pub use discord::{
     DiscordOverview, DiscordThread, DiscordUser, FireResult, HireRequest, HireResult,
 };
 pub use error::{ApiError, ErrorBody, ErrorCode};
+pub use import::{ImportApplyRequest, ImportPlan, ImportRecord, ImportResult};
 pub use jobs::{ImportFinding, JobDetail, JobSummary};
+pub use pairing::{
+    ApiTokenInfo, DeviceInfo, PairingCode, PairingStart, PairingState, PairingString, TokenCreated,
+};
 pub use permission::TokenPermission;
 pub use revision::Revision;
 pub use routes::Route;
@@ -83,5 +89,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
     doc.merge(usage::Doc::openapi());
     doc.merge(discord::Doc::openapi());
     doc.merge(agents::Doc::openapi());
+    doc.merge(import::Doc::openapi());
+    doc.merge(pairing::Doc::openapi());
     doc
 }
