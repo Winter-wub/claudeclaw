@@ -79,6 +79,11 @@ Docs-only and other non-shipped changes do not require these bumps.
 - **In-flight guard.** A long job is no longer re-fired every tick while it is still running.
 - **Every Discord attachment reaches Claude.** PDFs, JSON, spreadsheets, archives and any other file, plus every image or text file after the first, are saved to `.claude/claudeclaw/inbox/discord/` and passed to Claude as paths. Files over 25 MB are reported instead of downloaded.
 - **Tool reactions on Discord.** While Claude works, your message collects one emoji per kind of tool used (📖 read, ✏️ edit, 💻 shell, 🌐 web, 🤖 subagent, 🧩 skill, 🔌 MCP, 🛠️ other). They are cleared when the reply is posted.
+- **Fixes:**
+  - Session-recovery retries work again: they no longer wrap `claude` twice.
+  - A malformed cron schedule is rejected when jobs load instead of crashing the scheduler tick.
+  - `/jobs create` writes `recurring: true`, so new jobs no longer run once and vanish from the schedule.
+  - `/jobs run` no longer starts a daemon by accident.
 
 ### v1.0.26 — Allowlist behavior change (Telegram & Discord)
 
