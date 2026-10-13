@@ -862,3 +862,13 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
   - Per-run `cost_usd` = reported cumulative − Cost baseline, because `total_cost_usd` is session-cumulative on `--resume`.
   - Usage rows carry `cost_trust` (`api_list` / `managed` / `estimate`) and are never "corrected".
 - **Examples:** `examples/launchers/config-dir.{sh,cmd}`.
+
+### From [Decide the minimum Claude Code version and how it is checked](https://github.com/Winter-wub/claudeclaw/issues/42)
+
+- **Minimum Claude Code:** `MIN_CLAUDE_CODE = 2.1.214`.
+  - It counts the flag `--append-system-prompt-file` (2.0.33), `api_error_status` (2.1.110), `refreshInterval` (2.1.97), and upstream stream-json fixes for multibyte corruption and missing results.
+  - The version comes from the `init` event's `claude_code_version`. There is no `--version` probe.
+  - Below the minimum, runs still go ahead with a `claude_code_outdated` warning.
+- **Unsupported flag:** `unknown option` from Claude Code is a Refused run (`claude_code_unsupported_flag`).
+- **Recorded:** the version is stored on `RunRecord`, `LauncherInfo`, Test launcher results and the Bug-report export.
+- **CI `cc-compat`:** installs real Claude Code from npm at the minimum and at latest, nightly, and drives the runner's real argv against a Fake API.
