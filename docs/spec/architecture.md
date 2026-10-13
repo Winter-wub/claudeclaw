@@ -752,3 +752,35 @@ These belong to the first implementation PRs and to #18's suite.
   - `statusline` always exits 0, within a 500ms budget; Claude Code blanks the line on a non-zero exit.
   - It reads `/v1/status`, falling back to `offline_status`.
   - Its dir order puts stdin's `workspace.project_dir` before `CLAUDECLAW_DIR`.
+
+### From [Decide whether the Watchdog detects a hung Worker](https://github.com/Winter-wub/claudeclaw/issues/27)
+
+- **Control pipe messages:**
+  - Watchdog → Worker: `ping{seq}`.
+  - Worker → Watchdog: `pong{seq}`, `stalled{…}`, `draining{intentional}`.
+  - Unknown message types are logged and ignored.
+- **Worker:**
+  - The control link runs on two OS threads, `control-r` and `control-w`, started before any other work.
+  - A pong is written only after a probe task spawned with `Handle::spawn` has run.
+  - The runtime has `worker_threads(max(4, available_parallelism))`.
+  - 45s after stdin EOF, the Worker calls `std::process::abort()` (the orphan deadline).
+  - A `core::health` stall monitor watches these beacons: `scheduler`, `adapter:<transport>` and `outcome_sink` (5 min each), and `turn:<scope>` (the run timeout + 5s + 2 min).
+  - `clippy::disallowed_methods` bans `std::fs::*` and `std::thread::sleep` in the async crates.
+- **Watchdog:**
+  - Ticks every 1s and accrues silence in steps capped at 2s, so sleep never counts.
+  - After 45s of silence it SIGKILLs / `TerminateProcess`es the Worker pid. This is a Hang kill, counted as a crash.
+  - After `draining` or `shutdown`, the Worker has a 45s exit deadline.
+  - On SIGTERM the Watchdog drains the Worker, then exits 75.
+  - `CLAUDECLAW_HANG_KILL=0` disables the Hang kill.
+- **`supervisor.json`:** `crashes[]` gains `cause` (`exit | fatal | stall | hung | shutdown_overrun`) and `counted`. The change is additive, so `schema` stays 1. `/v1/status` gains `health[]`.
+
+### From [Decide how the Watchdog reaps a crashed Worker's Claude runs](https://github.com/Winter-wub/claudeclaw/issues/29)
+
+- **Who reaps:** whoever holds `daemon.lock` with no live Worker reaps first. That is the Watchdog after every Worker exit and at start-up, and `claudeclaw stop` on every path.
+- **Run registry** (`daemon/state/runs.json`): every spawned process with an OS start-time stamp, read from `proc_pidinfo` on macOS and `/proc` `starttime` + `boot_id` on Linux.
+- **Unix reaping:** only process groups proved ours get TERM, then 5s, then KILL. Unprovable leftovers are reported, not killed.
+- **Windows reaping:** process-wrap's kill-on-close Job objects end runs in the kernel.
+- **The lock is never released while a Worker lives.** A new Watchdog waits up to 35s for an orphaned Worker, then kills it. This closes the two-Worker gap.
+- **Re-runs after a crash:**
+  - An interrupted job re-runs only when the reap proved its run dead.
+  - A crash-interrupted chat gets the resend reply.
