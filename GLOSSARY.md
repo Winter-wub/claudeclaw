@@ -141,7 +141,7 @@ A named, revocable credential, limited by its Token permissions, that lets autom
 _Avoid_: apiToken (the legacy single setting it replaces), password, key
 
 **Refused run**:
-A run the Daemon declines to start because its Launcher is missing, not executable or fails to start; nothing runs and no other Launcher is tried.
+A run the Daemon declines to start, or that ends before Claude Code accepts it: its Launcher is missing, not executable or fails to start (including exit 126/127 with no output), or the Claude Code it runs rejects the Daemon's argv (`unknown option`). Nothing runs and no other Launcher is tried.
 _Avoid_: failed run (when nothing ran), fallback
 
 **Parked session**:
@@ -163,6 +163,18 @@ _Avoid_: profile dir, session namespace, home, claude dir
 **Cost baseline**:
 A session's cumulative Claude Code cost and per-model tokens after its last Daemon run; a resumed run's cost is its reported cumulative minus this baseline.
 _Avoid_: running total, session cost (for the per-run figure)
+
+**Minimum Claude Code**:
+The oldest Claude Code version the Daemon supports (2.1.214), set by the newest flag, stream field or upstream stream-json fix the runner depends on; below it, runs still go ahead with a `claude_code_outdated` warning.
+_Avoid_: required version, CC floor, supported version (alone)
+
+**Fake API**:
+A local HTTP server answering Claude Code's Messages API with canned responses, so real Claude Code can run with no provider and no key; used by cc-compat and ticket probes.
+_Avoid_: mock provider, stub server, Recorder launcher (which replaces Claude Code, not the provider)
+
+**cc-compat**:
+The CI workflow that installs real Claude Code at the Minimum Claude Code and at latest and drives the runner's real argv against a Fake API; the only CI job that runs real Claude Code.
+_Avoid_: e2e suite, live test, integration tests, Parity suite (which compares Rust to TS)
 
 ## Logs
 
