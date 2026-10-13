@@ -739,3 +739,16 @@ These belong to the first implementation PRs and to #18's suite.
 - **New `store::export` module** and `api` types `ExportManifest`, `LogExport`, `FIELD_CLASSES` and `SETTINGS_VALUE_ALLOW`. No new crate.
 - **CI check:** every new Daemon-log event field needs a `FIELD_CLASSES` entry.
 - **Desktop app:** gets a second fixed-argv offline command, `daemon_offline_export`, which runs `logs export --offline --out <path>`. This is read-only apart from the user-chosen output file.
+
+### From [Decide whether the Rust daemon keeps the Claude Code statusline](https://github.com/Winter-wub/claudeclaw/issues/24)
+
+- **§9.1 file ownership:**
+  - `.claude/settings.json` gets a new owner class, **C** (Claude Code's file); Rust patches only its `statusLine` key.
+  - `state.json` is not written, and a leftover is deleted at Worker start.
+  - `.claude/statusline.cjs` stays owner T; Rust never writes or deletes it.
+- **§13 point 8** is superseded.
+- **`store`** gains `Layout::claude_settings()` and the single-key `statusLine` patch. `ts-compat` gains a `leftovers` module (TS-value migration and `state.json` removal) that lives for all of 2.x, like the import.
+- **CLI:** `claudeclaw statusline`, plus `statusline install [--force]` and `statusline uninstall`, with the CLI-only error `statusline_foreign`.
+  - `statusline` always exits 0, within a 500ms budget; Claude Code blanks the line on a non-zero exit.
+  - It reads `/v1/status`, falling back to `offline_status`.
+  - Its dir order puts stdin's `workspace.project_dir` before `CLAUDECLAW_DIR`.
