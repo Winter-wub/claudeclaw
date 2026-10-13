@@ -917,3 +917,4 @@ One line per closed ticket on the wayfinder map [#2](https://github.com/Winter-w
 - [#48](https://github.com/Winter-wub/claudeclaw/issues/48) Decide whether direct runs follow a CLAUDE_CONFIG_DIR set outside the daemon — §4 `runner::launcher`; [`management-api.md`](management-api.md) §2.1
 - [#50](https://github.com/Winter-wub/claudeclaw/issues/50) Decide whether a new or rescheduled job catches up a slot that passed before it existed — §4 `scheduler`
 - [#69](https://github.com/Winter-wub/claudeclaw/issues/69) Decide how FIELD_CLASSES covers the App log's fields _(maintainer decision)_ — §4 `claudeclaw-api` (Field class tables, catalogues, CI checks), §9 Logs, §14 Packaging traps
+- [#70](https://github.com/Winter-wub/claudeclaw/issues/70) Decide the one spelling of the clear-give-up value _(maintainer decision)_ — §4 Watchdog status file (`stop.by`, `give_ups[]`); [`management-api.md`](management-api.md) §1.1
