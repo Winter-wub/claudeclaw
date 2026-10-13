@@ -10,6 +10,7 @@ pub mod permission;
 pub mod revision;
 pub mod routes;
 pub mod scope;
+mod wire;
 
 pub use deadline::{Call, Deadline};
 pub use error::{ApiError, ErrorBody, ErrorCode};
@@ -35,6 +36,9 @@ struct ApiDoc;
 
 /// The document `crates/api/openapi.json` holds: the API's info and every wire type's schema.
 /// The server adds its routes' paths to it (architecture §4, `claudeclaw-server`).
+///
+/// Each resource module's `Doc` is merged here with `doc.merge(module::Doc::openapi())`, one line
+/// per module, in management-api §2 order.
 pub fn openapi() -> utoipa::openapi::OpenApi {
     ApiDoc::openapi()
 }

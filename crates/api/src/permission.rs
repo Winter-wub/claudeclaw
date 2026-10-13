@@ -1,43 +1,25 @@
 //! Token permissions (management-api §1.3): the final v1 set, in colon form (#22).
 
-use serde::{Deserialize, Serialize};
-use utoipa::openapi::RefOr;
-use utoipa::openapi::schema::Schema;
-use utoipa::{PartialSchema, ToSchema};
+use crate::wire::wire_enum;
 
-use crate::error::string_enum;
-
-/// What an API token may do beyond `any` routes. Everything not granted here is `admin` only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum TokenPermission {
-    /// `turns.create` into the `global` Scope only, plus reading Turns this token created. The
-    /// legacy `apiToken` is imported with exactly this (#17 §3).
-    #[serde(rename = "send")]
-    Send,
-    /// `jobs.run`, plus reading Turns this token created.
-    #[serde(rename = "jobs:run")]
-    JobsRun,
-    /// Content-free reads: health, status, events, job lists and checks, update info.
-    #[serde(rename = "status:read")]
-    StatusRead,
-    /// Daemon logs, the Bug-report export, the Run index and the audit log (#23 D5, #28).
-    #[serde(rename = "logs:read")]
-    LogsRead,
-    /// Run log bodies. Only granted together with `logs:read`.
-    #[serde(rename = "runs:content")]
-    RunsContent,
-    /// A permission added later in v1 that this build doesn't know (§1.1). Never granted, and
-    /// not in the schema.
-    #[serde(other)]
-    Unknown,
+wire_enum! {
+    /// What an API token may do beyond `any` routes. Everything not granted here is `admin` only.
+    pub enum TokenPermission {
+        /// `turns.create` into the `global` Scope only, plus reading Turns this token created.
+        /// The legacy `apiToken` is imported with exactly this (#17 §3).
+        Send = "send",
+        /// `jobs.run`, plus reading Turns this token created.
+        JobsRun = "jobs:run",
+        /// Content-free reads: health, status, events, job lists and checks, update info.
+        StatusRead = "status:read",
+        /// Daemon logs, the Bug-report export, the Run index and the audit log (#23 D5, #28).
+        LogsRead = "logs:read",
+        /// Run log bodies. Only granted together with `logs:read`.
+        RunsContent = "runs:content",
+    }
 }
 
-use TokenPermission::*;
-
 impl TokenPermission {
-    /// Every permission a token can hold.
-    pub const KNOWN: &[TokenPermission] = &[Send, JobsRun, StatusRead, LogsRead, RunsContent];
-
     /// Whether `tokens.create` accepts this set: `runs:content` needs `logs:read`, and an unknown
     /// permission is never granted (`422 invalid_permission_set` otherwise).
     pub fn valid_set(allow: &[TokenPermission]) -> bool {
@@ -47,19 +29,12 @@ impl TokenPermission {
     }
 }
 
-impl PartialSchema for TokenPermission {
-    fn schema() -> RefOr<Schema> {
-        string_enum(Self::KNOWN)
-    }
-}
-
-impl ToSchema for TokenPermission {}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
+    use TokenPermission::*;
 
     #[test]
     fn wire_names_are_the_colon_form() {
