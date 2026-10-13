@@ -12,6 +12,61 @@
   "paths": {},
   "components": {
     "schemas": {
+      "AgenticMode": {
+        "type": "object",
+        "description": "One `agentic.modes[]` entry (TS `AgenticMode`).",
+        "required": [
+          "name",
+          "model",
+          "keywords"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "phrases": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "AgenticSettings": {
+        "type": "object",
+        "description": "`agentic`: model routing by the message's wording (TS `AgenticConfig`).",
+        "required": [
+          "enabled",
+          "defaultMode",
+          "modes"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "defaultMode": {
+            "type": "string"
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgenticMode"
+            }
+          }
+        }
+      },
       "ApiError": {
         "type": "object",
         "description": "`{\"error\": {\"code\", \"message\", \"hint\", \"details\"}}`.",
@@ -21,6 +76,205 @@
         "properties": {
           "error": {
             "$ref": "#/components/schemas/ErrorBody"
+          }
+        }
+      },
+      "AutoCompactLast": {
+        "type": "object",
+        "description": "One auto-compact run (#33).",
+        "required": [
+          "at",
+          "outcome",
+          "duration_ms"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/CompactOutcome"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AutoCompactSettings": {
+        "type": "object",
+        "description": "`auto_compact` (#33).",
+        "required": [
+          "enabled",
+          "timeout_secs"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "timeout_secs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "AutoCompactState": {
+        "type": "object",
+        "description": "The session's Auto-compact budget (#33): one compact per stretch of failures.",
+        "required": [
+          "spent_at",
+          "last"
+        ],
+        "properties": {
+          "spent_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When this stretch's compact was spent; `null` while the budget is unspent."
+          },
+          "last": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AutoCompactLast",
+                "description": "The session's last auto-compact; `null` when it never had one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ClaudeCodeSeen": {
+        "type": "object",
+        "description": "The Claude Code version seen through a Launcher (#42 D5).",
+        "required": [
+          "version",
+          "seen_at",
+          "outdated"
+        ],
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "seen_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "outdated": {
+            "type": "boolean",
+            "description": "Below the minimum ClaudeClaw supports (#42 D4)."
+          }
+        }
+      },
+      "CompactOutcome": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "failed",
+          "timeout",
+          "interrupted",
+          "rate_limited"
+        ]
+      },
+      "DiscordSettings": {
+        "type": "object",
+        "description": "`discord` (TS `DiscordConfig`). Snowflakes are strings.",
+        "required": [
+          "token",
+          "allowedUserIds",
+          "listenChannels",
+          "listenGuilds",
+          "allowedGuilds",
+          "channelAllowedUserIds",
+          "channelNames",
+          "imageOutputRoots",
+          "streaming"
+        ],
+        "properties": {
+          "token": {
+            "$ref": "#/components/schemas/SecretState"
+          },
+          "allowedUserIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "listenChannels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "listenGuilds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "allowedGuilds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "channelAllowedUserIds": {
+            "type": "object",
+            "description": "Channel snowflake → extra user snowflakes allowed in that channel.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "channelNames": {
+            "type": "object",
+            "description": "Channel snowflake → friendly name.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "imageOutputRoots": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Absolute path prefixes images may be uploaded from."
+          },
+          "streaming": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DiskSettings": {
+        "type": "object",
+        "description": "`disk`: the free-space floors (#44).",
+        "required": [
+          "warnFreeMiB",
+          "minFreeMiB"
+        ],
+        "properties": {
+          "warnFreeMiB": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "minFreeMiB": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       },
@@ -95,10 +349,597 @@
           "insufficient_storage"
         ]
       },
+      "ExcludeWindow": {
+        "type": "object",
+        "description": "A `heartbeat.excludeWindows[]` entry (TS `HeartbeatExcludeWindow`).",
+        "required": [
+          "start",
+          "end"
+        ],
+        "properties": {
+          "days": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "Weekdays, 0 = Sunday; every day when absent."
+          },
+          "start": {
+            "type": "string",
+            "description": "`HH:MM`."
+          },
+          "end": {
+            "type": "string",
+            "description": "`HH:MM`."
+          }
+        }
+      },
+      "FallbackSettings": {
+        "type": "object",
+        "description": "`fallback`: the model and token a rate-limited run retries with (TS `ModelConfig`).",
+        "required": [
+          "model",
+          "api"
+        ],
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "api": {
+            "$ref": "#/components/schemas/SecretState"
+          }
+        }
+      },
+      "HeartbeatSettings": {
+        "type": "object",
+        "description": "`heartbeat` (TS `HeartbeatConfig`).",
+        "required": [
+          "enabled",
+          "interval",
+          "prompt",
+          "excludeWindows"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "interval": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Minutes between heartbeats.",
+            "minimum": 0
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "excludeWindows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExcludeWindow"
+            }
+          }
+        }
+      },
+      "InboxSettings": {
+        "type": "object",
+        "description": "`inbox`: attachment retention (#44). `null` keeps forever / sets no cap.",
+        "required": [
+          "keepDays",
+          "maxMiB"
+        ],
+        "properties": {
+          "keepDays": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "maxMiB": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "InheritedFrom": {
+        "type": "string",
+        "description": "A Scope, or `default` when nothing in the chain sets one.",
+        "examples": [
+          "default",
+          "discord:1234"
+        ],
+        "pattern": "^(default|global|discord:[0-9]+|job:[^/]+(/[^/]+)?|agent:[^/]+)$"
+      },
+      "LastTest": {
+        "type": "object",
+        "description": "The summary of a Launcher's last test (management-api §2.5, #42).",
+        "required": [
+          "ok",
+          "tested_at",
+          "failed_checks",
+          "claude_code_version"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "tested_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "failed_checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LauncherCheckId"
+            }
+          },
+          "claude_code_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Claude Code version the test saw; `null` when it saw none (#42 D5)."
+          }
+        }
+      },
+      "LauncherCheck": {
+        "type": "object",
+        "description": "One Test launcher check (management-api §2.5). Its `detail` never shows the Launcher's\narguments (#8).",
+        "required": [
+          "id",
+          "ok",
+          "advisory",
+          "detail"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/LauncherCheckId"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "advisory": {
+            "type": "boolean",
+            "description": "An advisory check never makes the result's `ok` false (#39 D6)."
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      },
+      "LauncherCheckId": {
+        "type": "string",
+        "enum": [
+          "runnable",
+          "print_stream_json",
+          "clean_stdout",
+          "system_prompt",
+          "result_event",
+          "prompt_stdin",
+          "claude_code_version",
+          "transcript",
+          "stragglers"
+        ]
+      },
+      "LauncherInfo": {
+        "type": "object",
+        "description": "One Launcher card (management-api §2.5).",
+        "required": [
+          "launcher",
+          "builtin",
+          "runnable",
+          "last_test",
+          "used_by",
+          "claude_code"
+        ],
+        "properties": {
+          "launcher": {
+            "type": "string"
+          },
+          "builtin": {
+            "type": "boolean",
+            "description": "`true` for `direct`."
+          },
+          "runnable": {
+            "$ref": "#/components/schemas/Runnable"
+          },
+          "last_test": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LastTest",
+                "description": "The last Test launcher result, kept in `daemon/state/launcher-tests.json`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "used_by": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LauncherUse"
+            }
+          },
+          "claude_code": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClaudeCodeSeen",
+                "description": "The Claude Code version seen through this Launcher, from its newest run or test (#42)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "LauncherOverview": {
+        "type": "object",
+        "description": "`launchers.list` → the Launchers screen (management-api §2.5, #22 `launcher list`).",
+        "required": [
+          "default",
+          "picker",
+          "launchers",
+          "scopes"
+        ],
+        "properties": {
+          "default": {
+            "type": "string",
+            "description": "The default Launcher: `\"direct\"` or an absolute path."
+          },
+          "picker": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`direct` plus every path in use (#8)."
+          },
+          "launchers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LauncherInfo"
+            }
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScopeLauncher"
+            }
+          }
+        }
+      },
+      "LauncherSet": {
+        "type": "object",
+        "description": "`launchers.set` body (management-api §2.5).",
+        "required": [
+          "launcher"
+        ],
+        "properties": {
+          "launcher": {
+            "type": "string",
+            "description": "`\"direct\"` or an absolute path."
+          }
+        }
+      },
+      "LauncherSetResult": {
+        "type": "object",
+        "description": "`launchers.set` → the Scope's new Launcher and what happened to its session (management-api\n§2.5).",
+        "required": [
+          "scope",
+          "launcher",
+          "effective",
+          "session"
+        ],
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "launcher": {
+            "type": "string"
+          },
+          "effective": {
+            "type": "string"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionStart",
+            "description": "`resumed` when the Scope already had a session with this Launcher (#8)."
+          }
+        }
+      },
+      "LauncherSource": {
+        "type": "string",
+        "enum": [
+          "settings",
+          "job_frontmatter",
+          "default"
+        ]
+      },
+      "LauncherTestRequest": {
+        "type": "object",
+        "description": "`launchers.test` body (management-api §2.5, #40). A request for a Launcher already under test\njoins that test.",
+        "properties": {
+          "launcher": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Launcher to test; the effective Launcher of `scope` when absent."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope",
+            "default": "global"
+          },
+          "timeout_s": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds the test run may take, 10–600 (`422 invalid_value` otherwise).",
+            "default": 120,
+            "maximum": 600,
+            "minimum": 10
+          }
+        }
+      },
+      "LauncherTestResult": {
+        "type": "object",
+        "description": "`launchers.test` → every check's result (management-api §2.5, #22 `launcher test`).",
+        "required": [
+          "launcher",
+          "scope",
+          "ok",
+          "checks",
+          "claude_code",
+          "duration_ms",
+          "tested_at"
+        ],
+        "properties": {
+          "launcher": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "`false` if any check that isn't `advisory` failed."
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LauncherCheck"
+            }
+          },
+          "claude_code": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClaudeCodeSeen",
+                "description": "The Claude Code version the test run reported; `null` when it reported none (#42)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tested_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "LauncherUnset": {
+        "type": "object",
+        "description": "`launchers.unset` → the Launcher the Scope now inherits (management-api §2.5).",
+        "required": [
+          "scope",
+          "effective",
+          "inherited_from"
+        ],
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "effective": {
+            "type": "string"
+          },
+          "inherited_from": {
+            "$ref": "#/components/schemas/InheritedFrom"
+          }
+        }
+      },
+      "LauncherUse": {
+        "type": "object",
+        "description": "A Scope that uses a Launcher (management-api §2.5).",
+        "required": [
+          "scope",
+          "label",
+          "via"
+        ],
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "label": {
+            "type": "string"
+          },
+          "via": {
+            "$ref": "#/components/schemas/LauncherVia"
+          }
+        }
+      },
+      "LauncherVia": {
+        "type": "string",
+        "enum": [
+          "settings",
+          "job_frontmatter"
+        ]
+      },
+      "LoggingSettings": {
+        "type": "object",
+        "description": "`logging` (#23 D1, #44).",
+        "required": [
+          "level",
+          "daemonKeepFiles",
+          "daemonMaxDailyMiB",
+          "daemonMaxTotalMiB",
+          "runLogKeepDays",
+          "auditKeepMonths"
+        ],
+        "properties": {
+          "level": {
+            "type": "string",
+            "description": "A tracing `EnvFilter` directive, e.g. `info,claudeclaw_discord=debug`."
+          },
+          "daemonKeepFiles": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "daemonMaxDailyMiB": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "daemonMaxTotalMiB": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "runLogKeepDays": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "`null` keeps Run logs forever.",
+            "minimum": 0
+          },
+          "auditKeepMonths": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "`null` keeps the audit log forever.",
+            "minimum": 0
+          }
+        }
+      },
+      "NotRunnable": {
+        "type": "string",
+        "enum": [
+          "missing",
+          "not_file",
+          "not_executable"
+        ]
+      },
+      "RemoteSettings": {
+        "type": "object",
+        "description": "`remote`: the pinned-TLS remote listener (architecture §7). Changed only locally.",
+        "required": [
+          "enabled",
+          "listen",
+          "port"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "listen": {
+            "type": "string",
+            "description": "The address it binds."
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "Restarted": {
+        "type": "string",
+        "enum": [
+          "discord",
+          "remote_listener"
+        ]
+      },
       "Revision": {
         "type": "string",
         "description": "The first 16 hex digits of SHA-256 over the file's bytes. Send it back as `If-Match`.",
         "pattern": "^[0-9a-f]{16}$"
+      },
+      "RunLocaleSetting": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "inherit"
+        ]
+      },
+      "RunPathSettings": {
+        "type": "object",
+        "description": "`run_path`: where runs get their PATH (#26).",
+        "required": [
+          "source",
+          "prepend"
+        ],
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/RunPathSource"
+          },
+          "prepend": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Absolute dirs put first on the Run PATH."
+          }
+        }
+      },
+      "RunPathSource": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "login_shell",
+          "registry",
+          "inherit"
+        ]
+      },
+      "Runnable": {
+        "type": "object",
+        "description": "Whether a Launcher can be run now (management-api §2.5, #8).",
+        "required": [
+          "ok",
+          "reason"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "reason": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NotRunnable",
+                "description": "Why not; `null` when `ok`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       },
       "Scope": {
         "type": "string",
@@ -110,6 +951,686 @@
         ],
         "pattern": "^(global|discord:[0-9]+|job:[^/]+(/[^/]+)?|agent:[^/]+)$"
       },
+      "ScopeInfo": {
+        "type": "object",
+        "description": "One Scope for the Chat picker and the \"Who uses which launcher\" table (management-api §2.5).\nListed: `global`, every Discord channel or thread with config, a session or an override,\nevery job and every agent.",
+        "required": [
+          "scope",
+          "kind",
+          "label",
+          "parent",
+          "launcher",
+          "session",
+          "queue"
+        ],
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ScopeKind"
+          },
+          "label": {
+            "type": "string",
+            "description": "A display name. The app shows it and copies `scope` (#16)."
+          },
+          "parent": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Scope",
+                "description": "The Scope this one inherits from: a thread's channel. `null` when there is none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "launcher": {
+            "$ref": "#/components/schemas/ScopeLauncher"
+          },
+          "session": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ScopeSession",
+                "description": "The session of the effective Launcher; `null` when there is none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "queue": {
+            "$ref": "#/components/schemas/ScopeQueue"
+          }
+        }
+      },
+      "ScopeKind": {
+        "type": "string",
+        "enum": [
+          "global",
+          "channel",
+          "thread",
+          "job",
+          "agent"
+        ]
+      },
+      "ScopeLauncher": {
+        "type": "object",
+        "description": "One row of the scope → effective-Launcher table (management-api §2.5, #8, #22). Also embedded\nin `DiscordChannel` and `AgentInfo`.",
+        "required": [
+          "scope",
+          "set_here",
+          "effective",
+          "inherited_from",
+          "source"
+        ],
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "set_here": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The override set on this Scope itself: `\"direct\"`, an absolute path, or `null`."
+          },
+          "effective": {
+            "type": "string",
+            "description": "The Launcher a Turn here runs with."
+          },
+          "inherited_from": {
+            "$ref": "#/components/schemas/InheritedFrom",
+            "description": "Where `effective` comes from: a Scope up the chain (thread → channel → global), or\n`default`. Names this Scope itself when `set_here` or the job frontmatter sets it."
+          },
+          "source": {
+            "$ref": "#/components/schemas/LauncherSource"
+          }
+        }
+      },
+      "ScopeList": {
+        "type": "object",
+        "description": "`scopes.list` → `{scopes}` (management-api §2.5).",
+        "required": [
+          "scopes"
+        ],
+        "properties": {
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScopeInfo"
+            }
+          }
+        }
+      },
+      "ScopeQueue": {
+        "type": "object",
+        "description": "A Scope's Turn queue (management-api §2.5).",
+        "required": [
+          "running",
+          "depth"
+        ],
+        "properties": {
+          "running": {
+            "type": "boolean",
+            "description": "Whether a Turn is running in the Scope now."
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Turns waiting behind it.",
+            "minimum": 0
+          }
+        }
+      },
+      "ScopeSession": {
+        "type": "object",
+        "description": "The session summary embedded in `ScopeInfo`, `DiscordThread` and `AgentInfo`\n(management-api §2.5, §2.7, §2.8).",
+        "required": [
+          "launcher",
+          "session_id",
+          "status"
+        ],
+        "properties": {
+          "launcher": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SessionStatus"
+          }
+        }
+      },
+      "SecretState": {
+        "type": "object",
+        "description": "How a secret reads: whether it is set, never its value (management-api §2.6, #13).",
+        "required": [
+          "set"
+        ],
+        "properties": {
+          "set": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SecurityLevel": {
+        "type": "string",
+        "enum": [
+          "locked",
+          "strict",
+          "moderate",
+          "unrestricted"
+        ]
+      },
+      "SecuritySettings": {
+        "type": "object",
+        "description": "`security` (TS `SecurityConfig`).",
+        "required": [
+          "level",
+          "allowedTools",
+          "disallowedTools"
+        ],
+        "properties": {
+          "level": {
+            "$ref": "#/components/schemas/SecurityLevel"
+          },
+          "allowedTools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "disallowedTools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SessionContext": {
+        "type": "object",
+        "description": "How full a session's context window is (#39 D4).",
+        "required": [
+          "used_tokens",
+          "window"
+        ],
+        "properties": {
+          "used_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The last main-thread turn's input + cache read + cache creation tokens.",
+            "minimum": 0
+          },
+          "window": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The model's context window.",
+            "minimum": 0
+          }
+        }
+      },
+      "SessionDeleted": {
+        "type": "object",
+        "description": "`sessions.delete` → `{deleted}` (management-api §2.5).",
+        "required": [
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SessionDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SessionRecord"
+          },
+          {
+            "type": "object",
+            "required": [
+              "context"
+            ],
+            "properties": {
+              "context": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/SessionContext",
+                    "description": "From the session's latest Daemon run; `null` until an imported session's first Rust Turn."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "description": "`sessions.get` → the session plus its context meter (management-api §2.5, #39 D4)."
+      },
+      "SessionList": {
+        "type": "object",
+        "description": "`sessions.list` → `{sessions}` (management-api §2.5).",
+        "required": [
+          "sessions"
+        ],
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionRecord"
+            }
+          }
+        }
+      },
+      "SessionRecord": {
+        "type": "object",
+        "description": "One (Scope, Launcher) session (management-api §2.5, #22, #32, #33).",
+        "required": [
+          "scope",
+          "scope_label",
+          "launcher",
+          "session_id",
+          "status",
+          "created_at",
+          "last_used_at",
+          "turns",
+          "first_message",
+          "prune_at",
+          "timeout_breaker",
+          "auto_compact"
+        ],
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "scope_label": {
+            "type": "string"
+          },
+          "launcher": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SessionStatus"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "turns": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Turns run in this session.",
+            "minimum": 0
+          },
+          "first_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The session's first message, cut to 160 chars. `null` when it isn't known (an imported\nsession)."
+          },
+          "prune_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the 30-day prune removes it; `null` while it is `in_use`."
+          },
+          "timeout_breaker": {
+            "$ref": "#/components/schemas/TimeoutBreakerState"
+          },
+          "auto_compact": {
+            "$ref": "#/components/schemas/AutoCompactState"
+          }
+        }
+      },
+      "SessionReset": {
+        "type": "object",
+        "description": "`sessions.reset` → the cleared session and its backup, mirror included (management-api\n§2.5, #22).",
+        "required": [
+          "scope",
+          "launcher",
+          "backup"
+        ],
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "launcher": {
+            "type": "string"
+          },
+          "backup": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the session was backed up; `null` when there was no session to back up."
+          }
+        }
+      },
+      "SessionResetRequest": {
+        "type": "object",
+        "description": "`sessions.reset` body (management-api §2.5).",
+        "properties": {
+          "launcher": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The session's Launcher; the Scope's current one when absent."
+          }
+        }
+      },
+      "SessionSettings": {
+        "type": "object",
+        "description": "`session`: rotation of the global session (TS `SessionConfig`).",
+        "required": [
+          "autoRotate",
+          "maxMessages",
+          "maxAgeHours",
+          "summaryPath"
+        ],
+        "properties": {
+          "autoRotate": {
+            "type": "boolean"
+          },
+          "maxMessages": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "maxAgeHours": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "summaryPath": {
+            "type": "string",
+            "description": "The dir summaries are written to before a rotation; empty disables them."
+          }
+        }
+      },
+      "SessionStart": {
+        "type": "string",
+        "enum": [
+          "resumed",
+          "new"
+        ]
+      },
+      "SessionStatus": {
+        "type": "string",
+        "enum": [
+          "in_use",
+          "parked",
+          "orphaned"
+        ]
+      },
+      "Settings": {
+        "type": "object",
+        "description": "The typed view of the `settings.json` keys the Rust Daemon reads, after defaults\n(management-api §2.6, architecture §7). Existing keys keep TS's names and types\n(`src/config.ts`); Rust-only keys are new top-level keys (#14 rule 1). Unknown and TS-only\nkeys are never shown.",
+        "required": [
+          "timezone",
+          "model",
+          "api",
+          "fallback",
+          "agentic",
+          "heartbeat",
+          "discord",
+          "security",
+          "session",
+          "sessionTimeoutMs",
+          "timeouts",
+          "logging",
+          "remote",
+          "run_path",
+          "run_locale",
+          "timeout_breaker",
+          "auto_compact",
+          "transcript_roots",
+          "inbox",
+          "disk"
+        ],
+        "properties": {
+          "timezone": {
+            "type": "string",
+            "description": "An IANA zone name."
+          },
+          "model": {
+            "type": "string"
+          },
+          "api": {
+            "$ref": "#/components/schemas/SecretState",
+            "description": "The auth token runs get as `ANTHROPIC_AUTH_TOKEN`."
+          },
+          "fallback": {
+            "$ref": "#/components/schemas/FallbackSettings"
+          },
+          "agentic": {
+            "$ref": "#/components/schemas/AgenticSettings"
+          },
+          "heartbeat": {
+            "$ref": "#/components/schemas/HeartbeatSettings"
+          },
+          "discord": {
+            "$ref": "#/components/schemas/DiscordSettings"
+          },
+          "security": {
+            "$ref": "#/components/schemas/SecuritySettings"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionSettings"
+          },
+          "sessionTimeoutMs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A manual compact's timeout.",
+            "minimum": 0
+          },
+          "timeouts": {
+            "$ref": "#/components/schemas/TimeoutSettings"
+          },
+          "logging": {
+            "$ref": "#/components/schemas/LoggingSettings"
+          },
+          "remote": {
+            "$ref": "#/components/schemas/RemoteSettings"
+          },
+          "run_path": {
+            "$ref": "#/components/schemas/RunPathSettings"
+          },
+          "run_locale": {
+            "$ref": "#/components/schemas/RunLocaleSetting"
+          },
+          "timeout_breaker": {
+            "$ref": "#/components/schemas/TimeoutBreakerSettings"
+          },
+          "auto_compact": {
+            "$ref": "#/components/schemas/AutoCompactSettings"
+          },
+          "transcript_roots": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Absolute dirs searched for Transcripts when a run's Config dir isn't known (#39 D2)."
+          },
+          "inbox": {
+            "$ref": "#/components/schemas/InboxSettings"
+          },
+          "disk": {
+            "$ref": "#/components/schemas/DiskSettings"
+          }
+        }
+      },
+      "SettingsApplied": {
+        "type": "object",
+        "description": "`settings.update` → the new view, what changed and what was restarted (management-api §2.6).",
+        "required": [
+          "view",
+          "changed_keys",
+          "restarted"
+        ],
+        "properties": {
+          "view": {
+            "$ref": "#/components/schemas/SettingsView"
+          },
+          "changed_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Dotted paths of the keys whose value changed."
+          },
+          "restarted": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Restarted"
+            }
+          }
+        }
+      },
+      "SettingsPatch": {
+        "type": "object",
+        "description": "`settings.update` body: a JSON Merge Patch (RFC 7396) over the file's own key names\n(management-api §2.6, D10). A secret is set with a string and cleared with `null`.",
+        "additionalProperties": {},
+        "propertyNames": {
+          "type": "string"
+        }
+      },
+      "SettingsView": {
+        "type": "object",
+        "description": "`settings.get` → the typed view and its Revision (management-api §2.6).",
+        "required": [
+          "revision",
+          "settings",
+          "ts_only_keys",
+          "env_overrides"
+        ],
+        "properties": {
+          "revision": {
+            "$ref": "#/components/schemas/Revision",
+            "description": "Send it back as `If-Match` on `settings.update` (§1.5)."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/Settings"
+          },
+          "ts_only_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Dotted paths of TS-only keys present in the file (`web.port`, `apiToken`, …). They are\nread for import only and can't be written here (`422 ts_only_key`)."
+          },
+          "env_overrides": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Dotted paths of keys an env var wins over, e.g. `discord.token` for `DISCORD_TOKEN`."
+          }
+        }
+      },
+      "TimeoutBreakerSettings": {
+        "type": "object",
+        "description": "`timeout_breaker` (#32). Each limit is `null` when off; both `null` turns the breaker off.",
+        "required": [
+          "max_consecutive_timeouts",
+          "max_failing_seconds"
+        ],
+        "properties": {
+          "max_consecutive_timeouts": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "max_failing_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "TimeoutBreakerState": {
+        "type": "object",
+        "description": "The session's Timeout breaker (#32).",
+        "required": [
+          "consecutive_timeouts",
+          "failing_since",
+          "open",
+          "opened_at"
+        ],
+        "properties": {
+          "consecutive_timeouts": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "failing_since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The first timeout since the last success; `null` when there is none."
+          },
+          "open": {
+            "type": "boolean",
+            "description": "Open means no auto-compact and no retry until a Turn succeeds."
+          },
+          "opened_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "TimeoutSettings": {
+        "type": "object",
+        "description": "`timeouts`: run timeouts in minutes, by category (TS `TimeoutsConfig`).",
+        "required": [
+          "heartbeat",
+          "job",
+          "default"
+        ],
+        "properties": {
+          "heartbeat": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "job": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "default": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Chat and everything else.",
+            "minimum": 0
+          }
+        }
+      },
       "TokenPermission": {
         "type": "string",
         "enum": [
@@ -118,6 +1639,69 @@
           "status:read",
           "logs:read",
           "runs:content"
+        ]
+      },
+      "TranscriptMessage": {
+        "type": "object",
+        "description": "One Transcript message (management-api §2.5, #39).",
+        "required": [
+          "uuid",
+          "role",
+          "text",
+          "timestamp",
+          "tools"
+        ],
+        "properties": {
+          "uuid": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/TranscriptRole"
+          },
+          "text": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names of the tools the message called, in order."
+          }
+        }
+      },
+      "TranscriptPage": {
+        "type": "object",
+        "description": "`sessions.messages` → one page of a Transcript, newest first (management-api §1.6, §2.5, #39).",
+        "required": [
+          "messages",
+          "next"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptMessage"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `before` cursor of the next older page; `null` at the start."
+          }
+        }
+      },
+      "TranscriptRole": {
+        "type": "string",
+        "enum": [
+          "user",
+          "assistant"
         ]
       }
     }
