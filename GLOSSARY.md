@@ -226,6 +226,10 @@ _Avoid_: support bundle, diagnostics dump, crash report, debug zip
 A placeholder of the form `<kind>:#<n>` (e.g. `discord:#2`) standing for one real identifier everywhere inside one Bug-report export; numbering restarts per export, so two exports can't be linked.
 _Avoid_: hash, alias, anonymised ID, masked ID
 
+**Field class**:
+The rule a Bug-report export applies to one Daemon log or Run index field: kept as is, replaced by a Pseudonym, split as a Scope, kept or pseudonymised as a Principal, or sent through the free-text pass. For an App log field it is only a declaration that the field holds no owner identifier, because the App log is never scrubbed.
+_Avoid_: field rule, redaction class, sensitivity level
+
 **Housekeeping**:
 The Worker's one daily task that deletes files by the listed retention rules (Inbox age and cap, opt-in Run-log and audit retention, Run-index compaction, session-backup cap, orphaned Scope state); it deletes only files the Daemon wrote and can be previewed with `claudeclaw housekeeping --dry-run`.
 _Avoid_: cleanup, garbage collection, pruning job, reap (reserved for a gone Worker's runs), Settle

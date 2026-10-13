@@ -198,12 +198,17 @@ What these rules buy:
   - `SupervisorStatus` (the shape of `supervisor.json`) and `DaemonReachability` (the 9 local / 7 remote not-answering states, #20), because the client reads them for a stopped local Daemon (see `client`);
   - `RunRegistry`, the shape of `runs.json` (`worker`, `state`, `stamp`, `kill`, `purpose`, `origin`, `leftovers`, `reaped`; #29);
   - the `PairingString` parser, shared by the CLI and the app; its only output is `{code, fingerprint, port, host?}` (#41);
-  - the Bug-report export types `ExportManifest`, `LogExport`, `ExportSection`, `FIELD_CLASSES` and `SETTINGS_VALUE_ALLOW` (#28);
-  - the App log catalogue `log_event::app::*` and `UiLogEvent` (#40);
+  - the Bug-report export types `ExportManifest`, `LogExport`, `ExportSection`, `SETTINGS_VALUE_ALLOW` (#28), and the two Field class tables (#69):
+    - `FIELD_CLASSES` for Daemon log and Run index fields, which `store::export` scrubs by;
+    - `APP_FIELD_CLASSES` for App log fields, whose class can only be `Structural` or `Daemon`, because the App log is never scrubbed, only declared content-free (#40 D3);
+  - `PseudonymKind`, including `daemon`, used only in the Desktop app section (#40, #69);
+  - the event catalogues `log_event::daemon::*` and `log_event::app::*`, each event declared with its field list, and `UiLogEvent` (#40, #69);
   - `RunLocale` (#43).
 - Types derive `serde` + `utoipa::ToSchema`.
 - `crates/api/openapi.json` is generated and committed. `cargo xtask openapi --check` fails CI if it is stale. Snowflakes are `String` on the wire.
-- **CI check:** every Daemon-log event field needs a `FIELD_CLASSES` entry (#28).
+- **CI checks** (#28, #69):
+  - a `claudeclaw-api` test fails if a declared Daemon log field has no `FIELD_CLASSES` entry, or an App log field no `APP_FIELD_CLASSES` entry;
+  - the canary tests add a tracing layer that fails when an event emits a field outside its declared list. The Daemon side runs in the parity canary, the App side in #40's app leg.
 - **No** tokio, axum or IO.
 
 ### `claudeclaw-store`
@@ -669,7 +674,7 @@ Owner key:
 
 **Logs** (#23). Three logs. **Daemon logs** are content-free tracing JSONL with fixed level meanings, stable `event` names and span correlation; a binary-owned log sink stamps `seq`, reports dropped lines as `log.dropped` (the Worker channel is lossy at 128k lines), and mirrors WARN+ to the Worker's stderr so crash tails show the lead-up (#20). **Run logs** keep the TS layout and may hold content but never secrets. The **audit log** is the third.
 
-Daemon-log event names are stable, and each new event field needs a `FIELD_CLASSES` entry (§4 `api`). Later tickets added:
+Daemon-log event names are stable. Each event is declared with its fields in `log_event::daemon`, and each field needs a `FIELD_CLASSES` entry (§4 `api`, #69). Later tickets added:
 - #27: `worker.stalled` (ERROR), `watchdog.hang_kill_disabled` (WARN);
 - #29: `reap.start`, `run.reaped`, `reap.done`, `reap.orphan_worker`;
 - #32, #33: `session.breaker_open` (WARN), `session.breaker_closed` (INFO), `run.recovery_skipped` (INFO, with its reason), `settings.legacy_key` (WARN); `run.start` / `run.finish` gain `purpose`;
@@ -856,6 +861,7 @@ A throwaway probe (outside the repo, not committed) used rustc 1.95.0 on macOS a
 - `.deb` versions use `~rc.N`, because dpkg sorts `-rc.1` above the final release.
 - The `.deb` must `Depends: ca-certificates`, because the static musl binary has no OS CA store.
 - NSIS compares the full semver when upgrading.
+- Every release artefact (`build-cli` and `build-desktop`) is built with the same `--remap-path-prefix` flags: the workspace becomes `claudeclaw/` and the cargo registry `cargo/`. Panic locations, Crash-record `stderr_tail`s and Daemon log lines therefore never carry the build machine's paths, and the bundled-binary SHA-256 check still holds (#69).
 
 **Verification register** (#36). A committed `verification/checks.toml`, enforced by `cargo xtask verify` and `release.yml`, which refuses RC and stable tags while a blocking check is unwritten. Every behaviour that needs proof beyond unit tests is one row, with where it runs, what proves it, and its gate (merge / rc / Day 0 / none). A row is one of:
 - a CI check (Windows on `windows-2025`; Linux sleep in a QEMU q35 S3 guest);
@@ -910,3 +916,4 @@ One line per closed ticket on the wayfinder map [#2](https://github.com/Winter-w
 - [#47](https://github.com/Winter-wub/claudeclaw/issues/47) Verify whether Claude Code's Bash tool runs commands in their own process group — §4 `runner::spawn`, §12
 - [#48](https://github.com/Winter-wub/claudeclaw/issues/48) Decide whether direct runs follow a CLAUDE_CONFIG_DIR set outside the daemon — §4 `runner::launcher`; [`management-api.md`](management-api.md) §2.1
 - [#50](https://github.com/Winter-wub/claudeclaw/issues/50) Decide whether a new or rescheduled job catches up a slot that passed before it existed — §4 `scheduler`
+- [#69](https://github.com/Winter-wub/claudeclaw/issues/69) Decide how FIELD_CLASSES covers the App log's fields _(maintainer decision)_ — §4 `claudeclaw-api` (Field class tables, catalogues, CI checks), §9 Logs, §14 Packaging traps
