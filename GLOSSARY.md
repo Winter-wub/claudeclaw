@@ -49,7 +49,7 @@ The character-type setting the Worker gives every Launcher run: the inherited lo
 _Avoid_: run language, daemon locale, LANG default
 
 **System-prompt file**:
-The per-run file under `daemon/tmp/` holding the text the Daemon appends to Claude Code's system prompt, passed as `--append-system-prompt-file` and deleted when the run is reaped.
+The per-run file under `daemon/tmp/` holding the text the Daemon appends to Claude Code's system prompt, passed as `--append-system-prompt-file` and deleted when the run is settled or reaped.
 _Avoid_: ASP file, prompt file, temp prompt
 
 **Statusline**:
@@ -79,6 +79,14 @@ _Avoid_: hang (reserved for the whole Worker), freeze, deadlock
 **Run registry**:
 The Worker's live list of every Claude Code process it spawned, each with an OS start-time stamp, kept in `daemon/state/runs.json` and read to Reap after the Worker is gone.
 _Avoid_: active-runs (the TS counter file), process table, pid file
+
+**Straggler**:
+A process still in a run's process group or Job object after the run's leader has exited normally, typically the real server behind a wrapped MCP command.
+_Avoid_: orphan, zombie, leftover (reserved for what a Reap could not end), child
+
+**Settle**:
+The runner's end of every run after its leader exits: a 2-second grace, then TERM and KILL for any Stragglers (Job termination on Windows); the run leaves the Run registry and frees its Scope only once settled.
+_Avoid_: cleanup, reap (reserved for a gone Worker's runs), teardown
 
 **Reap**:
 To end a gone Worker's leftover runs; done by whoever holds `daemon.lock` with no live Worker, killing only the processes the Run registry proves are still the ones recorded.
