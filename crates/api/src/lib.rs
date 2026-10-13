@@ -10,6 +10,7 @@ pub mod permission;
 pub mod revision;
 pub mod routes;
 pub mod scope;
+pub mod turns;
 mod wire;
 
 pub use deadline::{Call, Deadline};
@@ -18,6 +19,10 @@ pub use permission::TokenPermission;
 pub use revision::Revision;
 pub use routes::Route;
 pub use scope::Scope;
+pub use turns::{
+    AttachmentUpload, SessionCompacted, TurnAccepted, TurnAgentState, TurnEvent, TurnOutcome,
+    TurnPurpose, TurnRecord, TurnRequest, TurnSession, TurnState,
+};
 
 use utoipa::OpenApi;
 
@@ -40,5 +45,7 @@ struct ApiDoc;
 /// Each resource module's `Doc` is merged here with `doc.merge(module::Doc::openapi())`, one line
 /// per module, in management-api §2 order.
 pub fn openapi() -> utoipa::openapi::OpenApi {
-    ApiDoc::openapi()
+    let mut doc = ApiDoc::openapi();
+    doc.merge(turns::Doc::openapi());
+    doc
 }
