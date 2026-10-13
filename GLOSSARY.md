@@ -31,3 +31,15 @@ _Avoid_: plugin (when meaning the daemon), extension
 **Desktop app**:
 The management application for Windows, macOS and Ubuntu that bundles the Daemon and manages a local or remote Daemon. It replaces the former Web UI.
 _Avoid_: Web UI, dashboard, GUI
+
+**Management API**:
+The single interface through which the Desktop app, the CLI and automation control a Daemon, reached over a local socket or, when enabled, a paired TLS connection.
+_Avoid_: Web API, server API, admin endpoint
+
+**Device**:
+A Desktop app installation that has been paired with a Daemon and holds its own revocable key for it.
+_Avoid_: client, session, user
+
+**API token**:
+A named, scope-limited, revocable credential that lets automation on another machine call a narrow part of the Management API.
+_Avoid_: apiToken (the legacy single setting it replaces), password, key
