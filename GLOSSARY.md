@@ -52,6 +52,10 @@ _Avoid_: ASP file, prompt file, temp prompt
 The one line Claude Code shows under its prompt in an interactive session opened in a Daemon's project dir, rendered by `claudeclaw statusline` from the Management API's status (or the offline status when the Daemon is down).
 _Avoid_: status bar, state.json, statusline.cjs (TS 1.x artefacts)
 
+**Timeout breaker**:
+The opt-in per-session guard that stops the Daemon auto-compacting and retrying a timed-out Turn once that (Scope, Launcher) session has timed out too often in a row or for too long; it never refuses or delays a Turn and closes on the session's next successful Turn.
+_Avoid_: watchdog (reserved for the process; TS's `watchdog.*` keys), circuit breaker, kill switch
+
 **Hang kill**:
 The Watchdog killing a Worker that has not answered its liveness ping for 45 seconds of awake time; recorded and counted as a crash (`cause: hung`).
 _Avoid_: timeout, health check failure, watchdog timeout
