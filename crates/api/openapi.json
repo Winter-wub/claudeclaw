@@ -322,6 +322,56 @@
           }
         }
       },
+      "ApiTokenInfo": {
+        "type": "object",
+        "description": "One API token (management-api §2.12, #13). Only its hash is stored.",
+        "required": [
+          "id",
+          "name",
+          "allow",
+          "created_at",
+          "last_used_at",
+          "legacy",
+          "source"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "allow": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TokenPermission"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "`null` when the token has never been used."
+          },
+          "legacy": {
+            "type": "boolean",
+            "description": "The token imported from the legacy `settings.apiToken` (#17 §3)."
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the token came from: `\"settings.apiToken\"` for the legacy token, `null` for one\nmade with `tokens.create`."
+          }
+        }
+      },
       "ArchiveReason": {
         "type": "string",
         "enum": [
@@ -1547,6 +1597,95 @@
           }
         }
       },
+      "DeviceInfo": {
+        "type": "object",
+        "description": "One paired Device (management-api §2.12, #13). Every Device is full admin in v1.",
+        "required": [
+          "id",
+          "label",
+          "fingerprint",
+          "created_at",
+          "last_seen_at",
+          "connected",
+          "current"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "The fingerprint of the Device cert's key."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_seen_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "`null` when the Device has not connected since it paired."
+          },
+          "connected": {
+            "type": "boolean",
+            "description": "Whether the Device has a live connection now."
+          },
+          "current": {
+            "type": "boolean",
+            "description": "Whether this is the calling Device."
+          }
+        }
+      },
+      "DeviceList": {
+        "type": "object",
+        "description": "`devices.list` → `{devices}` (management-api §2.12). Revoked Devices are tombstones in\n`devices.json` and are not listed.",
+        "required": [
+          "devices"
+        ],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceInfo"
+            }
+          }
+        }
+      },
+      "DeviceRevoked": {
+        "type": "object",
+        "description": "`devices.revoke` → `{revoked, disconnected}` (management-api §2.12). The Device is kept as a\ntombstone, so its cert then gets `401 device_revoked`.",
+        "required": [
+          "revoked",
+          "disconnected"
+        ],
+        "properties": {
+          "revoked": {
+            "type": "boolean"
+          },
+          "disconnected": {
+            "type": "boolean",
+            "description": "Whether a live connection of the Device was dropped."
+          }
+        }
+      },
+      "DeviceUpdate": {
+        "type": "object",
+        "description": "`devices.update`'s body: `{label}` (management-api §2.12).",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          }
+        }
+      },
       "DiagnosticSeverity": {
         "type": "string",
         "enum": [
@@ -2522,6 +2661,55 @@
           }
         }
       },
+      "ImportApplyRequest": {
+        "type": "object",
+        "description": "`import.apply`'s body (management-api §2.11). Every field is optional: an empty body\napplies every step to every job.",
+        "properties": {
+          "only": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ImportOnly"
+            },
+            "description": "Only these steps (`--only`)."
+          },
+          "jobs": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Only these jobs, by name (`jobs import <job>…`)."
+          },
+          "plan_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The previewed [`ImportPlan::plan_hash`]; `409 plan_changed` when it no longer matches."
+          }
+        }
+      },
+      "ImportClaudeCode": {
+        "type": "object",
+        "description": "The project's Claude Code files (#24 D3, D4).",
+        "required": [
+          "statusline",
+          "state_json"
+        ],
+        "properties": {
+          "statusline": {
+            "$ref": "#/components/schemas/StatuslineAction"
+          },
+          "state_json": {
+            "$ref": "#/components/schemas/StateJsonAction"
+          }
+        }
+      },
       "ImportFinding": {
         "type": "object",
         "description": "One Job import finding on a job file (#17 §5): the line diff, the 1.x and 2.x readings, the\nnext 3 fires under each daemon for a cron change, and the reason. The same findings appear\nin the dry run, the import report, `JobDetail.import_findings` and `jobs check`.",
@@ -2604,6 +2792,173 @@
           "invalid"
         ]
       },
+      "ImportJobFile": {
+        "type": "object",
+        "description": "One job file in the Job import (#22 `jobs import`).",
+        "required": [
+          "job",
+          "path",
+          "action",
+          "findings"
+        ],
+        "properties": {
+          "job": {
+            "type": "string",
+            "description": "The job name: the file stem, or `<agent>/<stem>`."
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative to the Daemon dir."
+          },
+          "action": {
+            "$ref": "#/components/schemas/JobImportAction"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportFinding"
+            },
+            "description": "The findings with their line diffs (#17 §5)."
+          }
+        }
+      },
+      "ImportJobState": {
+        "type": "object",
+        "description": "One job's seeded state (#17 §4).",
+        "required": [
+          "job",
+          "last_started_at",
+          "last_exit_code",
+          "previous_slot",
+          "catch_up",
+          "next_fires"
+        ],
+        "properties": {
+          "job": {
+            "type": "string"
+          },
+          "last_started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The start time in the newest matching Run log name; `null` when the job never ran."
+          },
+          "last_exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "From the newest log's `Exit code:` line; `null` when the job never ran or the line is\nmissing (the result is unknown)."
+          },
+          "previous_slot": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The due slot before now; `null` when the schedule has none."
+          },
+          "catch_up": {
+            "type": "boolean",
+            "description": "Whether a start now would catch the job up."
+          },
+          "next_fires": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "The next fires under 2.x."
+          }
+        }
+      },
+      "ImportJobs": {
+        "type": "object",
+        "description": "The Job import step (#12 §5, #22 `jobs import`).",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportJobFile"
+            }
+          }
+        }
+      },
+      "ImportKind": {
+        "type": "string",
+        "enum": [
+          "fresh",
+          "imported"
+        ]
+      },
+      "ImportLauncher": {
+        "type": "object",
+        "description": "One 1.x `runtime.launcher(s)` entry and what it becomes (#17 §2).",
+        "required": [
+          "scope",
+          "label",
+          "ts",
+          "action",
+          "launcher",
+          "level"
+        ],
+        "properties": {
+          "scope": {
+            "type": "string",
+            "description": "`default` for `runtime.launcher`, else the 1.x scope key, verbatim."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The scope's `discord.channelNames` label; `null` when unknown."
+          },
+          "ts": {
+            "type": "string",
+            "description": "How 1.x reads the entry, e.g. `direct` or `ccs <profile>`."
+          },
+          "action": {
+            "$ref": "#/components/schemas/LauncherImportAction"
+          },
+          "launcher": {
+            "type": "string",
+            "description": "The Launcher the scope will have: `direct` or a path relative to the Daemon dir."
+          },
+          "level": {
+            "$ref": "#/components/schemas/ImportLevel"
+          }
+        }
+      },
+      "ImportLaunchers": {
+        "type": "object",
+        "description": "The Launchers step (#17 §2).",
+        "required": [
+          "entries",
+          "notes"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportLauncher"
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportNote"
+            },
+            "description": "The PATH pre-flight, an ignored `directFallback`, and the like."
+          }
+        }
+      },
       "ImportLevel": {
         "type": "string",
         "enum": [
@@ -2643,6 +2998,152 @@
           }
         }
       },
+      "ImportNote": {
+        "type": "object",
+        "description": "One line of a plan that isn't a row of its own (#17 §6, §7).",
+        "required": [
+          "level",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "level": {
+            "$ref": "#/components/schemas/ImportLevel"
+          },
+          "code": {
+            "type": "string",
+            "description": "A stable `snake_case` code such as `telegram_unused` or `launcher_not_on_path`. New\ncodes can appear within v1."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable; never a secret or a Launcher's arguments."
+          }
+        }
+      },
+      "ImportOnly": {
+        "type": "string",
+        "enum": [
+          "launchers",
+          "token",
+          "state",
+          "settings",
+          "jobs"
+        ]
+      },
+      "ImportPlan": {
+        "type": "object",
+        "description": "`import.plan` → what an import would do, writing nothing (management-api §2.11, #17 §7).\n`claudeclaw import --dry-run --json` prints the same type, and its `jobs` section is\n`jobs import --dry-run --json` (#22).",
+        "required": [
+          "plan_hash",
+          "errors",
+          "warnings",
+          "launchers",
+          "token",
+          "settings",
+          "state",
+          "jobs",
+          "sessions",
+          "claude_code",
+          "notes"
+        ],
+        "properties": {
+          "plan_hash": {
+            "type": "string",
+            "description": "Send it back in [`ImportApplyRequest::plan_hash`] to apply exactly this plan. Opaque."
+          },
+          "errors": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The `error` items anywhere in the plan; the CLI exits 1 when this is not 0.",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The `warning` items anywhere in the plan.",
+            "minimum": 0
+          },
+          "launchers": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportLaunchers"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "token": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportToken"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settings": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobs": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportJobs"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sessions": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportSessions",
+                "description": "`null` when `only` is set."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "claude_code": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportClaudeCode",
+                "description": "The project's Claude Code files (#24); `null` when `only` is set."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportNote"
+            },
+            "description": "Everything else: files left in place, adapters 2.x lacks, behaviour changes (#17 §6,\n#33, #38, #44). Empty when `only` is set."
+          }
+        }
+      },
       "ImportProgress": {
         "type": "object",
         "description": "`Health.import` (management-api §2.1, #17).",
@@ -2660,6 +3161,278 @@
               "null"
             ],
             "description": "The step running now, or `null` between steps."
+          }
+        }
+      },
+      "ImportRecord": {
+        "type": "object",
+        "description": "`import.get` → `daemon/state/import.json` plus the last plan (management-api §2.11, #17 §1,\n§8).",
+        "required": [
+          "kind",
+          "version",
+          "steps",
+          "report",
+          "backup_dir",
+          "plan"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ImportKind"
+          },
+          "version": {
+            "type": "string",
+            "description": "The binary version that wrote the record."
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportStepRecord"
+            },
+            "description": "Every step the import ran or still has to run, in order; empty for a `fresh` dir."
+          },
+          "report": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The import report (`import-report-<ts>.md`), relative to the Daemon dir; `null` for a\n`fresh` dir."
+          },
+          "backup_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The backup dir (`import-backup/<ts>/`), relative to the Daemon dir; `null` when nothing\nwas backed up."
+          },
+          "plan": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportPlan",
+                "description": "The last plan made by `import.plan` or the import itself; `null` when there is none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ImportResult": {
+        "type": "object",
+        "description": "`import.apply` → the updated record (management-api §2.11).",
+        "required": [
+          "record",
+          "report",
+          "backup_dir"
+        ],
+        "properties": {
+          "record": {
+            "$ref": "#/components/schemas/ImportRecord"
+          },
+          "report": {
+            "type": "string",
+            "description": "This run's report, relative to the Daemon dir."
+          },
+          "backup_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "This run's backup dir, relative to the Daemon dir; `null` when nothing was modified."
+          }
+        }
+      },
+      "ImportSessionCount": {
+        "type": "object",
+        "description": "How many sessions of one Scope kind resume (#17 §6).",
+        "required": [
+          "kind",
+          "sessions"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ScopeKind"
+          },
+          "sessions": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ImportSessions": {
+        "type": "object",
+        "description": "The session bookkeeping step (#17 §6): 1.x sessions are read in place and resume.",
+        "required": [
+          "resume",
+          "pending_resume"
+        ],
+        "properties": {
+          "resume": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportSessionCount"
+            },
+            "description": "Sessions that will resume, per Scope kind."
+          },
+          "pending_resume": {
+            "type": "boolean",
+            "description": "Whether a `pending-resume.json` will be consumed."
+          }
+        }
+      },
+      "ImportSettingKey": {
+        "type": "object",
+        "description": "One renamed key (#32). The old key is left in place.",
+        "required": [
+          "from",
+          "to",
+          "action",
+          "level"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "The 1.x key, e.g. `watchdog.timeoutMinutes`."
+          },
+          "to": {
+            "type": "string",
+            "description": "The 2.x key it is copied to."
+          },
+          "action": {
+            "$ref": "#/components/schemas/SettingImportAction"
+          },
+          "level": {
+            "$ref": "#/components/schemas/ImportLevel"
+          }
+        }
+      },
+      "ImportSettings": {
+        "type": "object",
+        "description": "The renamed-settings step (#32): valid `watchdog.*` values copied to `timeout_breaker`.",
+        "required": [
+          "keys",
+          "notes"
+        ],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportSettingKey"
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportNote"
+            }
+          }
+        }
+      },
+      "ImportState": {
+        "type": "object",
+        "description": "The job state step (#17 §4), with the `jobs check` schedule view computed against the merged\nstate.",
+        "required": [
+          "jobs",
+          "in_flight_runs",
+          "notes"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportJobState"
+            }
+          },
+          "in_flight_runs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1.x runs in flight when 1.x stopped (`active-runs`).",
+            "minimum": 0
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportNote"
+            },
+            "description": "Logs stamped in the future, and the like."
+          }
+        }
+      },
+      "ImportStep": {
+        "type": "string",
+        "enum": [
+          "backup",
+          "launchers",
+          "token",
+          "settings",
+          "state",
+          "jobs",
+          "sessions",
+          "report"
+        ]
+      },
+      "ImportStepRecord": {
+        "type": "object",
+        "description": "One step in an [`ImportRecord`] (#17 §1). A step with no `done_at` runs again on the next\nstart.",
+        "required": [
+          "step",
+          "done_at",
+          "result"
+        ],
+        "properties": {
+          "step": {
+            "$ref": "#/components/schemas/ImportStep"
+          },
+          "done_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "`null` until the step finishes."
+          },
+          "result": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A one-line, content-free summary, as in the owner notification (\"job state for 7\njobs\"); `null` until the step finishes."
+          }
+        }
+      },
+      "ImportToken": {
+        "type": "object",
+        "description": "The legacy `apiToken` step (#17 §3). The value itself is never shown.",
+        "required": [
+          "set",
+          "length",
+          "action",
+          "notes"
+        ],
+        "properties": {
+          "set": {
+            "type": "boolean",
+            "description": "Whether `settings.apiToken` is a non-blank string."
+          },
+          "length": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Its length in characters, trimmed; `null` when not set.",
+            "minimum": 0
+          },
+          "action": {
+            "$ref": "#/components/schemas/TokenImportAction"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportNote"
+            },
+            "description": "A weak token, `web.enabled` with no listener, `web.token` left in place."
           }
         }
       },
@@ -3110,6 +3883,15 @@
             "description": "`direct` or a Launcher path; the job's Launcher override (#8)."
           }
         }
+      },
+      "JobImportAction": {
+        "type": "string",
+        "enum": [
+          "unchanged",
+          "rewrite",
+          "disable",
+          "invalid"
+        ]
       },
       "JobLastRun": {
         "type": "object",
@@ -3605,6 +4387,16 @@
           "claude_code_version",
           "transcript",
           "stragglers"
+        ]
+      },
+      "LauncherImportAction": {
+        "type": "string",
+        "enum": [
+          "direct",
+          "script",
+          "refused",
+          "unchanged",
+          "kept"
         ]
       },
       "LauncherInfo": {
@@ -4388,6 +5180,170 @@
         "type": "string",
         "enum": [
           "error"
+        ]
+      },
+      "PairRequest": {
+        "type": "object",
+        "description": "`pair`'s body, sent over TLS with the new Device's cert (management-api §2.12, #13).",
+        "required": [
+          "code",
+          "label",
+          "platform"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The Pairing code as entered; the server reads it with [`PairingCode`]'s `FromStr`, and a\ncode that doesn't parse or match is `401 pairing_code_invalid`."
+          },
+          "label": {
+            "type": "string",
+            "description": "The Device's name, e.g. the machine name."
+          },
+          "platform": {
+            "type": "string",
+            "description": "The Device's OS, shown as `<label> (<platform>)` (#41 D4)."
+          }
+        }
+      },
+      "PairResult": {
+        "type": "object",
+        "description": "`pair` → the new Device and the Daemon it paired with (management-api §2.12).",
+        "required": [
+          "device",
+          "daemon"
+        ],
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceInfo"
+          },
+          "daemon": {
+            "$ref": "#/components/schemas/PairedDaemon"
+          }
+        }
+      },
+      "PairedDaemon": {
+        "type": "object",
+        "description": "The Daemon in a [`PairResult`] (management-api §2.12).",
+        "required": [
+          "name",
+          "version",
+          "fingerprint"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          }
+        }
+      },
+      "PairingCancelled": {
+        "type": "object",
+        "description": "`pairing.cancel` → `{cancelled}` (management-api §2.12).",
+        "required": [
+          "cancelled"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "description": "`false` when the pairing had already ended."
+          }
+        }
+      },
+      "PairingCreate": {
+        "type": "object",
+        "description": "`pairing.create`'s body (management-api §2.12, #41 D2): `{host?}`.",
+        "properties": {
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The host put into the Pairing string (`pair --host <name>`). A hostname or an IP\nliteral ([`is_valid_host`]); anything else is `422 invalid_host`. When absent, the string\ncarries `remote.listen` if that is a specific address, and no host if it is a wildcard."
+          }
+        }
+      },
+      "PairingStart": {
+        "type": "object",
+        "description": "`pairing.create` → a live Pairing code, valid for 10 minutes (management-api §2.12, #41).\n`claudeclaw pair --no-wait --json` prints the same type.",
+        "required": [
+          "pairing_id",
+          "code",
+          "expires_at",
+          "fingerprint",
+          "fingerprint_curl",
+          "listen",
+          "pairing_string"
+        ],
+        "properties": {
+          "pairing_id": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "description": "The Pairing code as shown: `XXXX-XXXX` ([`PairingCode`]'s `Display`)."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "The Daemon's key fingerprint, as `pair` prints it."
+          },
+          "fingerprint_curl": {
+            "type": "string",
+            "description": "The same key in curl's `--pinnedpubkey` form (`sha256//<base64>`)."
+          },
+          "listen": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The remote listener's addresses, `host:port`."
+          },
+          "pairing_string": {
+            "type": "string",
+            "description": "`ccpair1.<code>.<fingerprint>.<port>[.<host>]`; parse it with [`PairingString`]."
+          }
+        }
+      },
+      "PairingState": {
+        "type": "object",
+        "description": "`pairing.get` → where a pairing stands, long-polled with `?wait=` (management-api §2.12).",
+        "required": [
+          "state",
+          "device"
+        ],
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/PairingStatus"
+          },
+          "device": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DeviceInfo",
+                "description": "The new Device once `state` is `completed`; `null` otherwise."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "PairingStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "completed",
+          "expired",
+          "cancelled",
+          "burned"
         ]
       },
       "Problem": {
@@ -6072,6 +7028,15 @@
           "orphaned"
         ]
       },
+      "SettingImportAction": {
+        "type": "string",
+        "enum": [
+          "copy",
+          "unchanged",
+          "kept",
+          "invalid"
+        ]
+      },
       "Settings": {
         "type": "object",
         "description": "The typed view of the `settings.json` keys the Rust Daemon reads, after defaults\n(management-api §2.6, architecture §7). Existing keys keep TS's names and types\n(`src/config.ts`); Rust-only keys are new top-level keys (#14 rule 1). Unknown and TS-only\nkeys are never shown.",
@@ -6256,6 +7221,13 @@
           "test_launcher"
         ]
       },
+      "StateJsonAction": {
+        "type": "string",
+        "enum": [
+          "remove",
+          "absent"
+        ]
+      },
       "StatusSource": {
         "type": "string",
         "enum": [
@@ -6281,6 +7253,16 @@
             "description": "The CLI's own version; only the CLI sets it."
           }
         }
+      },
+      "StatuslineAction": {
+        "type": "string",
+        "enum": [
+          "install",
+          "migrate",
+          "unchanged",
+          "leave_foreign",
+          "unreadable"
+        ]
       },
       "StopAccepted": {
         "type": "object",
@@ -6558,6 +7540,67 @@
           }
         }
       },
+      "TokenCreate": {
+        "type": "object",
+        "description": "`tokens.create`'s body (management-api §2.12). `allow` must pass\n[`TokenPermission::valid_set`], or the call is `422 invalid_permission_set`.",
+        "required": [
+          "name",
+          "allow"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "allow": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TokenPermission"
+            }
+          }
+        }
+      },
+      "TokenCreated": {
+        "type": "object",
+        "description": "`tokens.create` → `201` with the new token and its secret (management-api §2.12). The secret\nappears only here; afterwards only its hash is kept.",
+        "required": [
+          "token",
+          "secret"
+        ],
+        "properties": {
+          "token": {
+            "$ref": "#/components/schemas/ApiTokenInfo"
+          },
+          "secret": {
+            "type": "string",
+            "description": "The bearer value. Never in `Debug`."
+          }
+        }
+      },
+      "TokenImportAction": {
+        "type": "string",
+        "enum": [
+          "absent",
+          "import",
+          "unchanged",
+          "replace",
+          "revoke"
+        ]
+      },
+      "TokenList": {
+        "type": "object",
+        "description": "`tokens.list` → `{tokens}` (management-api §2.12).",
+        "required": [
+          "tokens"
+        ],
+        "properties": {
+          "tokens": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApiTokenInfo"
+            }
+          }
+        }
+      },
       "TokenPermission": {
         "type": "string",
         "enum": [
@@ -6567,6 +7610,18 @@
           "logs:read",
           "runs:content"
         ]
+      },
+      "TokenRevoked": {
+        "type": "object",
+        "description": "`tokens.revoke` → `{revoked}` (management-api §2.12). Revoking the legacy token is kept by\nhash, so the same `settings.apiToken` value is not imported again.",
+        "required": [
+          "revoked"
+        ],
+        "properties": {
+          "revoked": {
+            "type": "boolean"
+          }
+        }
       },
       "TranscriptMessage": {
         "type": "object",
