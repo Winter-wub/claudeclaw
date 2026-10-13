@@ -9,7 +9,7 @@ The long-running `claudeclaw` process that owns the scheduler, the chat adapters
 _Avoid_: server, bot, service
 
 **Watchdog**:
-The Daemon's parent process, which only starts, restarts and re-executes the Worker; it never runs Claude Code itself.
+The Daemon's parent process, which only starts, restarts and re-executes the Worker and reaps its leftover runs; it never runs Claude Code itself.
 _Avoid_: supervisor, monitor
 
 **Worker**:
@@ -47,6 +47,22 @@ _Avoid_: ASP file, prompt file, temp prompt
 **Statusline**:
 The one line Claude Code shows under its prompt in an interactive session opened in a Daemon's project dir, rendered by `claudeclaw statusline` from the Management API's status (or the offline status when the Daemon is down).
 _Avoid_: status bar, state.json, statusline.cjs (TS 1.x artefacts)
+
+**Hang kill**:
+The Watchdog killing a Worker that has not answered its liveness ping for 45 seconds of awake time; recorded and counted as a crash (`cause: hung`).
+_Avoid_: timeout, health check failure, watchdog timeout
+
+**Stall**:
+One loop inside a live Worker (the scheduler, a Chat adapter, the outcome sink, or a Scope's head Turn) that has made no progress past its allowed quiet time; the Worker reports it as fatal and the Watchdog counts the restart as a crash.
+_Avoid_: hang (reserved for the whole Worker), freeze, deadlock
+
+**Run registry**:
+The Worker's live list of every Claude Code process it spawned, each with an OS start-time stamp, kept in `daemon/state/runs.json` and read to Reap after the Worker is gone.
+_Avoid_: active-runs (the TS counter file), process table, pid file
+
+**Reap**:
+To end a gone Worker's leftover runs; done by whoever holds `daemon.lock` with no live Worker, killing only the processes the Run registry proves are still the ones recorded.
+_Avoid_: cleanup, kill-all, orphan sweep
 
 **Launcher**:
 The path to a single runnable executable that the Daemon invokes in place of `claude`, passing the normal `claude` argv. It carries no name and no environment of its own; any wrapping (such as `ccs <profile>`) and its env live in the user's script.
