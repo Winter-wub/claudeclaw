@@ -14,7 +14,7 @@
 set -euo pipefail
 
 : "${LIVE_DIR:?set LIVE_DIR to the live worktree path}"
-: "${LAUNCHD_LABEL:?set LAUNCHD_LABEL to the daemon's launchd label}"
+: "${LAUNCHD_LABEL:?set LAUNCHD_LABEL to the launchd label of the daemon}"
 repo="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 prev_file="$(git -C "$LIVE_DIR" rev-parse --git-dir)/live-previous"
 
@@ -32,7 +32,7 @@ fi
 
 current="$(git -C "$LIVE_DIR" rev-parse HEAD)"
 if [[ "$current" == "$target" ]]; then
-  echo "deploy-live: already at $(git -C "$LIVE_DIR" log -1 --format='%h %s')"
+  echo "deploy-live: already at ${current:0:7}"
   exit 0
 fi
 
@@ -41,5 +41,6 @@ git -C "$LIVE_DIR" checkout -q --detach "$target"
 echo "$current" > "$prev_file"
 
 launchctl kickstart -k "gui/$(id -u)/$LAUNCHD_LABEL"
-echo "deploy-live: $(git -C "$LIVE_DIR" log -1 --format='%h %s') (previous: ${current:0:7})"
+now="$(git -C "$LIVE_DIR" log -1 --format='%h %s')"
+echo "deploy-live: ${now} [previous ${current:0:7}]"
 echo "deploy-live: restarted $LAUNCHD_LABEL; check its startup log before walking away"

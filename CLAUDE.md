@@ -20,6 +20,8 @@ This repo is a **public** hard fork of `moazbuilds/claudeclaw`. Upstream is no l
 - **Tests:** run `bun test` from this repo, never from a live daemon directory. `bunfig.toml` sandboxes the cwd, but a live `.claude/claudeclaw/settings.json` has been wiped before.
 - **`main`** is the default branch and is protected by a ruleset: **every** change, docs included, lands through a PR whose `test` and `public-safety` checks pass. There is no bypass, so don't push to `main` directly. The CI workflows are `ci.yml` (typecheck + tests) and `public-safety.yml`. Any failure is real; there are no known-failing tests.
 
+- **Deploying to a live daemon:** it runs from a dedicated git worktree pinned to a commit on `main`, not from the plugin cache. Move the pin with `scripts/deploy-live.sh` (needs `LIVE_DIR` and `LAUNCHD_LABEL`; `--rollback` restores the previous pin). Never copy files into the plugin cache by hand.
+
 ## Development workflow
 
 **Before opening any PR, always run both version bump scripts:**
