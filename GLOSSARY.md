@@ -29,8 +29,16 @@ One inbound message or scheduled prompt handed to the Daemon for a Scope, queued
 _Avoid_: request, job (when meaning a chat message), task
 
 **Give-up**:
-The Watchdog's final stop after more than 5 Worker crashes in 10 minutes: it records the give-up, DMs the owner and exits, and nothing restarts the Daemon until a person chooses Restart anyway.
+The Watchdog's final stop after more than 5 Worker crashes in 10 minutes: it records the give-up, DMs the owner and exits, and every later start is a Held start until a person clears it (Restart anyway, `start --clear-give-up` or `clear-give-up`).
 _Avoid_: crash, fatal stop, shutdown
+
+**Held start**:
+A `claudeclaw start` the Watchdog refuses because the last Give-up hasn't been cleared; it exits 70 (0 under launchd) and starts no Worker.
+_Avoid_: failed start, refused run (reserved for a run), blocked start
+
+**Service manager**:
+launchd or systemd running the Daemon from one of the example unit files, named to the Watchdog with `--service-manager`.
+_Avoid_: supervisor (`supervisor.json` is the Watchdog's own file), init, service (when meaning the Daemon)
 
 **Crash record**:
 The bounded history of recent Worker crashes (time, exit, reported reason, redacted stderr tail) that the Watchdog keeps in its status file and the Management API serves.
