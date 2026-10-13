@@ -10,6 +10,7 @@ pub mod deadline;
 pub mod discord;
 pub mod error;
 pub mod export;
+pub mod jobs;
 pub mod logs;
 pub mod permission;
 pub mod revision;
@@ -34,6 +35,7 @@ pub use discord::{
     DiscordOverview, DiscordThread, DiscordUser, FireResult, HireRequest, HireResult,
 };
 pub use error::{ApiError, ErrorBody, ErrorCode};
+pub use jobs::{ImportFinding, JobDetail, JobSummary};
 pub use permission::TokenPermission;
 pub use revision::Revision;
 pub use routes::Route;
@@ -71,6 +73,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
     doc.merge(adapter::Doc::openapi());
     doc.merge(turns::Doc::openapi());
+    doc.merge(jobs::Doc::openapi());
     doc.merge(scopes::Doc::openapi());
     doc.merge(sessions::Doc::openapi());
     doc.merge(settings::Doc::openapi());

@@ -459,6 +459,82 @@
           }
         }
       },
+      "AuditProblem": {
+        "type": "object",
+        "description": "One mismatch between expected fires and runs (#22 `jobs audit`).",
+        "required": [
+          "kind",
+          "at",
+          "delay_ms"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/AuditProblemKind"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The expected slot, or the run's start for `unexpected`."
+          },
+          "delay_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How far the run started after its slot; `null` for `missed` and `unexpected`.",
+            "minimum": 0
+          }
+        }
+      },
+      "AuditProblemKind": {
+        "type": "string",
+        "enum": [
+          "missed",
+          "duplicate",
+          "late",
+          "unexpected"
+        ]
+      },
+      "AuditRun": {
+        "type": "object",
+        "description": "A run found for the job in the window (#22 `jobs audit`).",
+        "required": [
+          "at",
+          "run_id"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` when read from TS-pattern log names because the Run index doesn't exist yet."
+          }
+        }
+      },
+      "AuditWindow": {
+        "type": "object",
+        "description": "The time range [`JobsAudit`] covers (#22: `--since`, default 24 h; `--until`, default now).",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "AutoCompactLast": {
         "type": "object",
         "description": "One auto-compact run (#33).",
@@ -639,6 +715,13 @@
           "api_list",
           "managed",
           "estimate"
+        ]
+      },
+      "DiagnosticSeverity": {
+        "type": "string",
+        "enum": [
+          "error",
+          "warning"
         ]
       },
       "DiscordBot": {
@@ -1394,6 +1477,127 @@
           }
         }
       },
+      "ImportFinding": {
+        "type": "object",
+        "description": "One Job import finding on a job file (#17 §5): the line diff, the 1.x and 2.x readings, the\nnext 3 fires under each daemon for a cron change, and the reason. The same findings appear\nin the dry run, the import report, `JobDetail.import_findings` and `jobs check`.",
+        "required": [
+          "level",
+          "kind",
+          "edits",
+          "ts_reading",
+          "rust_reading",
+          "ts_next_fires",
+          "rust_next_fires",
+          "reason"
+        ],
+        "properties": {
+          "level": {
+            "$ref": "#/components/schemas/ImportLevel"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ImportFindingKind"
+          },
+          "edits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportLineEdit"
+            },
+            "description": "The lines the import rewrites, inserts or comments out; empty when the file is kept as is."
+          },
+          "ts_reading": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How the TS daemon (1.x) reads the affected key; `null` when no key's meaning is involved."
+          },
+          "rust_reading": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How the Rust Daemon (2.x) reads it."
+          },
+          "ts_next_fires": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "For a cron finding, the next 3 fires under 1.x; empty otherwise."
+          },
+          "rust_next_fires": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "For a cron finding, the next 3 fires under 2.x; empty otherwise."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Keyed to #12's tables."
+          }
+        }
+      },
+      "ImportFindingKind": {
+        "type": "string",
+        "enum": [
+          "step_rewritten",
+          "and_added",
+          "single_value_step",
+          "never_fired_disabled",
+          "fields_truncated",
+          "line_requoted",
+          "line_commented_out",
+          "value_canonicalised",
+          "recurring_inserted",
+          "daily_converted",
+          "near_miss_key",
+          "agent_replay_dropped",
+          "orphan_clock_started",
+          "invalid"
+        ]
+      },
+      "ImportLevel": {
+        "type": "string",
+        "enum": [
+          "error",
+          "warning",
+          "info"
+        ]
+      },
+      "ImportLineEdit": {
+        "type": "object",
+        "description": "One line of an [`ImportFinding`]'s diff (#17 §5, #22 `jobs check`).",
+        "required": [
+          "line",
+          "before",
+          "after"
+        ],
+        "properties": {
+          "line": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1-based, in the file before the import.",
+            "minimum": 0
+          },
+          "before": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` for an inserted line."
+          },
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` for a removed line."
+          }
+        }
+      },
       "InboxSettings": {
         "type": "object",
         "description": "`inbox`: attachment retention (#44). `null` keeps forever / sets no cap.",
@@ -1428,6 +1632,784 @@
           "discord:1234"
         ],
         "pattern": "^(default|global|discord:[0-9]+|job:[^/]+(/[^/]+)?|agent:[^/]+)$"
+      },
+      "JobAudit": {
+        "type": "object",
+        "description": "One job in [`JobsAudit`] (#22 `jobs audit`).",
+        "required": [
+          "name",
+          "expected",
+          "runs",
+          "problems"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "The slots the schedule says should have fired in the window."
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditRun"
+            }
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditProblem"
+            }
+          }
+        }
+      },
+      "JobCatchUp": {
+        "type": "object",
+        "description": "Whether a start now would catch the job up (#22 `jobs check`, #9's 6 h window).",
+        "required": [
+          "would_fire",
+          "slot"
+        ],
+        "properties": {
+          "would_fire": {
+            "type": "boolean"
+          },
+          "slot": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The slot it would catch up; `null` when it wouldn't fire."
+          }
+        }
+      },
+      "JobCheck": {
+        "type": "object",
+        "description": "One job in [`JobsCheck`] (#22 `jobs check`).",
+        "required": [
+          "name",
+          "path",
+          "status",
+          "diagnostics",
+          "next_fires",
+          "last_run",
+          "catch_up",
+          "import"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobDiagnostic"
+            }
+          },
+          "next_fires": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "The next `next` fires (default 5)."
+          },
+          "last_run": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/JobCheckLastRun",
+                "description": "`null` when the job has never run."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "catch_up": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/JobCatchUp",
+                "description": "Computed \"as if started now\"; `null` while a Daemon runs."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "import": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportFinding"
+            },
+            "description": "Pending Job import edits (#17 §5)."
+          }
+        }
+      },
+      "JobCheckLastRun": {
+        "type": "object",
+        "description": "When a job last ran and where that was read from (#22 `jobs check`).",
+        "required": [
+          "at",
+          "source"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source": {
+            "$ref": "#/components/schemas/LastRunSource"
+          }
+        }
+      },
+      "JobCreate": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "name",
+              "fields",
+              "prompt"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "fields": {
+                "$ref": "#/components/schemas/JobFields"
+              },
+              "prompt": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "name",
+              "raw"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "raw": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "`jobs.create`'s body (management-api §2.4): a new job as the form's fields and a prompt,\nor as the whole file. `raw` can't be combined with `fields` or `prompt`."
+      },
+      "JobDeleted": {
+        "type": "object",
+        "description": "`jobs.delete` → what went with the file (management-api §2.4, #12 §6). Deleting through the\nAPI removes the job's sessions and per-job state at once.",
+        "required": [
+          "deleted",
+          "sessions_removed",
+          "state_removed"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          },
+          "sessions_removed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "state_removed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "JobDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/JobSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "fields",
+              "prompt",
+              "raw",
+              "diagnostics",
+              "import_findings",
+              "next_fires"
+            ],
+            "properties": {
+              "fields": {
+                "$ref": "#/components/schemas/JobFields"
+              },
+              "prompt": {
+                "type": "string",
+                "description": "The body after the frontmatter."
+              },
+              "raw": {
+                "type": "string",
+                "description": "The whole file, unknown keys and comments included."
+              },
+              "diagnostics": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/JobDiagnostic"
+                }
+              },
+              "import_findings": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ImportFinding"
+                },
+                "description": "#17 §5's findings on this job, from the last Job import."
+              },
+              "next_fires": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "description": "The next 5 fires; empty when unscheduled, disabled or invalid."
+              }
+            }
+          }
+        ],
+        "description": "`jobs.get`, and the result of every job write: [`JobSummary`] plus the job's text, parsed\nkeys and findings, read fresh from disk (management-api §2.4, #46 D5)."
+      },
+      "JobDiagnostic": {
+        "type": "object",
+        "description": "One validation finding on a job file (management-api §2.4, architecture §4\n`claudeclaw-jobs`, #12 §4).",
+        "required": [
+          "severity",
+          "kind",
+          "line",
+          "column",
+          "message"
+        ],
+        "properties": {
+          "severity": {
+            "$ref": "#/components/schemas/DiagnosticSeverity"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/JobDiagnosticKind"
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1-based; `null` for a finding on the whole file.",
+            "minimum": 0
+          },
+          "column": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1-based; `null` for a finding on the whole file or line.",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string",
+            "description": "Can quote a line of the job file, so the Bug-report export drops it (#28)."
+          }
+        }
+      },
+      "JobDiagnosticKind": {
+        "type": "string",
+        "description": "A stable diagnostic kind: dotted snake_case segments. New kinds can appear within v1.",
+        "examples": [
+          "schedule.invalid",
+          "key.unknown"
+        ],
+        "maxLength": 64,
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
+      },
+      "JobFields": {
+        "type": "object",
+        "description": "The frontmatter keys the Daemon parses, each typed and optional (management-api §2.4, #12\n§2). Absent means the key isn't in the file. Unknown keys stay in `raw` and are never dropped.",
+        "properties": {
+          "schedule": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "5 cron fields or a croner nickname such as `@daily` (#12 §1)."
+          },
+          "recurring": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Required whenever `schedule` is set (#12 §3)."
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "notify": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/JobNotify"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeout": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds.",
+            "minimum": 0
+          },
+          "retry": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Retry attempts after a failure before waiting for the next slot.",
+            "minimum": 0
+          },
+          "retry_delay": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds between retry attempts.",
+            "minimum": 0
+          },
+          "launcher": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`direct` or a Launcher path; the job's Launcher override (#8)."
+          }
+        }
+      },
+      "JobLastRun": {
+        "type": "object",
+        "description": "A job's latest run (#22 `jobs list`).",
+        "required": [
+          "at",
+          "outcome"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/RunOutcome"
+          }
+        }
+      },
+      "JobList": {
+        "type": "object",
+        "description": "`jobs.list` → every job, from the Change scan's snapshot (management-api §2.4, #46 D5).",
+        "required": [
+          "jobs"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobSummary"
+            }
+          }
+        }
+      },
+      "JobNotify": {
+        "oneOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "$ref": "#/components/schemas/NotifyOnly"
+          }
+        ],
+        "description": "A job's `notify:` value (#12 §2): `true`, `false`, or `\"error\"` for failures only."
+      },
+      "JobPatch": {
+        "type": "object",
+        "description": "`jobs.update`'s body: line edits to the frontmatter, validated before anything is written\n(management-api §2.4, #12 §2). Each `set` key is a frontmatter key; a value replaces the\nkey's line or inserts one, and `null` removes it. `prompt` replaces the body.",
+        "required": [
+          "set"
+        ],
+        "properties": {
+          "set": {
+            "type": "object",
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/JobValue"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "JobPreview": {
+        "type": "object",
+        "description": "`jobs.preview` → the job both ways, its diagnostics and next fires, computed by the Daemon\nwith croner's OR day semantics in its timezone (management-api §2.4, #12, #16, #50).",
+        "required": [
+          "fields",
+          "prompt",
+          "raw",
+          "diagnostics",
+          "next_fires",
+          "timezone",
+          "notes"
+        ],
+        "properties": {
+          "fields": {
+            "$ref": "#/components/schemas/JobFields"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "raw": {
+            "type": "string"
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobDiagnostic"
+            }
+          },
+          "next_fires": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "The next `count` future slots; a new or rescheduled job never catches up a past slot\n(#50)."
+          },
+          "timezone": {
+            "type": "string",
+            "description": "The Daemon's IANA timezone, which the schedule is read in."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Explanations for the cron builder, e.g. that day-of-month and day-of-week match with OR."
+          }
+        }
+      },
+      "JobPreviewRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "raw"
+            ],
+            "properties": {
+              "raw": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "format": "int32",
+                "default": 5,
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "fields",
+              "prompt"
+            ],
+            "properties": {
+              "fields": {
+                "$ref": "#/components/schemas/JobFields"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "format": "int32",
+                "default": 5,
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "schedule"
+            ],
+            "properties": {
+              "schedule": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "format": "int32",
+                "default": 5,
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "`jobs.preview`'s body (management-api §2.4): a job as raw text, as form fields and a\nprompt, or as a bare schedule; exactly one form. `count` defaults to 5."
+      },
+      "JobRaw": {
+        "type": "object",
+        "description": "`jobs.replace`'s body: the whole file, sent with a required `If-Match` (management-api\n§2.4).",
+        "required": [
+          "raw"
+        ],
+        "properties": {
+          "raw": {
+            "type": "string"
+          }
+        }
+      },
+      "JobStatus": {
+        "type": "string",
+        "enum": [
+          "valid",
+          "invalid",
+          "warning"
+        ]
+      },
+      "JobSummary": {
+        "type": "object",
+        "description": "One job as `jobs.list` and #22's `jobs list` show it (management-api §2.4). Content-free:\nno prompt and no file text.",
+        "required": [
+          "name",
+          "agent",
+          "path",
+          "status",
+          "schedule",
+          "recurring",
+          "enabled",
+          "notify",
+          "launcher",
+          "model",
+          "next_at",
+          "last_run",
+          "in_flight",
+          "retry_at",
+          "revision"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The file stem, or `<agent>/<stem>` for an agent's job; fixed at creation."
+          },
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "The job file, relative to the project dir."
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "schedule": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` for an unscheduled job (#12 §2): listed and runnable by hand."
+          },
+          "recurring": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`null` when the file doesn't say, which is only valid without a `schedule` (#12 §3)."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "The effective value: `true` when the key is absent (#12 §2)."
+          },
+          "notify": {
+            "$ref": "#/components/schemas/JobNotify",
+            "description": "The effective value: `true` when the key is absent (#12 §2)."
+          },
+          "launcher": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The job's own `launcher:` override (`direct` or a path); `null` when it inherits."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The next scheduled fire; `null` when unscheduled, disabled or invalid."
+          },
+          "last_run": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/JobLastRun",
+                "description": "`null` when the job has never run."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "in_flight": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`null` when read from disk with no Daemon running (#22)."
+          },
+          "retry_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When a failed run is retried; `null` when no retry is pending."
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision",
+            "description": "Sent back as `If-Match` on `jobs.update`, `jobs.replace` and `jobs.delete` (#46 D5)."
+          }
+        }
+      },
+      "JobValue": {
+        "oneOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "description": "One frontmatter value in a [`JobPatch`] (#12 §2's value grammar decides which key takes\nwhich)."
+      },
+      "JobsAudit": {
+        "type": "object",
+        "description": "`jobs.audit` and `claudeclaw jobs audit --json`: each schedule's expected fires against the\nRun index (management-api §2.4; #22, #44).",
+        "required": [
+          "window",
+          "jobs",
+          "ok",
+          "index"
+        ],
+        "properties": {
+          "window": {
+            "$ref": "#/components/schemas/AuditWindow"
+          },
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobAudit"
+            }
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "No job has a problem in the window."
+          },
+          "index": {
+            "$ref": "#/components/schemas/RunIndexState",
+            "description": "Whether the Run index was complete when the audit read it (#44 D2)."
+          }
+        }
+      },
+      "JobsCheck": {
+        "type": "object",
+        "description": "`jobs.check` and `claudeclaw jobs check --json`: every job read from disk, never written\n(management-api §2.4; #12 §4, #22).",
+        "required": [
+          "daemon_running",
+          "jobs"
+        ],
+        "properties": {
+          "daemon_running": {
+            "type": "boolean"
+          },
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobCheck"
+            }
+          }
+        }
+      },
+      "LastRunSource": {
+        "type": "string",
+        "enum": [
+          "rust",
+          "ts-log"
+        ]
       },
       "LastTest": {
         "type": "object",
@@ -2099,6 +3081,12 @@
           "missing",
           "not_file",
           "not_executable"
+        ]
+      },
+      "NotifyOnly": {
+        "type": "string",
+        "enum": [
+          "error"
         ]
       },
       "RawLogLine": {
