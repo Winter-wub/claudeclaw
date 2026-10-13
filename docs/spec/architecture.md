@@ -940,3 +940,17 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
 - **§7 settings:** `inbox{keepDays=30, maxMiB=1024}`, `disk{warnFreeMiB=2048, minFreeMiB=256}` and `logging.daemonMaxTotalMiB=1024`. A `disk_low` guard applies.
 - **Back-fill:** runs in the background after `ready`, month by month, with `RunIndexState` progress and no cap. On a live-shaped copy (5,755 TS logs) the first back-fill took 0.9–2.7s, and the re-check on every start took 12ms.
 - **§9.1:** `inbox/api/` names are `<turn_id>-<index><ext>`. A TS exit 124 back-fills as `timeout`. Run-index month files are compacted rather than deleted.
+
+### From [Plan verification of what no probe has covered yet](https://github.com/Winter-wub/claudeclaw/issues/36)
+
+- **Verification register:** a committed `verification/checks.toml`, enforced by `cargo xtask verify` and `release.yml`. Every behaviour that needs proof beyond unit tests is one row in it, with where it runs, what proves it, and its gate (merge / rc / Day 0 / none). The row is one of:
+  - a CI check (Windows on `windows-2025`; Linux sleep in a QEMU q35 S3 guest);
+  - Shadow evidence (macOS sleep, app use);
+  - a Known gap, printed in every release's notes.
+- **Windows** ships CI-verified only. Real sleep and the app GUI pass are Known gaps; there is no manual gate (a maintainer decision).
+- **Desktop app:** hidden `--selftest spawn-env | daemon | verify-update` modes run headless in CI.
+- **`claudeclaw` crate:** a `test-hooks` cargo feature, never enabled in release builds.
+- **Probe facts:**
+  - process-wrap needs `KillOnDrop` for kill-on-close.
+  - Linux `current_exe()` resolves brew symlinks.
+  - Rosetta is present on hosted arm64 macOS, so `verify-published` runs the x86_64 archive there.
