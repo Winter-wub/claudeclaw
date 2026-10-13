@@ -6,10 +6,14 @@
 
 pub mod deadline;
 pub mod error;
+pub mod export;
+pub mod logs;
 pub mod permission;
 pub mod revision;
 pub mod routes;
+pub mod runs;
 pub mod scope;
+pub mod usage;
 mod wire;
 
 pub use deadline::{Call, Deadline};
@@ -17,6 +21,7 @@ pub use error::{ApiError, ErrorBody, ErrorCode};
 pub use permission::TokenPermission;
 pub use revision::Revision;
 pub use routes::Route;
+pub use runs::{RunIndexState, RunRecord};
 pub use scope::Scope;
 
 use utoipa::OpenApi;
@@ -40,5 +45,10 @@ struct ApiDoc;
 /// Each resource module's `Doc` is merged here with `doc.merge(module::Doc::openapi())`, one line
 /// per module, in management-api §2 order.
 pub fn openapi() -> utoipa::openapi::OpenApi {
-    ApiDoc::openapi()
+    let mut doc = ApiDoc::openapi();
+    doc.merge(logs::Doc::openapi());
+    doc.merge(export::Doc::openapi());
+    doc.merge(runs::Doc::openapi());
+    doc.merge(usage::Doc::openapi());
+    doc
 }
