@@ -237,7 +237,8 @@ export class PluginManager {
 
   // ── Channel runtime ────────────────────────────────────────────────────
 
-  setChannelSenders(senders: Record<string, Record<string, (...args: unknown[]) => unknown>>): void {
+  // `any[]` params: senders take concrete (id, text) args, which unknown[] would reject.
+  setChannelSenders(senders: Record<string, Record<string, (...args: any[]) => unknown>>): void {
     Object.assign(this.channelRuntime, senders);
   }
 

@@ -235,6 +235,7 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
             return json({ ok: true, launcher, scope, inherited: true, sessionReset: true });
           }
 
+          if (!kind) throw new Error("kind must be 'direct' or 'ccs'");
           const launcher = await updateRuntimeSettings({ kind, profile }, scope);
           await resetScope();
           if (opts.onRuntimeSettingsChanged) await opts.onRuntimeSettingsChanged(launcher);
@@ -333,7 +334,7 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
 
       if (url.pathname === "/api/inject" && req.method === "POST") {
         try {
-          const body = await req.json();
+          const body = (await req.json()) as { message?: unknown };
           const message = typeof body.message === "string" ? body.message.trim() : "";
           if (!message) return json({ ok: false, error: "message is required" }, 400);
           const result = await runUserMessage("inject", message);
@@ -356,7 +357,7 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
       if (url.pathname === "/api/chat" && req.method === "POST") {
         if (!opts.onChat) return json({ ok: false, error: "chat not configured" });
         try {
-          const body = await req.json();
+          const body = (await req.json()) as { message?: unknown; attachments?: unknown } | null;
           const message = String(body?.message ?? "").trim();
 
           interface Attachment {
@@ -478,6 +479,6 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
   return {
     stop: () => server.stop(),
     host: opts.host,
-    port: server.port,
+    port: server.port ?? opts.port,
   };
 }

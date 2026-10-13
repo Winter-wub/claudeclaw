@@ -55,7 +55,6 @@ describe("buildClaudeCommand with CCS mode", () => {
     settings.runtime = { launcher: { kind: "ccs" } };
     expect(() => buildClaudeCommand(["-p", "test"])).toThrow("CCS mode requires a profile");
     // Restore
-    // @ts-expect-error
     settings.runtime = originalRuntime;
   });
 });
@@ -71,7 +70,6 @@ describe("buildClaudeCommand ccs flag rewrite", () => {
     expect(out.slice(0, 2)).toEqual(["ccs", "openrouter"]);
     expect(out).toContain("--print");
     expect(out).not.toContain("-p");
-    // @ts-expect-error
     settings.runtime = originalRuntime;
   });
 
@@ -83,7 +81,6 @@ describe("buildClaudeCommand ccs flag rewrite", () => {
     settings.runtime = { launcher: { kind: "ccs", profile: "codex" } };
     const out = buildClaudeCommand(["-p", "-p"]);
     expect(out).toEqual(["ccs", "codex", "--print", "-p"]);
-    // @ts-expect-error
     settings.runtime = originalRuntime;
   });
 
