@@ -429,3 +429,17 @@ For the coordinator to carry into the architecture spec and the listed tickets:
 7. **No job rename and no Turn cancel in v1** (§4).
 8. **`{job}` with `%2F` for agent jobs** (§1.7). The alternative is `/v1/agents/{agent}/jobs/{label}` duplicates of every job route.
 9. **Transcripts unreadable for Launchers that move Claude Code's config dir** (§2.5). It is reported, not hidden, but Chat history will be empty for those Scopes until a Launcher can declare its config dir.
+
+## Amendments
+
+### From [Decide how the daemon handles Launchers that change Claude Code's config dir or provider](https://github.com/Winter-wub/claudeclaw/issues/39)
+
+- `transcript_not_found` gains `details.reason`: `expired` / `not_located` / `unreadable`.
+- `LauncherCheck` gains `advisory` and a `transcript` check.
+- Session `context` is nullable.
+- `RunRecord` gains `usage`, `model_usage`, `api_key_source` and `cost_basis`. `cost_usd` is computed by difference against the Cost baseline.
+- `UsageRow` and `UsageTotals` gain `cost_trust`, plus two new `coverage` counts.
+
+### From [Decide how run timeouts treat system sleep](https://github.com/Winter-wub/claudeclaw/issues/38)
+
+- `RunRecord` gains `awake_ms`, `suspended_ms` and `wake_grace`.
