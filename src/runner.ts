@@ -29,7 +29,7 @@ import { buildClockPromptPrefix } from "./timezone";
 import { selectModel } from "./model-router";
 import { recordResult, abortReason, clearSession, startSession } from "./watchdog";
 import { getPluginManager, type EventContext } from "./plugins";
-import { buildClaudeCommand, cleanSpawnEnv } from "./runtime-launcher";
+import { buildClaudeCommand } from "./runtime-launcher";
 
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
 const ACTIVE_RUNS_FILE = join(process.cwd(), ".claude/claudeclaw/active-runs");

@@ -9,8 +9,14 @@ export function sanitizeProjectSlug(cwd: string): string {
   return cwd.replace(/[/\\.]/g, "-");
 }
 
+// Bun's os.homedir() ignores a HOME changed at runtime (Node honours it), so read the
+// env first; this is what made the session-file tests fail under bun.
+function home(): string {
+  return process.env.HOME || homedir();
+}
+
 export function getClaudeProjectDir(cwd: string = process.cwd()): string {
-  return join(homedir(), ".claude", "projects", sanitizeProjectSlug(cwd));
+  return join(home(), ".claude", "projects", sanitizeProjectSlug(cwd));
 }
 
 /**
@@ -23,7 +29,7 @@ export function findSessionJsonlPath(sessionId: string, cwd: string = process.cw
   const direct = join(getClaudeProjectDir(cwd), `${sessionId}.jsonl`);
   if (existsSync(direct)) return direct;
 
-  const projectsRoot = join(homedir(), ".claude", "projects");
+  const projectsRoot = join(home(), ".claude", "projects");
   if (!existsSync(projectsRoot)) return null;
 
   let newest: { path: string; mtimeMs: number } | null = null;

@@ -1,8 +1,12 @@
 {
   "compilerOptions": {
     "types": ["bun"],
+    "lib": ["esnext"],
     "module": "esnext",
     "target": "esnext",
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true
   }
 }
