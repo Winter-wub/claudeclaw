@@ -926,3 +926,17 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
 - **Daemon writes:** re-stat before the rename, then update the snapshot directly.
 - **Edits:** API edits survive the frontmatter guard. Edits made outside the daemon are restored, with a `job_frontmatter_restored` notice.
 - **Orphaned jobs:** sessions and job state are kept for 30 days (`jobs.json` and `core::sessions` gain the fields for this).
+
+### From [Bound the daemon's on-disk growth](https://github.com/Winter-wub/claudeclaw/issues/44)
+
+- **§5 `core::housekeeping`:** one daily Housekeeping task that deletes only files the Daemon wrote. It covers:
+  - inbox age (30 days, a maintainer decision) and a total cap;
+  - opt-in Run-log and audit retention;
+  - Run-index compaction;
+  - the session-backup cap (20);
+  - orphaned Scope state.
+
+  Counts go to the Daemon log and the audit log. `claudeclaw housekeeping --dry-run` previews a pass.
+- **§7 settings:** `inbox{keepDays=30, maxMiB=1024}`, `disk{warnFreeMiB=2048, minFreeMiB=256}` and `logging.daemonMaxTotalMiB=1024`. A `disk_low` guard applies.
+- **Back-fill:** runs in the background after `ready`, month by month, with `RunIndexState` progress and no cap. On a live-shaped copy (5,755 TS logs) the first back-fill took 0.9–2.7s, and the re-check on every start took 12ms.
+- **§9.1:** `inbox/api/` names are `<turn_id>-<index><ext>`. A TS exit 124 back-fills as `timeout`. Run-index month files are compacted rather than deleted.
