@@ -872,3 +872,16 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
 - **Unsupported flag:** `unknown option` from Claude Code is a Refused run (`claude_code_unsupported_flag`).
 - **Recorded:** the version is stored on `RunRecord`, `LauncherInfo`, Test launcher results and the Bug-report export.
 - **CI `cc-compat`:** installs real Claude Code from npm at the minimum and at latest, nightly, and drives the runner's real argv against a Fake API.
+
+### From [Design the CI and release pipeline](https://github.com/Winter-wub/claudeclaw/issues/35)
+
+- **Workflows:** `ci`, `parity`, `release`, `audit`, with SHA-pinned actions. Only the `ci-ok` and `parity-ok` aggregates are required, through a `main` ruleset.
+- **Release key:** one minisign key, stored as the `RELEASE_MINISIGN_KEY` secret in an approval-gated `release` environment. It signs `SHA256SUMS` and the Tauri updater artefacts. A backup key is kept offline, and both public keys are embedded in `crates/claudeclaw/keys/`.
+- **`claudeclaw-client::releases`:** release lookup plus the channel rule, shared by the CLI, the Worker and the Desktop backend. There is also a hidden `claudeclaw __verify-release` subcommand.
+- **Desktop updater:** `requireSignedVersion: true`, retrying with the backup key. `tauri.conf.json` omits `version`.
+- **`deny.toml`** bans `openssl-sys`, `aws-lc-sys` and `native-tls`.
+- **Release tooling:** `xtask release prepare|tag`, `scripts/release/{sign,brew}.sh` and `CHANGELOG.md`.
+- **Packaging traps:**
+  - `.deb` versions use `~rc.N`, because dpkg sorts `-rc.1` above the final release.
+  - The `.deb` must `Depends: ca-certificates`, because the static musl binary has no OS CA store.
+  - NSIS compares the full semver when upgrading.
