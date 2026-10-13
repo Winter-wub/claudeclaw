@@ -136,6 +136,14 @@ _Avoid_: caller, user, client, actor
 A short content hash of an editable file (job, settings, persona) that the Management API returns and checks through `If-Match`, so an edit made elsewhere is reported as a conflict instead of being overwritten.
 _Avoid_: version, etag (in prose), mtime
 
+**Pairing code**:
+A one-time, 10-minute code of 8 Crockford base32 characters (shown `XXXX-XXXX`), created only on the Daemon's host, that lets one new Device pair; burned after 5 wrong attempts.
+_Avoid_: PIN, OTP, invite code, password
+
+**Pairing string**:
+The single line `ccpair1.<code>.<fingerprint>.<port>[.<host>]` that `claudeclaw pair` prints for pasting into the Desktop app; it carries the Pairing code with the Daemon's pinned key, so the app checks the pin before sending the code.
+_Avoid_: pairing link, pairing URL, QR, token
+
 **API token**:
 A named, revocable credential, limited by its Token permissions, that lets automation on another machine call a narrow part of the Management API.
 _Avoid_: apiToken (the legacy single setting it replaces), password, key
