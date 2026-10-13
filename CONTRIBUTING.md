@@ -42,6 +42,16 @@ Before opening a PR:
 bun test
 ```
 
+The Rust workspace (`crates/`, `xtask/`) runs the same checks as CI:
+
+```bash
+cargo fmt --all --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo xtask deps        # the crate dependency rules, architecture §3.1
+cargo test --locked
+cargo deny --locked check bans licenses sources
+```
+
 Several modules derive their settings path from the working directory
 (`join(process.cwd(), ".claude", "claudeclaw", "settings.json")`), and some tests write to it.
 `bunfig.toml` therefore preloads `src/__tests__/_sandbox-cwd.ts`, which moves the process into a

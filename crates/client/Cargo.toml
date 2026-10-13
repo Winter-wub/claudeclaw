@@ -1,0 +1,12 @@
+[package]
+name = "claudeclaw-client"
+description = "Management API client over the local socket, named pipe or pinned TLS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+claudeclaw-api.workspace = true

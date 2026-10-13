@@ -1,0 +1,9 @@
+[package]
+name = "claudeclaw-chat"
+description = "The chat-adapter seam: traits and types, no transport deps"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true

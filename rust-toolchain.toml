@@ -1,0 +1,5 @@
+# Bumped by PR. MSRV (1.90) is `rust-version` in Cargo.toml and is checked by CI's `msrv` job.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

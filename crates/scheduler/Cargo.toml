@@ -1,0 +1,13 @@
+[package]
+name = "claudeclaw-scheduler"
+description = "Timers, catch-up, in-flight guard, retries and heartbeat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+claudeclaw-jobs.workspace = true
+claudeclaw-store.workspace = true

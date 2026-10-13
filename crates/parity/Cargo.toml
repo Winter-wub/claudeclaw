@@ -1,0 +1,19 @@
+[package]
+name = "claudeclaw-parity"
+description = "Recorder launcher and the Rust-vs-TS differential harness. Never released"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+claudeclaw-core.workspace = true
+claudeclaw-runner.workspace = true
+claudeclaw-store.workspace = true
+claudeclaw-jobs.workspace = true
+claudeclaw-ts-compat.workspace = true
+claudeclaw-chat.workspace = true
+claudeclaw-discord.workspace = true
+claudeclaw-api.workspace = true
