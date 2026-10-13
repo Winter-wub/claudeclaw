@@ -784,3 +784,16 @@ These belong to the first implementation PRs and to #18's suite.
 - **Re-runs after a crash:**
   - An interrupted job re-runs only when the reap proved its run dead.
   - A crash-interrupted chat gets the resend reply.
+
+### From [List the Management API resources the app's screens need](https://github.com/Winter-wub/claudeclaw/issues/21)
+
+The full resource list is in [`docs/spec/management-api.md`](https://github.com/Winter-wub/claudeclaw/blob/spec/management-api/docs/spec/management-api.md) on branch `spec/management-api`.
+
+- **§4 control pipe:** Worker → Watchdog `restart` and `reexec(path)`; Watchdog → Worker `reexec_result`.
+- **§6 chat seam:** a `chat::AdapterControl` trait (overview, available channels, hire, fire), registered beside `Notifier`.
+- **§9 layout:** new paths `inbox/api/`, `agents/.archive/` and `daemon/state/launcher-tests.json`. `devices.json` and `api-tokens.json` gain revocation tombstones.
+- **Logging (#23):** logs `source=daemon` is merged server-side, and `RunRecord` gains `cache_read_tokens` / `cache_write_tokens`.
+- **CLI (#22):**
+  - Token permissions are final.
+  - `pair` = create + long-poll + cancel.
+  - `send --file` uploads as base64.
