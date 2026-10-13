@@ -701,3 +701,10 @@ These belong to the first implementation PRs and to #18's suite.
 - **Secrets:** `store`'s `Secret<String>` becomes `secrecy::SecretString` (secrecy 0.10.3, a new workspace dependency). Content types get a hand-written `Debug` that prints only sizes.
 - **Logging pipeline:** a binary-owned log sink stamps `seq`, reports dropped lines as `log.dropped`, caps a day at 256 MiB, and mirrors WARN+ to the Worker's stderr.
 - **Run index:** a Rust-only `daemon/runs/<YYYY-MM>.jsonl`, back-filled from TS run logs.
+
+### From [Specify the claudeclaw CLI surface](https://github.com/Winter-wub/claudeclaw/issues/22)
+
+- **`runner` env:** the Worker sets `CLAUDECLAW_DIR` in every run's env, so a `claudeclaw` CLI called from inside a run targets the right daemon.
+- **New `daemon/state/runs.json`:** the live run registry (pid, pgid or Job object, Scope, start time, `boot_id`), used by `stop --force`. The Watchdog's reaping policy is decided in [Decide how the Watchdog reaps a crashed Worker's Claude runs](https://github.com/Winter-wub/claudeclaw/issues/29).
+- **`daemon.lock`** records the holder of an offline write (CLI, pid, command) while the CLI holds it.
+- **Exit codes:** the CLI uses 0 / 1 / 2 / 3 not running / 4 not responding / 5 gave up / 6 foreign daemon / 124 wait timeout. `start` keeps the Watchdog's 0 / 70 / 73 / 75.
