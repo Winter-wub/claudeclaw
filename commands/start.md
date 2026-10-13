@@ -253,10 +253,12 @@ Jobs are markdown files with cron schedule frontmatter and a prompt body:
 ```markdown
 ---
 schedule: "0 9 * * *"
+recurring: true
 ---
 Your prompt here. Claude will run this at the scheduled time.
 ```
 - Schedule uses standard cron syntax: `minute hour day-of-month month day-of-week`
 - **Timezone-aware**: cron times are evaluated in the configured `timezone`. E.g. `0 9 * * *` with `timezone: "UTC+2"` fires at 9:00 AM local time.
 - The filename (without `.md`) becomes the job name
+- `recurring: true` keeps a job on its schedule. Without it the job is one-shot: it runs once and the daemon then deletes its `schedule:` line
 - Jobs are loaded at daemon startup from `.claude/claudeclaw/jobs/`
