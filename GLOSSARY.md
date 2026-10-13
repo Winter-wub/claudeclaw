@@ -44,6 +44,10 @@ _Avoid_: offline mode, stale data, mirror
 The PATH the Worker gives every Launcher it starts and uses to find `direct`'s `claude` and script interpreters; it comes from the user's login shell (macOS, Linux) or the registry (Windows), with `run_path.prepend` first, and is rebuilt at every Worker start.
 _Avoid_: shell env, GUI PATH, daemon PATH, launchd PATH
 
+**Run locale**:
+The character-type setting the Worker gives every Launcher run: the inherited locale when it is already UTF-8, otherwise `LC_CTYPE=C.UTF-8` (or the first valid fallback), with every other locale category left as inherited.
+_Avoid_: run language, daemon locale, LANG default
+
 **System-prompt file**:
 The per-run file under `daemon/tmp/` holding the text the Daemon appends to Claude Code's system prompt, passed as `--append-system-prompt-file` and deleted when the run is reaped.
 _Avoid_: ASP file, prompt file, temp prompt
