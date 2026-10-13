@@ -8,6 +8,14 @@ A daemon that runs Claude Code on schedules and in response to chat messages, on
 The long-running `claudeclaw` process that owns the scheduler, the chat adapters and every Claude Code run. It runs headless on its own, with or without the Desktop app.
 _Avoid_: server, bot, service
 
+**Watchdog**:
+The Daemon's parent process, which only starts, restarts and re-executes the Worker; it never runs Claude Code itself.
+_Avoid_: supervisor, monitor
+
+**Worker**:
+The Daemon's child process that runs the scheduler, the chat adapters and every Claude Code run.
+_Avoid_: daemon (when meaning only this process), runner
+
 **Launcher**:
 The path to a single runnable executable that the Daemon invokes in place of `claude`, passing the normal `claude` argv. It carries no name and no environment of its own; any wrapping (such as `ccs <profile>`) and its env live in the user's script.
 _Avoid_: wrapper, runtime, provider, profile
