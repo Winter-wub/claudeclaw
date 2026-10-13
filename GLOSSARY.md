@@ -44,6 +44,20 @@ _Avoid_: client, session, user
 A named, scope-limited, revocable credential that lets automation on another machine call a narrow part of the Management API.
 _Avoid_: apiToken (the legacy single setting it replaces), password, key
 
+## Jobs
+
+**Job**:
+A markdown file in a jobs directory whose YAML frontmatter holds a cron `schedule` and options and whose body is the prompt; the Daemon runs it in its own Scope. An agent Job lives under `agents/<agent>/jobs/`.
+_Avoid_: cron, task, schedule (when meaning the file)
+
+**One-shot job**:
+A Job with `recurring: false`; after it finishes, the Daemon sets `enabled: false` and keeps the file.
+_Avoid_: single job, temporary job
+
+**Job import**:
+The one-time pass over TS data on the Daemon's first start, also runnable on demand. After taking a backup, it rewrites only the Job lines whose meaning differs between the TS and Rust Daemons, into spellings both read identically.
+_Avoid_: migration, conversion, upgrade
+
 ## Cutover
 
 **Zero**:
