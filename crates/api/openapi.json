@@ -22,6 +22,27 @@
           "disabled"
         ]
       },
+      "AdapterStatus": {
+        "type": "object",
+        "description": "One `DaemonStatus.adapters[]` item (management-api §2.1).",
+        "required": [
+          "transport",
+          "state",
+          "since"
+        ],
+        "properties": {
+          "transport": {
+            "$ref": "#/components/schemas/Transport"
+          },
+          "state": {
+            "$ref": "#/components/schemas/AdapterState"
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "AgentArchived": {
         "type": "object",
         "description": "`agents.archive` → where the agent went (management-api §2.8). Its `jobs/` moves with it, so\nthose jobs stop being scheduled; its sessions are kept and resume on restore.",
@@ -694,6 +715,25 @@
           }
         }
       },
+      "Beacon": {
+        "type": "object",
+        "description": "One stall-monitor beacon (#27 D5; management-api §8 item 10).",
+        "required": [
+          "beacon",
+          "quiet_ms"
+        ],
+        "properties": {
+          "beacon": {
+            "type": "string",
+            "description": "`scheduler`, `adapter:<transport>`, `outcome_sink` or `turn:<scope>`."
+          },
+          "quiet_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ChannelKind": {
         "type": "string",
         "enum": [
@@ -709,6 +749,26 @@
           "mention",
           "every_message"
         ]
+      },
+      "ChatOrigin": {
+        "type": "object",
+        "description": "The chat message a run answers, so the next Worker can send the interrupted reply (#29 D2,\nD6).",
+        "required": [
+          "adapter",
+          "channel",
+          "message"
+        ],
+        "properties": {
+          "adapter": {
+            "$ref": "#/components/schemas/Transport"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
       },
       "ClaudeCodeSeen": {
         "type": "object",
@@ -729,6 +789,60 @@
           "outdated": {
             "type": "boolean",
             "description": "Below the minimum ClaudeClaw supports (#42 D4)."
+          }
+        }
+      },
+      "ClearedBy": {
+        "type": "string",
+        "enum": [
+          "start",
+          "clear-give-up"
+        ]
+      },
+      "ClearedGiveUp": {
+        "type": "object",
+        "description": "One entry of `give_ups[]`: a [`GaveUp`] that a person cleared (#45 D3).",
+        "required": [
+          "at",
+          "crashes_in_window",
+          "held_starts",
+          "reminded_at",
+          "cleared_at",
+          "cleared_by"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "crashes_in_window": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "held_starts": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HeldStarts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reminded_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "cleared_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cleared_by": {
+            "$ref": "#/components/schemas/ClearedBy"
           }
         }
       },
@@ -766,6 +880,306 @@
           "managed",
           "estimate"
         ]
+      },
+      "Crash": {
+        "type": "object",
+        "description": "One Crash record entry (#20 D2, #27 D6, #29 D5, #36). Its `fatal` reason and `stderr_tail`\nare redacted but still free text, so `Debug` prints only their sizes.",
+        "required": [
+          "at",
+          "boot_id",
+          "uptime_ms",
+          "exit",
+          "fatal",
+          "cause",
+          "counted",
+          "reaped"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "boot_id": {
+            "type": "string",
+            "description": "The `boot_id` of the Worker that crashed."
+          },
+          "uptime_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "exit": {
+            "$ref": "#/components/schemas/CrashExit"
+          },
+          "fatal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the Worker sent as `fatal(reason)`, or the last stall report for `hung`; `null` if\nnothing was sent."
+          },
+          "cause": {
+            "$ref": "#/components/schemas/CrashCause"
+          },
+          "counted": {
+            "type": "boolean",
+            "description": "Whether it counts toward the Give-up (#27 D6)."
+          },
+          "reaped": {
+            "$ref": "#/components/schemas/ReapCounts",
+            "description": "The Reap after this exit (#29 D5)."
+          },
+          "stderr_tail": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The redacted stderr tail, on the newest 5 crashes only: at most 40 lines and 8 KiB."
+          }
+        }
+      },
+      "CrashCause": {
+        "type": "string",
+        "enum": [
+          "exit",
+          "fatal",
+          "stall",
+          "hung",
+          "shutdown_overrun",
+          "abort"
+        ]
+      },
+      "CrashExit": {
+        "type": "object",
+        "description": "How the Worker ended: `{\"code\": 101}` or `{\"signal\": \"SIGSEGV\"}` (#20 D2). One of the two is\nset; a form added later in v1 parses with neither set.",
+        "properties": {
+          "code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The exit status. Wide enough for Windows statuses such as `0xC0000409` (#36)."
+          },
+          "signal": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "DaemonHealth": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "degraded"
+        ]
+      },
+      "DaemonReachability": {
+        "type": "string",
+        "enum": [
+          "running",
+          "starting",
+          "restarting",
+          "not_responding",
+          "gave_up",
+          "stopped",
+          "vanished",
+          "foreign",
+          "unknown",
+          "reconnecting",
+          "unreachable",
+          "identity_changed",
+          "revoked",
+          "recovered"
+        ]
+      },
+      "DaemonStatus": {
+        "type": "object",
+        "description": "`status.get`, and `claudeclaw status --json` (management-api §2.1; #22 §5, #20). Served\nonline with `source: api`; the CLI fills it from disk when the Daemon doesn't answer. Fields\nonly a live Worker knows are `null` from disk.",
+        "required": [
+          "dir",
+          "state",
+          "health",
+          "problems",
+          "lock_holder",
+          "watchdog_pid",
+          "worker_pid",
+          "version",
+          "started_at",
+          "boot_id",
+          "socket",
+          "remote",
+          "adapters",
+          "heartbeat",
+          "jobs",
+          "active_runs",
+          "launchers",
+          "update",
+          "run_path",
+          "run_locale",
+          "run_index",
+          "beacons",
+          "config_dir_mismatch",
+          "supervisor",
+          "source"
+        ],
+        "properties": {
+          "dir": {
+            "type": "string",
+            "description": "The project dir."
+          },
+          "state": {
+            "$ref": "#/components/schemas/DaemonReachability",
+            "description": "A local state (#20 D1); always `running` when served."
+          },
+          "health": {
+            "$ref": "#/components/schemas/DaemonHealth"
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          },
+          "lock_holder": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LockHolder",
+                "description": "Who holds `daemon.lock`; CLI-only, `null` online (#22 §3)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "watchdog_pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "CLI-only, `null` online.",
+            "minimum": 0
+          },
+          "worker_pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "CLI-only, `null` online.",
+            "minimum": 0
+          },
+          "version": {
+            "$ref": "#/components/schemas/StatusVersion"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "boot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "socket": {
+            "type": "string",
+            "description": "The local socket or pipe."
+          },
+          "remote": {
+            "$ref": "#/components/schemas/RemoteStatus"
+          },
+          "adapters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdapterStatus"
+            }
+          },
+          "heartbeat": {
+            "$ref": "#/components/schemas/HeartbeatStatus"
+          },
+          "jobs": {
+            "$ref": "#/components/schemas/JobsStatus"
+          },
+          "active_runs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "launchers": {
+            "$ref": "#/components/schemas/LaunchersStatus"
+          },
+          "update": {
+            "$ref": "#/components/schemas/UpdateStatus"
+          },
+          "run_path": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunPath",
+                "description": "The Run PATH (#26)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_locale": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunLocale",
+                "description": "The Run locale (#43)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_index": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunIndexState",
+                "description": "The Run index Back-fill's progress (#44)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "beacons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Beacon"
+            },
+            "description": "The Worker's stall-monitor beacons (#27 D5)."
+          },
+          "config_dir_mismatch": {
+            "type": "boolean",
+            "description": "The advisory notice of #48: the login shell exports `CLAUDE_CONFIG_DIR`, but `direct`\nruns use a different Config dir. Only the presence and the mismatch are reported, never\nthe value."
+          },
+          "supervisor": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SupervisorStatus",
+                "description": "`supervisor.json` (#20 D2); `null` when it doesn't exist (never started)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/StatusSource"
+          }
+        }
       },
       "DeviceInfo": {
         "type": "object",
@@ -1556,6 +1970,92 @@
           }
         }
       },
+      "GaveUp": {
+        "type": "object",
+        "description": "`supervisor.json.gave_up`: the Give-up that holds every later start (#20 D2, #45 D1–D2).",
+        "required": [
+          "at",
+          "crashes_in_window",
+          "held_starts",
+          "reminded_at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "crashes_in_window": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "held_starts": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HeldStarts",
+                "description": "`null` until the first Held start (#45 D2)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reminded_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The last reminder DM, sent at most once per 24 h (#45 D2)."
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "description": "`health.get`: the reachability probe (management-api §2.1, §1.8; #20 D1).",
+        "required": [
+          "state",
+          "boot_id",
+          "version",
+          "api_version",
+          "import"
+        ],
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/HealthState"
+          },
+          "boot_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "description": "The Daemon's version."
+          },
+          "api_version": {
+            "type": "string",
+            "description": "The API version, `\"1\"` for v1."
+          },
+          "import": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportProgress",
+                "description": "The First-start import's progress (#17), or `null` when none is running."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "HealthState": {
+        "type": "string",
+        "enum": [
+          "starting",
+          "ready",
+          "stopping"
+        ]
+      },
       "HeartbeatSettings": {
         "type": "object",
         "description": "`heartbeat` (TS `HeartbeatConfig`).",
@@ -1586,6 +2086,57 @@
           }
         }
       },
+      "HeartbeatStatus": {
+        "type": "object",
+        "description": "`DaemonStatus.heartbeat` (#22 §9).",
+        "required": [
+          "enabled",
+          "next_at"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "next_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "HeldStartBy": {
+        "type": "string",
+        "enum": [
+          "launchd",
+          "systemd",
+          "cli"
+        ]
+      },
+      "HeldStarts": {
+        "type": "object",
+        "description": "`gave_up.held_starts` (#45 D2).",
+        "required": [
+          "count",
+          "last_at",
+          "last_by"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "last_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_by": {
+            "$ref": "#/components/schemas/HeldStartBy"
+          }
+        }
+      },
       "HireRequest": {
         "type": "object",
         "description": "`discord.hire` body: one public thread per name under the channel (management-api §2.7).",
@@ -1613,6 +2164,76 @@
             "items": {
               "$ref": "#/components/schemas/DiscordThread"
             }
+          }
+        }
+      },
+      "HousekeepingReport": {
+        "type": "object",
+        "description": "`housekeeping.run`'s answer (management-api §2.1, #44 D7). A dry run sets `would_delete`, a\nreal one `deleted`. Both map a kind (`inbox`, `run_logs`, …) to its totals.",
+        "required": [
+          "freed_bytes"
+        ],
+        "properties": {
+          "would_delete": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/HousekeepingTotal"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "deleted": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/HousekeepingTotal"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "freed_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Freed, or that would be freed on a dry run.",
+            "minimum": 0
+          }
+        }
+      },
+      "HousekeepingRequest": {
+        "type": "object",
+        "description": "`housekeeping.run`'s body (management-api §2.1, #44 D7).",
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "Report what would be deleted, and delete nothing.",
+            "default": false
+          }
+        }
+      },
+      "HousekeepingTotal": {
+        "type": "object",
+        "description": "One kind's totals in a [`HousekeepingReport`] (#44 D7).",
+        "required": [
+          "count",
+          "bytes"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -2096,6 +2717,26 @@
               "$ref": "#/components/schemas/ImportNote"
             },
             "description": "Everything else: files left in place, adapters 2.x lacks, behaviour changes (#17 §6,\n#33, #38, #44). Empty when `only` is set."
+          }
+        }
+      },
+      "ImportProgress": {
+        "type": "object",
+        "description": "`Health.import` (management-api §2.1, #17).",
+        "required": [
+          "running",
+          "step"
+        ],
+        "properties": {
+          "running": {
+            "type": "boolean"
+          },
+          "step": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The step running now, or `null` between steps."
           }
         }
       },
@@ -3186,6 +3827,47 @@
           }
         }
       },
+      "JobsStatus": {
+        "type": "object",
+        "description": "`DaemonStatus.jobs` (#22 §9).",
+        "required": [
+          "total",
+          "invalid",
+          "warnings",
+          "next"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "invalid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "next": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NextFire"
+            },
+            "description": "The next fires, soonest first."
+          }
+        }
+      },
+      "KillMethod": {
+        "type": "string",
+        "enum": [
+          "process_group",
+          "job_object"
+        ]
+      },
       "LastRunSource": {
         "type": "string",
         "enum": [
@@ -3530,6 +4212,112 @@
           "job_frontmatter"
         ]
       },
+      "LaunchersStatus": {
+        "type": "object",
+        "description": "`DaemonStatus.launchers` (#22 §9, #26 D7).",
+        "required": [
+          "default",
+          "refused_scopes",
+          "direct_resolved"
+        ],
+        "properties": {
+          "default": {
+            "type": "string",
+            "description": "`direct` or a Launcher path."
+          },
+          "refused_scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Scope"
+            }
+          },
+          "direct_resolved": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where `direct` resolves on the Run PATH, or `null` if it doesn't (#26 D7)."
+          }
+        }
+      },
+      "Leftover": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RegistryEntry"
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "checked_at"
+            ],
+            "properties": {
+              "outcome": {
+                "$ref": "#/components/schemas/ReapOutcome",
+                "description": "`unverified`, `unknown_pid` or `survived`."
+              },
+              "checked_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        ],
+        "description": "A Run registry entry a Reap could not end (#29 D5)."
+      },
+      "LinuxStamp": {
+        "type": "object",
+        "description": "The boot and `/proc/<pid>/stat` field 22 (#29 D2).",
+        "required": [
+          "boot_id",
+          "start_ticks"
+        ],
+        "properties": {
+          "boot_id": {
+            "type": "string"
+          },
+          "start_ticks": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "LockHolder": {
+        "type": "object",
+        "description": "`DaemonStatus.lock_holder` (#22 §3, §9).",
+        "required": [
+          "role",
+          "pid"
+        ],
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/LockRole"
+          },
+          "pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The CLI command doing an Offline write, e.g. `jobs import`."
+          }
+        }
+      },
+      "LockRole": {
+        "type": "string",
+        "enum": [
+          "watchdog",
+          "cli"
+        ]
+      },
       "LogCounts": {
         "type": "object",
         "description": "ERROR and WARN lines since the Worker started (#23 D5).",
@@ -3867,6 +4655,43 @@
           }
         }
       },
+      "MacosStamp": {
+        "type": "object",
+        "description": "`proc_pidinfo(PROC_PIDTBSDINFO)`'s start time (#29 D2).",
+        "required": [
+          "sec",
+          "usec"
+        ],
+        "properties": {
+          "sec": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "usec": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "NextFire": {
+        "type": "object",
+        "description": "One `jobs.next[]` item (#22 §9).",
+        "required": [
+          "job",
+          "at"
+        ],
+        "properties": {
+          "job": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "NotRunnable": {
         "type": "string",
         "enum": [
@@ -4045,6 +4870,101 @@
           "burned"
         ]
       },
+      "Problem": {
+        "type": "object",
+        "description": "One `DaemonStatus.problems[]` item (management-api §2.1).",
+        "required": [
+          "kind",
+          "since"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ProblemKind"
+          },
+          "scope": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Scope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "job": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "launcher": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Launcher, for `claude_code_outdated` (#42)."
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ProblemKind": {
+        "type": "string",
+        "enum": [
+          "discord_disconnected",
+          "launcher_refused",
+          "job_invalid",
+          "settings_invalid",
+          "update_available",
+          "version_mismatch",
+          "import_errors",
+          "run_path_capture_failed",
+          "leftover_runs",
+          "run_pipe_held",
+          "claude_code_outdated",
+          "run_locale_unavailable",
+          "disk_low",
+          "jobs_dir_unavailable"
+        ]
+      },
+      "ProcessStamp": {
+        "type": "object",
+        "description": "An OS process start stamp, which proves a pid is still the process that was recorded (#29\nD2–D3, #36). Exactly one field is set; an OS added later in v1 parses with none set,\nwhich a reaper treats as unprovable.",
+        "properties": {
+          "macos": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MacosStamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "linux": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LinuxStamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "windows": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WindowsStamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "RawLogLine": {
         "type": "object",
         "description": "A Daemon-log line that didn't parse (#23 D5).",
@@ -4060,6 +4980,229 @@
           },
           "raw": {
             "type": "string"
+          }
+        }
+      },
+      "ReapCounts": {
+        "type": "object",
+        "description": "A Reap's per-outcome counts (#29 D5).",
+        "required": [
+          "killed",
+          "already_gone",
+          "not_ours",
+          "unverified",
+          "unknown_pid",
+          "survived"
+        ],
+        "properties": {
+          "killed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "already_gone": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "not_ours": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "unverified": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "unknown_pid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "survived": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ReapOutcome": {
+        "type": "string",
+        "enum": [
+          "killed",
+          "already_gone",
+          "not_ours",
+          "unverified",
+          "unknown_pid",
+          "survived"
+        ]
+      },
+      "ReapedRun": {
+        "type": "object",
+        "description": "One run of the last Reap (#29 D2, D6).",
+        "required": [
+          "run_id",
+          "scope",
+          "origin",
+          "purpose",
+          "state",
+          "outcome"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "origin": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChatOrigin"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/SpawnPurpose"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RegistryState",
+            "description": "A `settling` run never makes its job or chat `interrupted` (#37 D3)."
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ReapOutcome"
+          }
+        }
+      },
+      "ReexecAccepted": {
+        "type": "object",
+        "description": "`202` from `daemon.reexec` (management-api §2.1).",
+        "required": [
+          "old_boot_id",
+          "target_version"
+        ],
+        "properties": {
+          "old_boot_id": {
+            "type": "string"
+          },
+          "target_version": {
+            "type": "string",
+            "description": "What `<exe> --version` reported."
+          }
+        }
+      },
+      "ReexecRequest": {
+        "type": "object",
+        "description": "`daemon.reexec`'s body (management-api §2.1; #22 §7, #36).",
+        "required": [
+          "exe"
+        ],
+        "properties": {
+          "exe": {
+            "type": "string",
+            "description": "The unresolved `PATH` location from `argv[0]`, never `current_exe()`."
+          }
+        }
+      },
+      "RegistryEntry": {
+        "type": "object",
+        "description": "One spawned process in the Run registry (#29 D2, #37 D3).",
+        "required": [
+          "run_id",
+          "state",
+          "pid",
+          "stamp",
+          "kill",
+          "purpose",
+          "scope",
+          "origin",
+          "started_at"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "description": "The Run index's `run_id` (#23)."
+          },
+          "state": {
+            "$ref": "#/components/schemas/RegistryState"
+          },
+          "pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "`null` while `spawning`. On Unix it is also the pgid.",
+            "minimum": 0
+          },
+          "stamp": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProcessStamp",
+                "description": "`null` while `spawning`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kill": {
+            "$ref": "#/components/schemas/KillMethod"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/SpawnPurpose"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "origin": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChatOrigin",
+                "description": "The chat message that started it; `null` for jobs, the heartbeat and API Turns."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RegistryState": {
+        "type": "string",
+        "enum": [
+          "spawning",
+          "running",
+          "settling"
+        ]
+      },
+      "RegistryWorker": {
+        "type": "object",
+        "description": "`runs.json.worker` (#29 D2, D4).",
+        "required": [
+          "pid",
+          "boot_id",
+          "stamp"
+        ],
+        "properties": {
+          "pid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "boot_id": {
+            "type": "string"
+          },
+          "stamp": {
+            "$ref": "#/components/schemas/ProcessStamp"
           }
         }
       },
@@ -4083,6 +5226,53 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "RemoteStatus": {
+        "type": "object",
+        "description": "`DaemonStatus.remote`: the pinned-TLS listener (#13, #41).",
+        "required": [
+          "enabled",
+          "listen",
+          "fingerprint",
+          "fingerprint_curl"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "listen": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The certificate's SPKI fingerprint; `null` while remote access is off."
+          },
+          "fingerprint_curl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The same pin in `curl --pinnedpubkey` form."
+          }
+        }
+      },
+      "RestartAccepted": {
+        "type": "object",
+        "description": "`202` from `daemon.restart` (management-api §2.1).",
+        "required": [
+          "old_boot_id"
+        ],
+        "properties": {
+          "old_boot_id": {
+            "type": "string"
           }
         }
       },
@@ -4138,11 +5328,61 @@
           }
         }
       },
+      "RunLocale": {
+        "type": "object",
+        "description": "`DaemonStatus.run_locale`: the character type every run gets (#43 D5).",
+        "required": [
+          "setting",
+          "source",
+          "lc_ctype_added",
+          "effective",
+          "charmap",
+          "verified"
+        ],
+        "properties": {
+          "setting": {
+            "$ref": "#/components/schemas/RunLocaleSetting"
+          },
+          "source": {
+            "$ref": "#/components/schemas/RunLocaleSource"
+          },
+          "lc_ctype_added": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `LC_CTYPE` value added to every run, or `null` when none was added."
+          },
+          "effective": {
+            "type": "string",
+            "description": "The ctype name runs see."
+          },
+          "charmap": {
+            "type": "string",
+            "description": "`locale charmap` for `effective`, e.g. `UTF-8`."
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "`false` when `locale` wasn't found and `C.UTF-8` was used unchecked (#43 D3)."
+          }
+        }
+      },
       "RunLocaleSetting": {
         "type": "string",
         "enum": [
           "auto",
           "inherit"
+        ]
+      },
+      "RunLocaleSource": {
+        "type": "string",
+        "enum": [
+          "inherited",
+          "default",
+          "lc_all",
+          "setting",
+          "unavailable",
+          "not_applicable"
         ]
       },
       "RunModelUsage": {
@@ -4244,6 +5484,91 @@
             "$ref": "#/components/schemas/RunIndexState"
           }
         }
+      },
+      "RunPath": {
+        "type": "object",
+        "description": "`DaemonStatus.run_path`, the PATH every run gets (#26 D7).",
+        "required": [
+          "source_requested",
+          "source_used",
+          "shell",
+          "dirs",
+          "captured_at",
+          "duration_ms",
+          "error",
+          "dropped_entries"
+        ],
+        "properties": {
+          "source_requested": {
+            "$ref": "#/components/schemas/RunPathSource",
+            "description": "`run_path.source` as set."
+          },
+          "source_used": {
+            "$ref": "#/components/schemas/RunPathSource",
+            "description": "The source actually used, after `auto` and any fallback."
+          },
+          "shell": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The login shell's basename; `null` when no shell was run."
+          },
+          "dirs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "captured_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunPathError",
+                "description": "Why the capture failed, or `null`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dropped_entries": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Empty or relative entries left out.",
+            "minimum": 0
+          }
+        }
+      },
+      "RunPathError": {
+        "type": "object",
+        "description": "`RunPath.error` (#26 D2).",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/RunPathErrorKind"
+          }
+        }
+      },
+      "RunPathErrorKind": {
+        "type": "string",
+        "enum": [
+          "spawn_failed",
+          "timeout",
+          "no_marker",
+          "bad_output",
+          "unsafe_exe_path"
+        ]
       },
       "RunPathSettings": {
         "type": "object",
@@ -4607,6 +5932,56 @@
           }
         }
       },
+      "RunRegistry": {
+        "type": "object",
+        "description": "`daemon/state/runs.json`, the Run registry: every process the Worker spawned that isn't\nsettled yet (#29 D2, #37 D3; architecture §4 \"claudeclaw-api\").",
+        "required": [
+          "schema",
+          "worker",
+          "runs",
+          "leftovers",
+          "reaped"
+        ],
+        "properties": {
+          "schema": {
+            "type": "integer",
+            "format": "int32",
+            "description": "[`RunRegistry::SCHEMA`].",
+            "minimum": 0
+          },
+          "worker": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RegistryWorker",
+                "description": "Written first thing at Worker start; `null` when no Worker runs."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RegistryEntry"
+            }
+          },
+          "leftovers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Leftover"
+            },
+            "description": "Entries a Reap could not end (#29 D5)."
+          },
+          "reaped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReapedRun"
+            },
+            "description": "The last Reap's results, consumed and cleared by the next Worker (#29 D6)."
+          }
+        }
+      },
       "RunSession": {
         "type": "string",
         "enum": [
@@ -4882,6 +6257,33 @@
             }
           }
         }
+      },
+      "ServiceManager": {
+        "type": "object",
+        "description": "`watchdog.service_manager` (#45 D4).",
+        "required": [
+          "kind",
+          "name"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ServiceManagerKind"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The launchd label or the systemd unit, best effort; `null` when it couldn't be read."
+          }
+        }
+      },
+      "ServiceManagerKind": {
+        "type": "string",
+        "enum": [
+          "launchd",
+          "systemd"
+        ]
       },
       "SessionCompacted": {
         "type": "object",
@@ -5334,12 +6736,47 @@
           "survived"
         ]
       },
+      "SpawnPurpose": {
+        "type": "string",
+        "enum": [
+          "turn",
+          "compact",
+          "summary",
+          "test_launcher"
+        ]
+      },
       "StateJsonAction": {
         "type": "string",
         "enum": [
           "remove",
           "absent"
         ]
+      },
+      "StatusSource": {
+        "type": "string",
+        "enum": [
+          "api",
+          "disk"
+        ]
+      },
+      "StatusVersion": {
+        "type": "object",
+        "description": "`DaemonStatus.version` (#22 §9).",
+        "required": [
+          "daemon"
+        ],
+        "properties": {
+          "daemon": {
+            "type": "string"
+          },
+          "cli": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The CLI's own version; only the CLI sets it."
+          }
+        }
       },
       "StatuslineAction": {
         "type": "string",
@@ -5350,6 +6787,160 @@
           "leave_foreign",
           "unreadable"
         ]
+      },
+      "StopAccepted": {
+        "type": "object",
+        "description": "`202` from `daemon.stop` (management-api §2.1).",
+        "required": [
+          "boot_id",
+          "in_flight_runs",
+          "deadline_at"
+        ],
+        "properties": {
+          "boot_id": {
+            "type": "string"
+          },
+          "in_flight_runs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "deadline_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the drain ends at the latest (#9)."
+          }
+        }
+      },
+      "StopBy": {
+        "type": "string",
+        "enum": [
+          "api",
+          "cli",
+          "clear_give_up"
+        ]
+      },
+      "StopRecord": {
+        "type": "object",
+        "description": "`supervisor.json.stop`, the last intentional stop (#20 D2, #45 D3).",
+        "required": [
+          "at",
+          "by"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "by": {
+            "$ref": "#/components/schemas/StopBy"
+          }
+        }
+      },
+      "SupervisorState": {
+        "type": "string",
+        "enum": [
+          "starting",
+          "running",
+          "backoff",
+          "stopping",
+          "stopped",
+          "gave_up"
+        ]
+      },
+      "SupervisorStatus": {
+        "type": "object",
+        "description": "`daemon/state/supervisor.json`, written by the Watchdog on every transition and embedded in\n`DaemonStatus.supervisor` (#20 D2; architecture §4 \"Status file\"). Every change after\n`schema: 1` is additive (#27, #29, #36, #45).",
+        "required": [
+          "schema",
+          "state",
+          "updated_at",
+          "watchdog",
+          "worker",
+          "next_restart_at",
+          "stop",
+          "gave_up",
+          "give_ups",
+          "crashes"
+        ],
+        "properties": {
+          "schema": {
+            "type": "integer",
+            "format": "int32",
+            "description": "[`SupervisorStatus::SCHEMA`]. A reader that sees a higher value reports `unknown` (#20 D1).",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/SupervisorState"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "watchdog": {
+            "$ref": "#/components/schemas/WatchdogInfo"
+          },
+          "worker": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkerInfo",
+                "description": "`null` when no Worker is running."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_restart_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Set only in `backoff`."
+          },
+          "stop": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StopRecord",
+                "description": "The last intentional stop, or `null` if there was none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hang_kill": {
+            "type": "boolean",
+            "description": "`false` when `CLAUDECLAW_HANG_KILL=0` turned the Hang kill off (#27 D3).",
+            "default": true
+          },
+          "gave_up": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GaveUp",
+                "description": "`null` unless `state` is `gave_up`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "give_ups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClearedGiveUp"
+            },
+            "description": "Cleared Give-ups, newest first, the last 10 (#45 D3)."
+          },
+          "crashes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Crash"
+            },
+            "description": "The Crash record: newest first, the last 20. It carries across Watchdog starts (#20 D2)."
+          }
+        }
       },
       "TimeoutBreakerSettings": {
         "type": "object",
@@ -6020,6 +7611,65 @@
           "done"
         ]
       },
+      "UpdateInfo": {
+        "type": "object",
+        "description": "`update.get` and `update.check`: the Worker's daily release check (management-api §2.1; #6,\n#35 §7). The channel follows from the running version.",
+        "required": [
+          "current",
+          "latest",
+          "available",
+          "checked_at",
+          "release_url"
+        ],
+        "properties": {
+          "current": {
+            "type": "string"
+          },
+          "latest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest release on this channel; `null` before the first successful check."
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "release_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The release page of `latest`."
+          }
+        }
+      },
+      "UpdateStatus": {
+        "type": "object",
+        "description": "`DaemonStatus.update` (#22 §9); [`UpdateInfo`] has the detail.",
+        "required": [
+          "available",
+          "latest"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "latest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "UsageCoverage": {
         "type": "object",
         "description": "What the sums leave out, so a total is never silently partial (#39 D11, #44).",
@@ -6313,6 +7963,88 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "WatchdogInfo": {
+        "type": "object",
+        "description": "`supervisor.json.watchdog` (#20 D2, #36, #45).",
+        "required": [
+          "pid",
+          "started_at",
+          "version",
+          "stamp",
+          "service_manager",
+          "reaped"
+        ],
+        "properties": {
+          "pid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "version": {
+            "type": "string"
+          },
+          "stamp": {
+            "$ref": "#/components/schemas/ProcessStamp",
+            "description": "The OS start stamp that `stop` checks before it signals `pid` (#36)."
+          },
+          "service_manager": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ServiceManager",
+                "description": "`null` unless started with `--service-manager` (#45 D4)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reaped": {
+            "$ref": "#/components/schemas/ReapCounts",
+            "description": "The start-up Reap's counts, recorded against this Watchdog start (#29 D5)."
+          }
+        }
+      },
+      "WindowsStamp": {
+        "type": "object",
+        "description": "`GetProcessTimes`' creation time as a FILETIME (#29 D2).",
+        "required": [
+          "creation_time"
+        ],
+        "properties": {
+          "creation_time": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "WorkerInfo": {
+        "type": "object",
+        "description": "`supervisor.json.worker` (#20 D2).",
+        "required": [
+          "pid",
+          "boot_id",
+          "started_at"
+        ],
+        "properties": {
+          "pid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "boot_id": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       }
