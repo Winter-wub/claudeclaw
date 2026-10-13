@@ -164,12 +164,12 @@ Columns: **Op** (operationId and audit action), **Route**, **Request → Respons
 - `status.changed{health, problems}`, `adapter.changed{transport, state}`
 - `turn.queued{turn_id, scope, position}`, `run.started{run_id, turn_id, scope, job?, launcher}`, `run.finished{record: RunRecord}`, `turn.finished{turn_id, scope, outcome}`
 - `job.fired{job, turn_id, catch_up}`, `job.changed{job, change: created|updated|deleted|invalid|restored, source: api|daemon|external|startup, revision|null, carried_from?}` (#46)
-- `notice{kind, scope?, job?, run_id?, title}`. `kind`: `job_failed`, `job_finished`, `run_refused`, `job_invalid`, `settings_invalid`, `update_available`, `import_done`, `heartbeat_output`, `job_frontmatter_restored` (#46), `disk_low` (#44). The body (reply text, heartbeat output) is **not** included; the app links to the Run log or Turn.
+- `notice{notice_kind, scope?, job?, run_id?, title}`. The notice's own kind is sent as `notice_kind`, because `kind` is already the event's tag, which `?kinds=` filters on. `notice_kind`: `job_failed`, `job_finished`, `run_refused`, `job_invalid`, `settings_invalid`, `update_available`, `import_done`, `heartbeat_output`, `job_frontmatter_restored` (#46), `disk_low` (#44). The body (reply text, heartbeat output) is **not** included; the app links to the Run log or Turn.
 - `session.changed{scope, launcher}`, `launcher.changed{scope}`, `launcher.tested{launcher, ok}` (#40), `settings.reloaded{changed_keys[]}`
 - `device.paired{device_id}`, `device.revoked{device_id}` (each also raises an owner notice, #41), `import.finished{record_step}`
 - No resume: the bus is a broadcast with no ring. After `gap` or a new `boot_id` the app re-GETs what it shows.
 
-"Desktop notification when finished" stays in the app (#16 decision 8); the app filters `notice{kind: job_finished}` by its own per-job flag.
+"Desktop notification when finished" stays in the app (#16 decision 8); the app filters `notice{notice_kind: job_finished}` by its own per-job flag.
 
 ### 2.3 Turns (Chat, `send`, inject, compact)
 
