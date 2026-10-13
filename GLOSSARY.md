@@ -61,7 +61,7 @@ A Desktop app installation that has been paired with a Daemon and holds its own 
 _Avoid_: client, session, user
 
 **API token**:
-A named, scope-limited, revocable credential that lets automation on another machine call a narrow part of the Management API.
+A named, revocable credential, limited by its Token permissions, that lets automation on another machine call a narrow part of the Management API.
 _Avoid_: apiToken (the legacy single setting it replaces), password, key
 
 **Refused run**:
@@ -134,3 +134,10 @@ _Avoid_: allowlist, known failures, exceptions
 The N consecutive incident-free days of Zero on the Rust Daemon that gate deleting the TS code from `main`.
 _Avoid_: burn-in, soak period
 
+**Token permission**:
+One named right granted to an API token (e.g. `send`, `jobs:run`, `status:read`, `logs:read`) that limits which Management API calls it may make.
+_Avoid_: scope (reserved for Scope), role, grant
+
+**Offline write**:
+A CLI change applied as a plain file edit while no Daemon is running, holding `daemon.lock` and recorded in the audit log; while a Daemon runs, the same change goes through the Management API instead.
+_Avoid_: direct edit, local mode, maintenance mode
