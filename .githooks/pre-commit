@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Enabled with: git config core.hooksPath .githooks   (see CLAUDE.md)
+exec "$(git rev-parse --show-toplevel)/scripts/check-public-safety.sh" --staged
