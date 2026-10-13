@@ -1,0 +1,49 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+# Every crate except the Desktop app, so a root `cargo build`/`cargo test` never needs
+# WebKitGTK or Node (architecture §2).
+default-members = [
+    "crates/claudeclaw",
+    "crates/api",
+    "crates/store",
+    "crates/jobs",
+    "crates/runner",
+    "crates/scheduler",
+    "crates/chat",
+    "crates/core",
+    "crates/discord",
+    "crates/server",
+    "crates/client",
+    "crates/ts-compat",
+    "crates/parity",
+    "xtask",
+]
+
+[workspace.package]
+# The only version source; `cargo xtask release prepare` sets it (#35).
+version = "2.0.0-alpha.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/Winter-wub/claudeclaw"
+# Installed from git, never crates.io (#35 §7).
+publish = false
+
+[workspace.dependencies]
+# Workspace crates. Which may depend on which is architecture §3.1, enforced by `cargo xtask deps`.
+claudeclaw-api = { path = "crates/api" }
+claudeclaw-store = { path = "crates/store" }
+claudeclaw-jobs = { path = "crates/jobs" }
+claudeclaw-runner = { path = "crates/runner" }
+claudeclaw-scheduler = { path = "crates/scheduler" }
+claudeclaw-chat = { path = "crates/chat" }
+claudeclaw-core = { path = "crates/core" }
+claudeclaw-discord = { path = "crates/discord" }
+claudeclaw-server = { path = "crates/server" }
+claudeclaw-client = { path = "crates/client" }
+claudeclaw-ts-compat = { path = "crates/ts-compat" }
+
+# Third-party crates (architecture §10).
+anyhow = "1.0.104"
+cargo_metadata = "0.23.1"

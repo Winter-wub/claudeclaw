@@ -1,0 +1,13 @@
+[package]
+name = "claudeclaw-desktop"
+description = "Tauri 2 backend of the Desktop app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+claudeclaw-client.workspace = true
+claudeclaw-api.workspace = true

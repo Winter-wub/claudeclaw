@@ -1,0 +1,81 @@
+# Parity jobs (#18 §7, #35 §4). This first cut has `parity-rust` (cargo test on 3 OSes) and
+# `ts-tests`; `parity-fixtures` and `parity-rc` land with the parity harness. Only the
+# `parity-ok` aggregate is a required check.
+name: Parity
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      rust: ${{ steps.flags.outputs.rust }}
+      ts: ${{ steps.flags.outputs.ts }}
+      parity: ${{ steps.flags.outputs.parity }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: flags
+        run: scripts/ci/changes.sh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+  parity-rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.parity == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Default members: everything but the Desktop app (architecture §2).
+      - run: cargo test --locked
+
+  ts-tests:
+    needs: changes
+    if: needs.changes.outputs.ts == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Tests
+        run: bun test
+
+  parity-ok:
+    if: always()
+    needs: [changes, parity-rust, ts-tests]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fail on any failed or cancelled job
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo "parity-ok"

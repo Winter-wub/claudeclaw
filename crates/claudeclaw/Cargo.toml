@@ -1,0 +1,22 @@
+[package]
+name = "claudeclaw"
+description = "The claudeclaw binary: CLI, Watchdog and Worker composition root"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+claudeclaw-api.workspace = true
+claudeclaw-store.workspace = true
+claudeclaw-jobs.workspace = true
+claudeclaw-runner.workspace = true
+claudeclaw-scheduler.workspace = true
+claudeclaw-chat.workspace = true
+claudeclaw-core.workspace = true
+claudeclaw-discord.workspace = true
+claudeclaw-server.workspace = true
+claudeclaw-client.workspace = true
+claudeclaw-ts-compat.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "claudeclaw-discord"
+description = "The Discord chat adapter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+claudeclaw-chat.workspace = true

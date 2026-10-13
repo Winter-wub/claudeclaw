@@ -1,0 +1,17 @@
+# Weekly, minor and patch grouped (#35 §4). The npm ecosystem (crates/desktop/ui) joins with the UI.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types: [minor, patch]

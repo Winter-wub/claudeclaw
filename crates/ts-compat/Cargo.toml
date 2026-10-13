@@ -1,0 +1,13 @@
+[package]
+name = "claudeclaw-ts-compat"
+description = "TS cron and frontmatter oracle, First-start import and the 1.x divergence lint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+claudeclaw-jobs.workspace = true
+claudeclaw-store.workspace = true
