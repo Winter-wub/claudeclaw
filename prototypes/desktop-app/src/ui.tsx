@@ -139,6 +139,7 @@ export interface AppCtx {
   param?: string;
   go: (screen: Screen, param?: string, daemonId?: string) => void;
   setStatus: (id: string, s: Daemon["status"]) => void;
+  update: (id: string, patch: Partial<Daemon>) => void;
   notify: (n: Omit<Notice, "id">) => void;
 }
 

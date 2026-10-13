@@ -55,6 +55,7 @@ export function SettingsScreen() {
 }
 
 function Section({ id }: { id: string }) {
+  const { daemons, update } = useApp();
   const [on, setOn] = useState<Record<string, boolean>>({ hb: true, rotate: false, remote: true, login: true, tray: true, nDown: true, nFail: true, nUpdate: true, streaming: false });
   const t = (k: string) => ({ on: on[k], onChange: (v: boolean) => setOn((o) => ({ ...o, [k]: v })) });
   switch (id) {
@@ -260,9 +261,23 @@ function Section({ id }: { id: string }) {
       return (
         <Card title="Startup & window">
           <div className="space-y-3">
-            <Toggle {...t("login")} label="Open at login and start my local daemons" />
+            <Toggle {...t("login")} label="Open the app at login" />
+            <div className="rounded-md border border-zinc-800 p-3">
+              <div className="mb-2 text-xs font-medium text-zinc-400">Then start these local daemons</div>
+              {daemons
+                .filter((d) => d.kind === "local")
+                .map((d) => (
+                  <div key={d.id} className="flex items-center justify-between py-1">
+                    <span className="text-zinc-200">
+                      {d.name} <span className="ml-1 text-[11px] text-zinc-500">{d.location}</span>
+                    </span>
+                    <Toggle on={!!d.startAtLogin} onChange={(v) => update(d.id, { startAtLogin: v })} />
+                  </div>
+                ))}
+              <p className="mt-1 text-[11px] text-zinc-500">If a daemon is already running when the app opens (e.g. started from the CLI), the app attaches to it instead of starting a second one.</p>
+            </div>
             <Toggle {...t("tray")} label="Closing the window keeps the app in the tray" />
-            <p className="text-[11px] text-zinc-500">The app is the only thing that autostarts. Quitting it leaves daemons running.</p>
+            <p className="text-[11px] text-zinc-500">The app is the only thing that autostarts; daemons never register with the OS. Quitting the app leaves daemons running.</p>
           </div>
         </Card>
       );

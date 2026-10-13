@@ -144,7 +144,9 @@ export function App() {
         window.location.hash = `#/${daemonId ?? daemon.id}/${screen}${param ? "/" + encodeURIComponent(param) : ""}`;
         setWindowHidden(false);
       },
-      setStatus: (id, s) => setDaemons((ds) => ds.map((d) => (d.id === id ? { ...d, status: s, note: s === "running" ? undefined : d.note } : d))),
+      setStatus: (id, s) =>
+        setDaemons((ds) => ds.map((d) => (d.id === id ? { ...d, status: s, note: s === "running" ? undefined : d.note, attached: d.kind === "local" ? true : d.attached } : d))),
+      update: (id, patch) => setDaemons((ds) => ds.map((d) => (d.id === id ? { ...d, ...patch } : d))),
       notify,
     }),
     [daemons, daemon, route],
@@ -284,7 +286,7 @@ function ScreenView() {
 }
 
 function DaemonSwitcher({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => void }) {
-  const { daemons, daemon, go, screen } = useApp();
+  const { daemons, daemon, go, screen, update } = useApp();
   const groups: ["local" | "remote", string][] = [
     ["local", "On this computer"],
     ["remote", "Paired remote daemons"],
@@ -324,8 +326,23 @@ function DaemonSwitcher({ open, setOpen }: { open: boolean; setOpen: (v: boolean
                       <span className="block text-zinc-100">{d.name}</span>
                       <span className="block truncate text-[11px] text-zinc-500">{d.location}</span>
                     </span>
-                    <span className="flex items-center gap-1.5 text-[11px] text-zinc-400">
-                      <Dot status={d.status} /> {statusMeta[d.status].label}
+                    <span className="flex flex-col items-end gap-0.5 text-[11px] text-zinc-400">
+                      <span className="flex items-center gap-1.5">
+                        <Dot status={d.status} /> {statusMeta[d.status].label}
+                        {d.kind === "local" && d.status === "running" && !d.attached && <span className="text-sky-400">· not watched</span>}
+                      </span>
+                      {d.kind === "local" && (
+                        <span
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            update(d.id, { startAtLogin: !d.startAtLogin });
+                          }}
+                          className={cx("rounded px-1 text-[10px]", d.startAtLogin ? "bg-amber-500/15 text-amber-300" : "text-zinc-500 hover:text-zinc-300")}
+                          title="Start this daemon when the app opens at login"
+                        >
+                          {d.startAtLogin ? "starts at login" : "manual start"}
+                        </span>
+                      )}
                     </span>
                   </button>
                 ))}
@@ -333,7 +350,7 @@ function DaemonSwitcher({ open, setOpen }: { open: boolean; setOpen: (v: boolean
           ))}
           <div className="mt-1 border-t border-zinc-800 pt-1">
             <button className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-zinc-300 hover:bg-zinc-800">
-              <Plus className="h-4 w-4" /> Add a local project folder…
+              <Plus className="h-4 w-4" /> Add a local project folder… <span className="ml-auto text-[11px] text-zinc-500">attaches if already running</span>
             </button>
             <button className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-zinc-300 hover:bg-zinc-800">
               <Plus className="h-4 w-4" /> Pair a remote daemon… <span className="ml-auto text-[11px] text-zinc-500">host + one-time code</span>
@@ -346,7 +363,7 @@ function DaemonSwitcher({ open, setOpen }: { open: boolean; setOpen: (v: boolean
 }
 
 function TrayMenu({ onClose, onShow }: { onClose: () => void; onShow: () => void }) {
-  const { daemons, go, setStatus } = useApp();
+  const { daemons, go, setStatus, update } = useApp();
   return (
     <div className="absolute right-24 top-7 z-50 w-80 rounded-lg border border-zinc-700 bg-zinc-900/95 p-1 text-[13px] shadow-2xl backdrop-blur">
       <div className="px-2 py-1.5 text-[11px] text-zinc-500">ClaudeClaw — {daemons.filter((d) => d.status === "running").length} of {daemons.length} daemons running</div>
@@ -364,6 +381,11 @@ function TrayMenu({ onClose, onShow }: { onClose: () => void; onShow: () => void
             {d.name}
             <span className="ml-2 text-[11px] text-zinc-500">{statusMeta[d.status].label}</span>
           </button>
+          {d.kind === "local" && d.status === "running" && !d.attached && (
+            <button className="text-[11px] text-sky-400 hover:text-sky-300" onClick={() => update(d.id, { attached: true })}>
+              Attach
+            </button>
+          )}
           {d.kind === "local" && d.status === "running" && (
             <button className="text-[11px] text-zinc-400 hover:text-zinc-100" onClick={() => setStatus(d.id, "stopped")}>
               Stop

@@ -14,6 +14,10 @@ export interface Daemon {
   startedAt?: string;
   activeRuns: number;
   note?: string;
+  /** Local only: the app starts this daemon when it opens at login. */
+  startAtLogin?: boolean;
+  /** Local only: the app is watching this daemon (it started it, or attached to one already running). */
+  attached?: boolean;
 }
 
 export const daemons: Daemon[] = [
@@ -28,6 +32,23 @@ export const daemons: Daemon[] = [
     workerPid: 41212,
     startedAt: "2026-10-12T22:04:00Z",
     activeRuns: 1,
+    startAtLogin: true,
+    attached: true,
+  },
+  {
+    id: "scratch-bot",
+    name: "scratch-bot",
+    kind: "local",
+    location: "~/projects/scratch-bot",
+    status: "running",
+    version: "2.0.0",
+    watchdogPid: 52004,
+    workerPid: 52006,
+    startedAt: "2026-10-13T09:40:00Z",
+    activeRuns: 0,
+    startAtLogin: false,
+    attached: false,
+    note: "Started from the CLI, not by this app. The app can see it but is not watching it.",
   },
   {
     id: "home-lab",
@@ -37,6 +58,8 @@ export const daemons: Daemon[] = [
     status: "stopped",
     version: "2.0.0",
     activeRuns: 0,
+    startAtLogin: true,
+    attached: true,
     note: "Stopped from the CLI at 08:41 (claudeclaw stop). Exit 0, so the app did not restart it.",
   },
   {

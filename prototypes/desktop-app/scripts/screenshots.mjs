@@ -35,6 +35,8 @@ const SHOTS = [
   ["17-error-crash-loop", "studio-mini/status?notify=crash"],
   ["18-error-unreachable", "pi-garden/status"],
   ["19-offline-screen", "home-lab/chat"],
+  ["20-attach-cli-started-daemon", "scratch-bot/status"],
+  ["21-settings-start-at-login", "notes-assistant/settings/startup"],
 ];
 
 const server = await preview({ preview: { port: 4179, strictPort: true } });

@@ -1,4 +1,4 @@
-import { CircleAlert, Copy, Pencil, Play, Plus, RotateCw, Square, TriangleAlert, WifiOff } from "lucide-react";
+import { CircleAlert, Copy, Eye, Link2, Pencil, Play, Plus, RotateCw, Square, TriangleAlert, WifiOff } from "lucide-react";
 import { useState } from "react";
 import { describeCron, fmtRun, nextRuns } from "../cron";
 import { crashes, jobs, launcherStatus } from "../mock";
@@ -13,9 +13,19 @@ export function StatusScreen() {
 }
 
 function Controls() {
-  const { daemon, setStatus } = useApp();
+  const { daemon, setStatus, update } = useApp();
   return (
     <>
+      {daemon.kind === "local" && (
+        <span className="mr-2">
+          <Toggle on={!!daemon.startAtLogin} onChange={(v) => update(daemon.id, { startAtLogin: v })} label="Start at login" />
+        </span>
+      )}
+      {daemon.kind === "local" && daemon.status === "running" && !daemon.attached && (
+        <Button onClick={() => update(daemon.id, { attached: true })}>
+          <Link2 className="h-3.5 w-3.5" /> Attach
+        </Button>
+      )}
       <Button onClick={() => setStatus(daemon.id, "running")} disabled={daemon.status === "running"}>
         <Play className="h-3.5 w-3.5" /> Start
       </Button>
@@ -40,7 +50,7 @@ function Stat({ label, value, sub, tone }: { label: string; value: React.ReactNo
 }
 
 function Running() {
-  const { daemon, go } = useApp();
+  const { daemon, go, update } = useApp();
   const [heartbeatOn, setHeartbeatOn] = useState(true);
   return (
     <>
@@ -53,8 +63,20 @@ function Running() {
         }
         actions={<Controls />}
       />
+      {daemon.kind === "local" && !daemon.attached && (
+        <div className="mb-4 flex items-center gap-3 rounded-lg border border-sky-500/30 bg-sky-500/5 px-4 py-3">
+          <Eye className="h-4 w-4 shrink-0 text-sky-400" />
+          <div className="flex-1">
+            <div className="font-medium text-sky-200">Running, but not started by this app</div>
+            <p className="text-zinc-400">{daemon.note} Attach to have the app watch it: if both its processes vanish without a stop, the app restarts it and tells you.</p>
+          </div>
+          <Button onClick={() => update(daemon.id, { attached: true })}>
+            <Link2 className="h-3.5 w-3.5" /> Attach
+          </Button>
+        </div>
+      )}
       <div className="grid grid-cols-5 gap-3">
-        <Stat label="Daemon" value={<span className="text-emerald-400">{statusMeta[daemon.status].label}</span>} sub="up 12 h 1 min" />
+        <Stat label="Daemon" value={<span className="text-emerald-400">{statusMeta[daemon.status].label}</span>} sub={daemon.attached ? "up 12 h 1 min · watched by this app" : "up 25 min · not watched"} />
         <Stat label="Processes" value="Watchdog + Worker" sub={`pids ${daemon.watchdogPid} / ${daemon.workerPid}`} />
         <Stat label="Active runs" value={daemon.activeRuns} sub="inbox-triage queue: 0 waiting" />
         <Stat label="Discord" value={<span className="text-emerald-400">Connected</span>} sub="3 channels · 3 threads" />
@@ -183,12 +205,11 @@ function Stopped() {
         <Square className="mx-auto h-8 w-8 text-zinc-500" />
         <h2 className="mt-3 text-base font-semibold text-zinc-100">{daemon.name} is not running</h2>
         <p className="mx-auto mt-1 max-w-lg text-zinc-400">{daemon.note}</p>
-        <p className="mx-auto mt-1 max-w-lg text-zinc-500">Jobs and the heartbeat are paused. Missed runs from the last 6 h are caught up when it starts.</p>
+        <p className="mx-auto mt-1 max-w-lg text-zinc-500">{daemon.startAtLogin ? "It will start again the next time the app opens at login. " : ""}Jobs and the heartbeat are paused. Missed runs from the last 6 h are caught up when it starts.</p>
         <div className="mt-4 flex justify-center gap-2">
           <Button variant="primary" onClick={() => setStatus(daemon.id, "running")}>
             <Play className="h-3.5 w-3.5" /> Start daemon
           </Button>
-          <Button>Start at login: on</Button>
         </div>
       </div>
     </>

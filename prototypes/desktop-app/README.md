@@ -23,8 +23,9 @@ The script uses `playwright-core` and the locally installed Google Chrome (`chan
 
 ## What to click
 
-- **Daemon switcher** (top of the sidebar): two local and two paired remote daemons, each in a different state.
+- **Daemon switcher** (top of the sidebar): three local and two paired remote daemons, each in a different state. Local daemons carry a per-daemon "start at login" flag, which you can toggle in the switcher, on Status, or in Settings → Startup & window.
   - `notes-assistant`: running, with one job refused because of its launcher.
+  - `scratch-bot`: running but started from the CLI, so the app is not watching it. Use **Attach**.
   - `home-lab`: stopped.
   - `studio-mini`: crash loop.
   - `pi-garden`: unreachable.
