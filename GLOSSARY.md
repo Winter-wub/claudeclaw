@@ -36,6 +36,14 @@ _Avoid_: crash report, crash log, core dump
 The Desktop app's own cached copy of a Daemon's status, jobs and recent log lines, shown read-only and time-labelled while that Daemon is not answering.
 _Avoid_: offline mode, stale data, mirror
 
+**Run PATH**:
+The PATH the Worker gives every Launcher it starts and uses to find `direct`'s `claude` and script interpreters; it comes from the user's login shell (macOS, Linux) or the registry (Windows), with `run_path.prepend` first, and is rebuilt at every Worker start.
+_Avoid_: shell env, GUI PATH, daemon PATH, launchd PATH
+
+**System-prompt file**:
+The per-run file under `daemon/tmp/` holding the text the Daemon appends to Claude Code's system prompt, passed as `--append-system-prompt-file` and deleted when the run is reaped.
+_Avoid_: ASP file, prompt file, temp prompt
+
 **Launcher**:
 The path to a single runnable executable that the Daemon invokes in place of `claude`, passing the normal `claude` argv. It carries no name and no environment of its own; any wrapping (such as `ccs <profile>`) and its env live in the user's script.
 _Avoid_: wrapper, runtime, provider, profile
@@ -89,6 +97,14 @@ _Avoid_: job log, transcript, output file
 **Run index**:
 The Rust-only append-only list of finished and Refused runs (`daemon/runs/<YYYY-MM>.jsonl`), one structured record per run linking to its Run log; back-filled from TS run logs.
 _Avoid_: run history file, run database, sibling file
+
+**Bug-report export**:
+The single Markdown file `claudeclaw logs export` produces for attaching to a public issue: versions, status, job schedules, the Crash record, Run index records and recent Daemon log lines, with identifiers replaced by Pseudonyms; it never includes Run logs and is written only if its verify pass finds no surviving identifier.
+_Avoid_: support bundle, diagnostics dump, crash report, debug zip
+
+**Pseudonym**:
+A placeholder of the form `<kind>:#<n>` (e.g. `discord:#2`) standing for one real identifier everywhere inside one Bug-report export; numbering restarts per export, so two exports can't be linked.
+_Avoid_: hash, alias, anonymised ID, masked ID
 
 ## Jobs
 
