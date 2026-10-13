@@ -826,3 +826,18 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
 - **Settings:** `run_locale` (`auto` | `inherit`); `inherit` restores the 1.x C locale.
 - **API:** `DaemonStatus.run_locale: RunLocale`, plus the problem kind `run_locale_unavailable`.
 - **Logging:** three new Daemon-log events (see the ticket).
+
+### From [Decide the straggler policy on a run's normal exit](https://github.com/Winter-wub/claudeclaw/issues/37)
+
+- **`runner::spawn` — Settle:** after a normal leader exit, Stragglers in the run's process group (on Windows, its Job object) get a 2s grace, then TERM, 5s, KILL (`killpg`; `TerminateJobObject` on Windows).
+  - Leader exit is detected with `inner_mut().wait()`, never the wrapper's `wait()`, which never reaches Stragglers.
+  - After a normal exit or a timeout kill, the pipes are capped at 2s.
+  - The reply goes out at leader exit. The Scope's next Turn waits until the run is settled (≤14s).
+  - Not configurable.
+- **§5 shutdown step 3:** includes `settling` groups and skips their grace.
+- **Run registry:** `state` gains `settling`, and an entry is removed when settled. The System-prompt file is deleted at settle (or at a Reap).
+- **API and logging:**
+  - `RunRecord.settle {stragglers, outcome, pipe_held, settle_ms}`
+  - Daemon-log event `run.settle`
+  - `problems[]` kind `run_pipe_held`
+  - a `stragglers` warning check in Test launcher
