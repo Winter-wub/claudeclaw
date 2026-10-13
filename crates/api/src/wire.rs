@@ -4,11 +4,18 @@
 //! - **Times** are `chrono::DateTime<Utc>` (RFC 3339 UTC). **Durations** are `*_ms: u64`.
 //! - **IDs** are `String`, snowflakes included.
 //! - **Nullable vs optional.** A field the spec writes as `x|null` is an `Option<T>` that is
-//!   always sent (`null` when empty). A field the spec writes as `x?` is an `Option<T>` with
-//!   `#[serde(default, skip_serializing_if = "Option::is_none")]`.
+//!   always sent (`null` when empty) and marked `#[schema(required = true)]`, so generated
+//!   clients see "always present, may be null". A field the spec writes as `x?` is an
+//!   `Option<T>` with `#[serde(default, skip_serializing_if = "Option::is_none")]`.
+//! - **Integer widths.** Counts and positions are `u32`; token counts, bytes and `*_ms` are `u64`.
 //! - **Closed string sets** use [`wire_enum!`], which adds the catch-all §1.1 requires and keeps
-//!   it out of the schema. Tagged unions (`#[serde(tag = "…")]`) carry a catch-all unit variant
-//!   too, with a hand-written schema that leaves it out.
+//!   it out of the schema. Where `unknown` is a real value of the set (`runs::RunOutcome`,
+//!   `supervisor::DaemonReachability`), the enum is hand-written instead: `Unknown` is both the
+//!   real value and the catch-all, and it is in the schema.
+//! - **Tagged unions** (`#[serde(tag = "kind")]`) carry a catch-all unit variant too. Their
+//!   schema is derived from a private mirror enum without it, in a `mod schema`, with a test that
+//!   every known variant round-trips through the mirror (see `turns::TurnEvent`). A variant's own
+//!   field never reuses the tag's name; it becomes `<variant>_kind` (`notice_kind`).
 //! - **Content** (prompts, reply text, job bodies, personas, attachments) never appears in a
 //!   derived `Debug`: such types get a hand-written `Debug` that prints only sizes (architecture
 //!   §2).
