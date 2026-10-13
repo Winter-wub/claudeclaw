@@ -1149,6 +1149,8 @@ async function execClaude(
 
   if (primaryConfig.model.trim() && primaryConfig.model.trim().toLowerCase() !== "glm") baseArgs.push("--model", primaryConfig.model.trim());
 
+  // `args` is already wrapped by the launcher. Recovery retries below must rebuild from
+  // `baseArgs`; wrapping `args` again yields `claude claude -p …` / `ccs <p> ccs <p> …`.
   const args = buildClaudeCommand(baseArgs, launcherScope);
   const baseEnv = cleanSpawnEnv();
   const spawnCwd = agentName ? await ensureAgentDir(agentName) : undefined;
@@ -1220,7 +1222,7 @@ async function execClaude(
     console.warn(
       `[${new Date().toLocaleTimeString()}] Detected corrupted session (thinking block signature mismatch). Reset${label}, retrying with fresh session...`
     );
-    const freshArgs = buildClaudeCommand(args.filter((a) => a !== "--resume" && a !== existing?.sessionId), launcherScope);
+    const freshArgs = buildClaudeCommand(baseArgs.filter((a) => a !== "--resume" && a !== existing?.sessionId), launcherScope);
     const fmtIdx = freshArgs.indexOf("--output-format");
     if (fmtIdx !== -1 && fmtIdx + 1 < freshArgs.length) freshArgs[fmtIdx + 1] = "stream-json";
     exec = await runClaudeStream(freshArgs, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, spawnCwd);
@@ -1271,7 +1273,7 @@ async function execClaude(
       await backupSession();
     }
 
-    const retryArgs = buildClaudeCommand(withOutputFormat(stripResume(args), "stream-json"), launcherScope);
+    const retryArgs = buildClaudeCommand(withOutputFormat(stripResume(baseArgs), "stream-json"), launcherScope);
     const retryConfig = usedFallback ? fallbackConfig : primaryConfig;
     exec = await runClaudeStream(
       retryArgs,
@@ -1400,7 +1402,7 @@ async function execClaude(
 
     if (compactOk) {
       console.log(`[${new Date().toLocaleTimeString()}] Retrying ${name} after compact...`);
-      const retryExec = await runClaudeStream(buildClaudeCommand(args, launcherScope), primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, spawnCwd);
+      const retryExec = await runClaudeStream(buildClaudeCommand(baseArgs, launcherScope), primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, spawnCwd);
       const retryResult: RunResult = {
         stdout: retryExec.rawStdout,
         stderr: retryExec.stderr,
