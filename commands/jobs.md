@@ -40,10 +40,12 @@ Create a new cron job interactively.
    ```markdown
    ---
    schedule: "<cron expression>"
+   recurring: true
    notify: <true|error|false>
    ---
    <prompt>
    ```
+   Always write `recurring: true`. Without it the daemon treats the job as one-shot: it runs once and then the daemon deletes its `schedule:` line.
    Map the notify answer: "Always" → `true`, "Errors only" → `error`, "Never" → `false`. Omit the `notify` line if the user chose "Always" (it's the default).
 
 4. Confirm creation. Remind the user the daemon hot-reloads jobs every 30 seconds — no restart needed.
