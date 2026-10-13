@@ -708,3 +708,34 @@ These belong to the first implementation PRs and to #18's suite.
 - **New `daemon/state/runs.json`:** the live run registry (pid, pgid or Job object, Scope, start time, `boot_id`), used by `stop --force`. The Watchdog's reaping policy is decided in [Decide how the Watchdog reaps a crashed Worker's Claude runs](https://github.com/Winter-wub/claudeclaw/issues/29).
 - **`daemon.lock`** records the holder of an offline write (CLI, pid, command) while the CLI holds it.
 - **Exit codes:** the CLI uses 0 / 1 / 2 / 3 not running / 4 not responding / 5 gave up / 6 foreign daemon / 124 wait timeout. `start` keeps the Watchdog's 0 / 70 / 73 / 75.
+
+### From [Specify Launcher scripts on Windows](https://github.com/Winter-wub/claudeclaw/issues/25)
+
+- **`runner`:** on every OS the prompt is written to the child's **stdin**. The appended system-prompt text goes in a per-run 0600 **System-prompt file** under `daemon/tmp/`, passed as `--append-system-prompt-file` and deleted when the run's processes are reaped. Argv holds only short, single-line tokens.
+- **Windows Launchers** are `.exe`/`.com`/`.cmd`/`.bat` only, with no PowerShell and no PATHEXT search. `direct` looks for `claude.exe`, then `claude.cmd`, then `claude.bat` on the Run PATH.
+- **Test launcher** adds a `prompt_stdin` check.
+
+### From [Decide the daemon's PATH when the desktop app starts it](https://github.com/Winter-wub/claudeclaw/issues/26)
+
+- **Run PATH module** (in `runner`, used by the Worker and by `import --dry-run`):
+  - **Composition:** `prepend ++ source ++ inherited-not-present`, dropping empty and relative entries.
+  - **Sources:** `auto | login_shell | registry | inherit`.
+  - **Login-shell capture:** `<passwd shell> -l -i -c "'<exe>' __env-probe <nonce>"`, with cwd home, stdin null and a 10s timeout that kills the process group.
+  - **Rebuilt** at Worker start, on a `run_path` change, before Test launcher, and on a miss (at most once per 60s).
+- **Resolution:** `check_runnable` becomes `resolve(launcher, run_path)`, using `which::which_in`, and the runner always spawns the absolute path.
+  - Shebang interpreters must resolve.
+  - Exit 126/127 with no JSON line is a Refused run (`launcher_exec_failed`).
+  - The Run PATH is passed as `PATH` to every spawn; the Worker's own env is never mutated.
+- **Settings:** a new top-level key `run_path: {source, prepend[]}`.
+- **Crates:**
+  - `which` 8.0.6 (runner);
+  - `windows` gains the `Win32_System_Registry` and `Win32_System_Environment` features;
+  - `nix` provides `getpwuid_r`.
+- **`claudeclaw` binary:** a hidden `__env-probe <nonce>` subcommand.
+- **Desktop app:** the env it spawns the daemon with drops AppImage vars and `$APPDIR` entries, and on macOS `__CFBundleIdentifier`.
+
+### From [Decide on a scrubbed log export for bug reports](https://github.com/Winter-wub/claudeclaw/issues/28)
+
+- **New `store::export` module** and `api` types `ExportManifest`, `LogExport`, `FIELD_CLASSES` and `SETTINGS_VALUE_ALLOW`. No new crate.
+- **CI check:** every new Daemon-log event field needs a `FIELD_CLASSES` entry.
+- **Desktop app:** gets a second fixed-argv offline command, `daemon_offline_export`, which runs `logs export --offline --out <path>`. This is read-only apart from the user-chosen output file.
