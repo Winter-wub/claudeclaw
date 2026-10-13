@@ -216,6 +216,20 @@ _Avoid_: migration, upgrade, conversion, first-run setup
 The one-time pass over TS data on the Daemon's first start, also runnable on demand. After taking a backup, it rewrites only the Job lines whose meaning differs between the TS and Rust Daemons, into spellings both read identically.
 _Avoid_: migration, conversion, upgrade
 
+## Releases
+
+**Release key**:
+The minisign key pair that signs every release's `SHA256SUMS` and the Desktop app's updater artefacts; the private half is a secret in the approval-gated `release` environment, with a backup key kept offline and both public keys embedded in the binary.
+_Avoid_: signing cert, GPG key, update key
+
+**Update channel**:
+Which releases an install updates to: stable (non-pre-release only) or pre-release (the highest semver, alpha and rc included); implied by the running version, never set by the user.
+_Avoid_: track, ring, beta channel
+
+**Release candidate**:
+A `v2.X.Y-rc.N` release; its tag runs gate G1 (`parity-rc` plus a fresh capture check), and it is the build a Shadow instance and Day 0 run.
+_Avoid_: RC build, preview, beta
+
 ## Cutover
 
 **Zero**:
