@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { prevCronMatch, cronMatches, nextCronMatch } from "../cron";
+import { prevCronMatch, cronMatches, nextCronMatch, isValidCronExpr } from "../cron";
 
 // +07 (Asia/Bangkok) is the daemon's configured offset.
 const TZ = 420;
@@ -96,5 +96,24 @@ describe("in-flight guard", () => {
   it("fires the catch-up normally once the job is no longer in flight", () => {
     const stillDue = new Date("2026-09-17T20:02:00Z");
     expect(shouldFire("0 3 * * *", stillDue, 0, false)).toBe(true);
+  });
+});
+
+describe("malformed schedules", () => {
+  // A schedule with fewer than five fields used to throw a TypeError inside the 60s
+  // tick, skipping every other job for that tick (and throwing again at boot).
+  it("is rejected by isValidCronExpr", () => {
+    expect(isValidCronExpr("0 13 * * *")).toBe(true);
+    expect(isValidCronExpr("  */5  *  * * *  ")).toBe(true);
+    expect(isValidCronExpr("0 13 * *")).toBe(false);
+    expect(isValidCronExpr("")).toBe(false);
+    expect(isValidCronExpr("0 0 13 * * *")).toBe(false);
+  });
+
+  it("never matches and never throws", () => {
+    const now = new Date("2026-09-15T06:00:00Z");
+    expect(() => cronMatches("0 13 * *", now, TZ)).not.toThrow();
+    expect(cronMatches("0 13 * *", now, TZ)).toBe(false);
+    expect(prevCronMatch("0 13", now, TZ, 60)).toBeNull();
   });
 });

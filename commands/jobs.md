@@ -40,10 +40,12 @@ Create a new cron job interactively.
    ```markdown
    ---
    schedule: "<cron expression>"
+   recurring: true
    notify: <true|error|false>
    ---
    <prompt>
    ```
+   Always write `recurring: true`. Without it the daemon treats the job as one-shot: it runs once and then the daemon deletes its `schedule:` line.
    Map the notify answer: "Always" → `true`, "Errors only" → `error`, "Never" → `false`. Omit the `notify` line if the user chose "Always" (it's the default).
 
 4. Confirm creation. Remind the user the daemon hot-reloads jobs every 30 seconds — no restart needed.
@@ -80,12 +82,8 @@ Manually trigger a cron job immediately (useful for testing).
 
 1. Read `<jobs-directory>/<job-name>.md`. If it doesn't exist, list available jobs.
 2. Show the job's prompt and ask for confirmation: "Run job '<name>' now?" (header: "Run", options: "Yes", "No")
-3. If confirmed, run the prompt by executing:
-   ```bash
-   bun run ${CLAUDE_PLUGIN_ROOT}/src/index.ts run <job-name>
-   ```
-   If the `run` sub-command is not implemented in the CLI, execute the prompt directly using `claude -p "<prompt>" --output-format text` instead.
-4. Show the output to the user.
+3. If confirmed, run the prompt directly with `claude -p "<prompt>" --output-format text` from the project directory. The 1.x daemon has no "run now" command, so do **not** call `src/index.ts` for this.
+4. Show the output to the user, and say plainly that this was a one-off run **outside the daemon**: it doesn't use the job's session or launcher and writes no run log. The job still runs on its own schedule as usual.
 
 ---
 

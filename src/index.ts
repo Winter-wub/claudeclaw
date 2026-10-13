@@ -28,6 +28,12 @@ if (command === "--stop-all") {
   slack();
 } else if (command === "send") {
   send(args.slice(1));
-} else {
+} else if (command === undefined) {
   start();
+} else {
+  // An unknown command used to fall through to start(), so e.g. `/jobs run` (which
+  // calls `index.ts run <job>`) silently launched a foreground daemon inside the skill.
+  console.error(`Unknown command: ${command}`);
+  console.error("Usage: index.ts [start|status|send|telegram|discord|slack|--stop|--stop-all|--clear]");
+  process.exit(2);
 }
