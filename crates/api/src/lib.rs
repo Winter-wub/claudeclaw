@@ -13,6 +13,10 @@ pub mod revision;
 pub mod routes;
 pub mod runs;
 pub mod scope;
+pub mod scopes;
+pub mod sessions;
+pub mod settings;
+pub mod turns;
 pub mod usage;
 mod wire;
 
@@ -23,6 +27,13 @@ pub use revision::Revision;
 pub use routes::Route;
 pub use runs::{RunIndexState, RunRecord};
 pub use scope::Scope;
+pub use scopes::ScopeLauncher;
+pub use sessions::{ScopeSession, SessionStatus};
+pub use settings::SecretState;
+pub use turns::{
+    AttachmentUpload, SessionCompacted, TurnAccepted, TurnAgentState, TurnEvent, TurnOutcome,
+    TurnPurpose, TurnRecord, TurnRequest, TurnSession, TurnState,
+};
 
 use utoipa::OpenApi;
 
@@ -46,6 +57,10 @@ struct ApiDoc;
 /// per module, in management-api §2 order.
 pub fn openapi() -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
+    doc.merge(turns::Doc::openapi());
+    doc.merge(scopes::Doc::openapi());
+    doc.merge(sessions::Doc::openapi());
+    doc.merge(settings::Doc::openapi());
     doc.merge(logs::Doc::openapi());
     doc.merge(export::Doc::openapi());
     doc.merge(runs::Doc::openapi());
