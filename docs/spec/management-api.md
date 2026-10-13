@@ -443,3 +443,10 @@ For the coordinator to carry into the architecture spec and the listed tickets:
 ### From [Decide how run timeouts treat system sleep](https://github.com/Winter-wub/claudeclaw/issues/38)
 
 - `RunRecord` gains `awake_ms`, `suspended_ms` and `wake_grace`.
+
+### From [Decide how to pair another Device with a headless daemon](https://github.com/Winter-wub/claudeclaw/issues/41)
+
+- §2.12 `pairing.create` takes `PairingCreate{host?}` and returns `422 invalid_host` for a bad host.
+- `PairingStart` gains `pairing_string`.
+- `device.paired` and `device.revoked` raise owner notices.
+- CLI: `pair --host <name>`. `pair --no-wait --json` prints the full `PairingStart`. The human-readable output ends with the Pairing string on its own line.
