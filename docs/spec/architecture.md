@@ -908,3 +908,11 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
 - **Deadlines:** a single `api::Deadline` table, shared by the app and the CLI, sets the per-route deadline. The server enforces a backstop (`504 deadline_exceeded`), and streams use an idle limit instead.
 - **Detach:** run-starting handlers detach, because hyper drops a handler as soon as its client disconnects. So cancel means "stop waiting", and in v1 no client action kills a run.
 - **Releases:** a UI source-map is published as a release asset.
+
+### From [Decide what a Give-up means on headless macOS](https://github.com/Winter-wub/claudeclaw/issues/45)
+
+- **Give-up hold:** after a Give-up, the Watchdog refuses every `start` (a Held start, exit 70) until a person clears it with `start --clear-give-up`, or with the offline `clear-give-up` when launchd/systemd runs the daemon.
+- **`--service-manager launchd`:** the final stops (give-up, Held start, lock held) exit 0, because `KeepAlive {SuccessfulExit:false}` would otherwise relaunch every 10s forever. A Held start sends at most one reminder DM per 24h.
+- **Example unit files:**
+  - plist: `ExitTimeOut 45` (launchd's default is 5s).
+  - systemd: `KillMode=mixed`, `TimeoutStopSec=45s`, `RestartPreventExitStatus=70 73`.
