@@ -797,3 +797,12 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
   - Token permissions are final.
   - `pair` = create + long-poll + cancel.
   - `send --file` uploads as base64.
+
+### From [Decide whether the Rust daemon keeps TS's runaway-session breaker](https://github.com/Winter-wub/claudeclaw/issues/32)
+
+- **§7 settings:** a new top-level key `timeout_breaker {max_consecutive_timeouts, max_failing_seconds}`, opt-in and off by default. `watchdog.*` is read only by the import.
+- **`core::sessions`:** one breaker per (Scope, Launcher) session, persisted in `daemon/state/sessions.json`.
+  - Only the runner's own timeout kill counts.
+  - Once open, the breaker skips auto-compact and retry, but never refuses a Turn. It closes on the session's next successful Turn.
+- **`ts-compat::import`:** a "renamed settings" step.
+- **Logging events:** `session.breaker_open` (WARN), `session.breaker_closed` (INFO), `run.recovery_skipped` (INFO), `settings.legacy_key` (WARN). Each needs a `FIELD_CLASSES` entry.
