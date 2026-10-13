@@ -74,6 +74,10 @@ _Avoid_: cron, task, schedule (when meaning the file)
 A Job with `recurring: false`; after it finishes, the Daemon sets `enabled: false` and keeps the file.
 _Avoid_: single job, temporary job
 
+**First-start import**:
+The ordered, copy-only pass the Daemon runs the first time it starts in a 1.x data dir. It imports Launchers, the legacy `apiToken`, job state and job lines, and records the result. It also runs on demand, and `--dry-run` previews it without writing.
+_Avoid_: migration, upgrade, conversion, first-run setup
+
 **Job import**:
 The one-time pass over TS data on the Daemon's first start, also runnable on demand. After taking a backup, it rewrites only the Job lines whose meaning differs between the TS and Rust Daemons, into spellings both read identically.
 _Avoid_: migration, conversion, upgrade
