@@ -226,6 +226,18 @@ _Avoid_: support bundle, diagnostics dump, crash report, debug zip
 A placeholder of the form `<kind>:#<n>` (e.g. `discord:#2`) standing for one real identifier everywhere inside one Bug-report export; numbering restarts per export, so two exports can't be linked.
 _Avoid_: hash, alias, anonymised ID, masked ID
 
+**Housekeeping**:
+The Worker's one daily task that deletes files by the listed retention rules (Inbox age and cap, opt-in Run-log and audit retention, Run-index compaction, session-backup cap, orphaned Scope state); it deletes only files the Daemon wrote and can be previewed with `claudeclaw housekeeping --dry-run`.
+_Avoid_: cleanup, garbage collection, pruning job, reap (reserved for a gone Worker's runs), Settle
+
+**Inbox**:
+The `inbox/<transport>/` dirs where the Daemon saves attachments it hands to Claude Code as files; Housekeeping deletes Daemon-named files there 30 days after download by default or beyond a total cap.
+_Avoid_: uploads, attachments dir, downloads, outbox
+
+**Back-fill**:
+The Worker's background pass that adds an `origin: ts` Run-index record for every TS-pattern Run log not yet indexed; it runs after `ready` on every start and reports progress.
+_Avoid_: migration, import (reserved for the First-start import), reindex
+
 ## Jobs
 
 **Job**:
