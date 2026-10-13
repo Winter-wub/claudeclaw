@@ -44,6 +44,18 @@ _Avoid_: client, session, user
 A named, scope-limited, revocable credential that lets automation on another machine call a narrow part of the Management API.
 _Avoid_: apiToken (the legacy single setting it replaces), password, key
 
+**Refused run**:
+A run the Daemon declines to start because its Launcher is missing, not executable or fails to start; nothing runs and no other Launcher is tried.
+_Avoid_: failed run (when nothing ran), fallback
+
+**Parked session**:
+The session of a (Scope, Launcher) pair whose Launcher is not the Scope's current one; it is kept and resumed if the Scope switches back.
+_Avoid_: old session, archived session
+
+**Attach**:
+The Desktop app adopting an already-running Daemon (e.g. one started from the CLI), so the app watches and revives it instead of starting a second one.
+_Avoid_: connect (for this meaning), adopt, take over
+
 ## Jobs
 
 **Job**:
