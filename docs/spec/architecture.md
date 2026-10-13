@@ -816,3 +816,13 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
 - **Run index:** `RunRecord` gains `purpose` (`turn | compact | retry`), so compact and retry runs get their own records. The retry also writes its own Run log.
 - **First-start import** writes nothing for this. A Zero-like dir ends up with the breaker off and bounded compact on.
 - **Parity:** five `divergences.toml` rows, listed in the ticket comment.
+
+### From [Decide the locale for GUI-started daemons](https://github.com/Winter-wub/claudeclaw/issues/43)
+
+- **`runner` run environment:** the Run PATH step becomes `RunEnv{path, lc_ctype}`.
+  - If neither `LC_ALL` nor a UTF-8 ctype is inherited, the Worker adds `LC_CTYPE=C.UTF-8` to every spawn, checked with `locale charmap`, falling back to `UTF-8` then `en_US.UTF-8`.
+  - `LANG` and collation are left untouched, and nothing is imported from the login shell.
+  - Windows: no-op.
+- **Settings:** `run_locale` (`auto` | `inherit`); `inherit` restores the 1.x C locale.
+- **API:** `DaemonStatus.run_locale: RunLocale`, plus the problem kind `run_locale_unavailable`.
+- **Logging:** three new Daemon-log events (see the ticket).
