@@ -89,6 +89,14 @@ describe("loadJobs", () => {
     expect(job?.agent).toBe("reg");
   });
 
+  test("a job with a malformed schedule is skipped; the others still load", async () => {
+    await writeFile(join(LEGACY_JOBS_DIR, "broken.md"), jobMd("0 13 * *", "Four fields"));
+    await writeFile(join(LEGACY_JOBS_DIR, "fine.md"), jobMd("0 13 * * *", "Five fields"));
+    const jobs = await loadJobsInSandbox();
+    expect(jobs.find((j) => j.name === "broken")).toBeUndefined();
+    expect(jobs.find((j) => j.name === "fine")?.schedule).toBe("0 13 * * *");
+  });
+
   test("enabled: false excludes job", async () => {
     await writeFile(
       join(AGENTS_DIR, "suzy", "jobs", "disabled.md"),
@@ -191,5 +199,19 @@ describe("write-protection bug validation", () => {
     const agentPath = join(process.cwd(), "agents", "suzy", "jobs", "daily.md");
     expect(legacyPath).toContain("/.claude/");
     expect(agentPath).not.toContain("/.claude/");
+  });
+});
+
+// ─── Regression: recovery retries must not re-wrap an already-launched argv ──
+
+describe("recovery retries rebuild from baseArgs", () => {
+  test("no retry passes the already-wrapped `args` back into buildClaudeCommand", async () => {
+    // `args = buildClaudeCommand(baseArgs, …)` is already wrapped by the launcher. Wrapping
+    // it again produced `claude claude -p …` (or `ccs <p> ccs <p> …`), so every stale-session,
+    // signature-error and after-compact retry failed.
+    const runnerSrc = await Bun.file(join(import.meta.dir, "../runner.ts")).text();
+    expect(runnerSrc).not.toMatch(/buildClaudeCommand\((?:withOutputFormat\()?(?:stripResume\()?args\b/);
+    expect(runnerSrc).toContain("buildClaudeCommand(baseArgs.filter(");
+    expect(runnerSrc).toContain("buildClaudeCommand(withOutputFormat(stripResume(baseArgs)");
   });
 });

@@ -1,6 +1,7 @@
 import { readdir } from "fs/promises";
 import { join } from "path";
 import { getJobsDir, getAgentsDir } from "./config";
+import { isValidCronExpr } from "./cron";
 
 export interface Job {
   /** Scheduler key. For standalone jobs this is the file stem. For agent-scoped jobs this is "agent/label". */
@@ -46,6 +47,10 @@ function parseJobFile(name: string, content: string): Job | null {
   }
 
   const schedule = parseFrontmatterValue(scheduleLine.replace("schedule:", ""));
+  if (!isValidCronExpr(schedule)) {
+    console.error(`Invalid schedule in job ${name}: "${schedule}" (expected 5 cron fields) -- job not loaded`);
+    return null;
+  }
 
   const recurringLine = lines.find((l) => l.startsWith("recurring:"));
   const dailyLine = lines.find((l) => l.startsWith("daily:")); // legacy alias
