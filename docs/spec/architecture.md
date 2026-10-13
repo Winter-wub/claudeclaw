@@ -841,3 +841,24 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
   - Daemon-log event `run.settle`
   - `problems[]` kind `run_pipe_held`
   - a `stragglers` warning check in Test launcher
+
+### From [Decide how run timeouts treat system sleep](https://github.com/Winter-wub/claudeclaw/issues/38)
+
+- **`runner::clock` — a Worker-wide Awake clock:**
+  - It ticks every 1s, in steps capped at 2s.
+  - A Resume is detected when a suspend-counting clock (macOS `CLOCK_MONOTONIC`, Linux `CLOCK_BOOTTIME`, Windows `QueryInterruptTime`) jumps 10s or more ahead.
+  - Every run deadline, compact included, is set on this clock.
+- **Wake grace:** after a Resume, a running run gets at least 120s more, capped at 120s extra over its lifetime. `core::health`'s `turn:` allowance gains +120s to match.
+- **Scheduler:** stays on the wall clock, and re-checks on a Resume.
+- **Logging:** `RunRecord` and `run.finish` gain `awake_ms`, `suspended_ms` and `wake_grace`. New event: `system.resumed`.
+
+### From [Decide how the daemon handles Launchers that change Claude Code's config dir or provider](https://github.com/Winter-wub/claudeclaw/issues/39)
+
+- **Transcripts:**
+  - `runner` reads a `TranscriptHint` from `init.memory_paths`, with a lazy search plus a `transcript_roots` setting (§7) as fallback.
+  - `judge` recognises `session_not_found`.
+  - `core::sessions` keeps per-session `transcript`, `context` and `cost_state`.
+- **Cost:** `RunOutcome` carries `usage`, `modelUsage` and `apiKeySource`.
+  - Per-run `cost_usd` = reported cumulative − Cost baseline, because `total_cost_usd` is session-cumulative on `--resume`.
+  - Usage rows carry `cost_trust` (`api_list` / `managed` / `estimate`) and are never "corrected".
+- **Examples:** `examples/launchers/config-dir.{sh,cmd}`.
