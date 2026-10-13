@@ -9,14 +9,18 @@ pub mod agents;
 pub mod deadline;
 pub mod discord;
 pub mod error;
+pub mod export;
+pub mod logs;
 pub mod permission;
 pub mod revision;
 pub mod routes;
+pub mod runs;
 pub mod scope;
 pub mod scopes;
 pub mod sessions;
 pub mod settings;
 pub mod turns;
+pub mod usage;
 mod wire;
 
 pub use adapter::{AdapterState, Transport};
@@ -33,6 +37,7 @@ pub use error::{ApiError, ErrorBody, ErrorCode};
 pub use permission::TokenPermission;
 pub use revision::Revision;
 pub use routes::Route;
+pub use runs::{RunIndexState, RunRecord};
 pub use scope::Scope;
 pub use scopes::ScopeLauncher;
 pub use sessions::{ScopeSession, SessionStatus};
@@ -69,6 +74,10 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
     doc.merge(scopes::Doc::openapi());
     doc.merge(sessions::Doc::openapi());
     doc.merge(settings::Doc::openapi());
+    doc.merge(logs::Doc::openapi());
+    doc.merge(export::Doc::openapi());
+    doc.merge(runs::Doc::openapi());
+    doc.merge(usage::Doc::openapi());
     doc.merge(discord::Doc::openapi());
     doc.merge(agents::Doc::openapi());
     doc

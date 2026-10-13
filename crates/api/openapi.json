@@ -371,6 +371,94 @@
           }
         }
       },
+      "AuditEntry": {
+        "type": "object",
+        "description": "One audit-log line: who changed what, when; never a secret, a prompt or a value (#13, #44).",
+        "required": [
+          "id",
+          "at",
+          "principal",
+          "action",
+          "target",
+          "outcome"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "principal": {
+            "type": "string",
+            "description": "`local`, `local-offline`, `device:<id>`, `token:<id>`, `system:import` or\n`system:housekeeping`."
+          },
+          "action": {
+            "type": "string",
+            "description": "The route's Op, e.g. `jobs.update`."
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An identifier (job name, Scope key, Device ID, a Housekeeping kind); `null` when the\naction has none."
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/AuditOutcome"
+          },
+          "code": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ErrorCode",
+                "description": "Why it failed, when `outcome` is `error`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many things one aggregate entry covers, e.g. files one Housekeeping kind deleted.",
+            "minimum": 0
+          }
+        }
+      },
+      "AuditOutcome": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "error"
+        ]
+      },
+      "AuditPage": {
+        "type": "object",
+        "description": "`audit.list`: one page, newest first (management-api §2.9).",
+        "required": [
+          "entries",
+          "next"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEntry"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "AutoCompactLast": {
         "type": "object",
         "description": "One auto-compact run (#33).",
@@ -526,6 +614,31 @@
           "timeout",
           "interrupted",
           "rate_limited"
+        ]
+      },
+      "CostBasis": {
+        "type": "string",
+        "enum": [
+          "list",
+          "managed",
+          "unknown"
+        ]
+      },
+      "CostStatus": {
+        "type": "string",
+        "enum": [
+          "priced",
+          "no_baseline",
+          "no_usage",
+          "refused"
+        ]
+      },
+      "CostTrust": {
+        "type": "string",
+        "enum": [
+          "api_list",
+          "managed",
+          "estimate"
         ]
       },
       "DiscordBot": {
@@ -838,6 +951,50 @@
           }
         }
       },
+      "DiskHousekeeping": {
+        "type": "object",
+        "description": "The last and next Housekeeping pass (#44 D7).",
+        "required": [
+          "last_at",
+          "next_at",
+          "deleted",
+          "freed_bytes"
+        ],
+        "properties": {
+          "last_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "`null` until the first pass."
+          },
+          "next_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "deleted": {
+            "type": "object",
+            "description": "Files the last pass deleted, by kind (`inbox`, `run_logs`, `run_index`, …).",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "freed_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "DiskSettings": {
         "type": "object",
         "description": "`disk`: the free-space floors (#44).",
@@ -956,6 +1113,177 @@
           "end": {
             "type": "string",
             "description": "`HH:MM`."
+          }
+        }
+      },
+      "ExportManifest": {
+        "type": "object",
+        "description": "What an export holds, without its text; `claudeclaw logs export --json` prints it (#28 D6).",
+        "required": [
+          "format",
+          "created_at",
+          "versions",
+          "window",
+          "lines",
+          "runs",
+          "pseudonyms",
+          "trimmed",
+          "map_written"
+        ],
+        "properties": {
+          "format": {
+            "type": "string",
+            "description": "`claudeclaw-export/1`."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "versions": {
+            "$ref": "#/components/schemas/ExportVersions"
+          },
+          "window": {
+            "$ref": "#/components/schemas/ExportWindow"
+          },
+          "lines": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Daemon-log lines included, after trimming.",
+            "minimum": 0
+          },
+          "runs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Run index records included.",
+            "minimum": 0
+          },
+          "pseudonyms": {
+            "type": "object",
+            "description": "Pseudonyms assigned, by kind (`discord`, `job`, …; see [`PseudonymKind`]).",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "trimmed": {
+            "$ref": "#/components/schemas/ExportTrimmed"
+          },
+          "map_written": {
+            "type": "boolean",
+            "description": "The pseudonym key was written (`--map`, or `map=true`)."
+          }
+        }
+      },
+      "ExportSection": {
+        "type": "string",
+        "enum": [
+          "header",
+          "summary",
+          "status",
+          "settings",
+          "jobs",
+          "crash",
+          "runs",
+          "daemon_log"
+        ]
+      },
+      "ExportTrimmed": {
+        "type": "object",
+        "description": "Daemon-log lines dropped to fit `max_bytes`, in trimming order; never silent (#28 D6).",
+        "required": [
+          "trace",
+          "debug",
+          "info",
+          "warn_plus",
+          "oldest_included"
+        ],
+        "properties": {
+          "trace": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "debug": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "info": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "warn_plus": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "oldest_included": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The oldest line still included; `null` when no line is."
+          }
+        }
+      },
+      "ExportVersions": {
+        "type": "object",
+        "description": "The versions in an export's Summary (#28 D1.2).",
+        "required": [
+          "claudeclaw",
+          "commit",
+          "target",
+          "daemon",
+          "app"
+        ],
+        "properties": {
+          "claudeclaw": {
+            "type": "string",
+            "description": "The `claudeclaw` that made the export, as in `claudeclaw version`."
+          },
+          "commit": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "daemon": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The running Daemon's version; `null` when none answered."
+          },
+          "app": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Desktop app's version, when the app made the export."
+          }
+        }
+      },
+      "ExportWindow": {
+        "type": "object",
+        "description": "The time window the Daemon log and runs sections cover (#28 D1).",
+        "required": [
+          "since",
+          "until"
+        ],
+        "properties": {
+          "since": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -1428,6 +1756,292 @@
           "job_frontmatter"
         ]
       },
+      "LogCounts": {
+        "type": "object",
+        "description": "ERROR and WARN lines since the Worker started (#23 D5).",
+        "required": [
+          "error",
+          "warn"
+        ],
+        "properties": {
+          "error": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "warn": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "LogDisk": {
+        "type": "object",
+        "description": "What the Daemon keeps on disk (#23 D5, #44 D7).",
+        "required": [
+          "daemon_bytes",
+          "run_log_files",
+          "run_log_bytes",
+          "audit_bytes",
+          "inbox_files",
+          "inbox_bytes",
+          "inbox_foreign",
+          "run_index_bytes",
+          "outbox_bytes",
+          "archive_bytes",
+          "import_backup_bytes",
+          "free_bytes",
+          "housekeeping"
+        ],
+        "properties": {
+          "daemon_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "run_log_files": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "run_log_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "audit_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "inbox_files": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Daemon-pattern files under `inbox/*`.",
+            "minimum": 0
+          },
+          "inbox_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "inbox_foreign": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Files under `inbox/*` the Daemon didn't write, and so never deletes.",
+            "minimum": 0
+          },
+          "run_index_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "outbox_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "archive_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "import_backup_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "free_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Free space on the project dir's volume; `null` when it couldn't be read.",
+            "minimum": 0
+          },
+          "housekeeping": {
+            "$ref": "#/components/schemas/DiskHousekeeping"
+          }
+        }
+      },
+      "LogEntry": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/LogLine"
+          },
+          {
+            "$ref": "#/components/schemas/RawLogLine"
+          }
+        ],
+        "description": "One Daemon-log line from `logs.tail`, `logs.stream` or `claudeclaw logs --offline`\n(#23 D5). A line that doesn't parse (a torn last line, foreign text) comes back as `Raw` and\nis never skipped."
+      },
+      "LogExport": {
+        "type": "object",
+        "description": "`logs.export`: one reviewable Markdown file, already scrubbed (management-api §2.9, #28 D7).",
+        "required": [
+          "manifest",
+          "text"
+        ],
+        "properties": {
+          "manifest": {
+            "$ref": "#/components/schemas/ExportManifest"
+          },
+          "text": {
+            "type": "string",
+            "description": "The Markdown file."
+          },
+          "map": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The reverse map `{pseudonym: real value}`, only when the caller asked with `map=true`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "LogLevel": {
+        "type": "string",
+        "enum": [
+          "ERROR",
+          "WARN",
+          "INFO",
+          "DEBUG",
+          "TRACE"
+        ]
+      },
+      "LogLine": {
+        "type": "object",
+        "description": "A parsed Daemon-log line (#23 D2, D5). Content-free by #23 D6.",
+        "required": [
+          "seq",
+          "timestamp",
+          "level",
+          "target",
+          "message",
+          "span",
+          "fields"
+        ],
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque; pass it as `before`. Absent on streamed lines and in the Bug-report export."
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Per-process, restarting at 1; a gap means lost lines.",
+            "minimum": 0
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "level": {
+            "$ref": "#/components/schemas/LogLevel"
+          },
+          "target": {
+            "type": "string"
+          },
+          "event": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stable dotted event name; required at INFO and above from workspace crates."
+          },
+          "message": {
+            "type": "string"
+          },
+          "span": {
+            "type": "object",
+            "description": "The current span's correlation fields (`run_id`, `scope`, `launcher`, …).",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "fields": {
+            "type": "object",
+            "description": "The event's own fields.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "LogPage": {
+        "type": "object",
+        "description": "`logs.tail`: one page, newest first (management-api §2.9, #23 D5).",
+        "required": [
+          "lines",
+          "next",
+          "scan_truncated"
+        ],
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogEntry"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `before` cursor for the next page, or `null` at the end."
+          },
+          "scan_truncated": {
+            "type": "boolean",
+            "description": "The 50 MB scan bound stopped this page before `limit` lines; `next` continues it."
+          }
+        }
+      },
+      "LogSummary": {
+        "type": "object",
+        "description": "`logs.summary`: badges for the Logs and Status screens (management-api §2.9; #23 D5, #44).",
+        "required": [
+          "level",
+          "since_boot",
+          "dropped_lines",
+          "capped_today",
+          "disk"
+        ],
+        "properties": {
+          "level": {
+            "type": "string",
+            "description": "The `EnvFilter` directive in effect, e.g. `info,claudeclaw_discord=debug`."
+          },
+          "since_boot": {
+            "$ref": "#/components/schemas/LogCounts"
+          },
+          "dropped_lines": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lines the Worker's sink dropped since boot (`log.dropped`).",
+            "minimum": 0
+          },
+          "capped_today": {
+            "type": "boolean",
+            "description": "The daily cap was hit today (`log.capped`)."
+          },
+          "disk": {
+            "$ref": "#/components/schemas/LogDisk"
+          }
+        }
+      },
       "LoggingSettings": {
         "type": "object",
         "description": "`logging` (#23 D1, #44).",
@@ -1487,6 +2101,24 @@
           "not_executable"
         ]
       },
+      "RawLogLine": {
+        "type": "object",
+        "description": "A Daemon-log line that didn't parse (#23 D5).",
+        "required": [
+          "raw"
+        ],
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "raw": {
+            "type": "string"
+          }
+        }
+      },
       "RemoteSettings": {
         "type": "object",
         "description": "`remote`: the pinned-TLS remote listener (architecture §7). Changed only locally.",
@@ -1522,12 +2154,152 @@
         "description": "The first 16 hex digits of SHA-256 over the file's bytes. Send it back as `If-Match`.",
         "pattern": "^[0-9a-f]{16}$"
       },
+      "RunIndexPhase": {
+        "type": "string",
+        "enum": [
+          "ready",
+          "backfilling",
+          "failed"
+        ]
+      },
+      "RunIndexState": {
+        "type": "object",
+        "description": "The Run index Back-fill's progress, so partial answers are labelled (#44 D2). Also served in\n`DaemonStatus.run_index`, `UsageReport.coverage.index` and `JobsAudit.index`.",
+        "required": [
+          "state",
+          "done",
+          "total",
+          "since"
+        ],
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/RunIndexPhase"
+          },
+          "done": {
+            "type": "integer",
+            "format": "int32",
+            "description": "TS Run logs indexed so far by the current Back-fill.",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int32",
+            "description": "TS Run logs the current Back-fill found missing.",
+            "minimum": 0
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the index entered `state`."
+          }
+        }
+      },
       "RunLocaleSetting": {
         "type": "string",
         "enum": [
           "auto",
           "inherit"
         ]
+      },
+      "RunModelUsage": {
+        "type": "object",
+        "description": "One model's share of a run, per run by difference (#39 D8).",
+        "required": [
+          "model",
+          "tokens_in",
+          "tokens_out",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cost_usd",
+          "cost_basis"
+        ],
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "tokens_in": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tokens_out": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_read_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_write_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "cost_basis": {
+            "$ref": "#/components/schemas/CostBasis"
+          }
+        }
+      },
+      "RunOrigin": {
+        "type": "string",
+        "enum": [
+          "discord",
+          "scheduler",
+          "heartbeat",
+          "api",
+          "cli",
+          "bootstrap",
+          "utility",
+          "test",
+          "ts"
+        ]
+      },
+      "RunOutcome": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "failed",
+          "timeout",
+          "interrupted",
+          "rate_limited",
+          "unknown"
+        ]
+      },
+      "RunPage": {
+        "type": "object",
+        "description": "`runs.list`: running runs first, then the index newest first (management-api §2.9).",
+        "required": [
+          "runs",
+          "next",
+          "index"
+        ],
+        "properties": {
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunRecord"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `before` cursor for the next page, or `null` at the end."
+          },
+          "index": {
+            "$ref": "#/components/schemas/RunIndexState"
+          }
+        }
       },
       "RunPathSettings": {
         "type": "object",
@@ -1556,6 +2328,382 @@
           "login_shell",
           "registry",
           "inherit"
+        ]
+      },
+      "RunPurpose": {
+        "type": "string",
+        "enum": [
+          "turn",
+          "compact",
+          "compact_retry"
+        ]
+      },
+      "RunRecord": {
+        "type": "object",
+        "description": "One spawned run: a line of `daemon/runs/<YYYY-MM>.jsonl`, and what `runs.get` returns\n(management-api §2.9, #23 D4). Refused runs get one too; every run in a Turn gets its own,\nsharing `turn_id` (#33). Back-filled TS records (`origin: ts`) leave every Rust-only measure\n`null` (#44 D2).",
+        "required": [
+          "run_id",
+          "turn_id",
+          "name",
+          "scope",
+          "origin",
+          "launcher",
+          "job",
+          "agent",
+          "session_id",
+          "session",
+          "model",
+          "started_at",
+          "ended_at",
+          "duration_ms",
+          "outcome",
+          "exit_code",
+          "is_error",
+          "api_error_status",
+          "attempt",
+          "tokens_in",
+          "tokens_out",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cost_usd",
+          "cost_status",
+          "cost_basis",
+          "provider",
+          "api_key_source",
+          "models",
+          "run_log",
+          "launcher_resolved",
+          "purpose",
+          "settle",
+          "awake_ms",
+          "suspended_ms",
+          "wake_grace",
+          "claude_code_version",
+          "lingered"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` for back-filled TS records."
+          },
+          "name": {
+            "type": "string",
+            "description": "The Run log name (`<name>-<iso>.log`)."
+          },
+          "scope": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Scope",
+                "description": "`null` for back-filled TS records, whose header names no Scope."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "origin": {
+            "$ref": "#/components/schemas/RunOrigin"
+          },
+          "launcher": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`direct` or the Launcher's file name; `null` for back-filled TS records."
+          },
+          "job": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunSession"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ended_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "outcome": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunOutcome",
+                "description": "`null` only while `state` is `running`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "is_error": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "api_error_status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "attempt": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Counts up within a Turn (#33); 1 for back-filled TS records.",
+            "minimum": 0
+          },
+          "state": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunState",
+                "description": "Absent once the run has finished; `running` on the in-memory runs `runs.list` puts first."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tokens_in": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "tokens_out": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_read_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_write_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Per run, by difference against the Cost baseline; `null` when it can't be known (#39)."
+          },
+          "cost_status": {
+            "$ref": "#/components/schemas/CostStatus"
+          },
+          "cost_basis": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CostBasis"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "From `modelUsage`: `firstParty`, …, or `mixed` (#39)."
+          },
+          "api_key_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "From `init.apiKeySource`; `null` when there was no `init` (#39)."
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunModelUsage"
+            },
+            "description": "Per model, subagents included; empty when there was no usage (#39)."
+          },
+          "run_log": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The project-relative Run log, or `null` (Refused runs and compact runs write none)."
+          },
+          "launcher_resolved": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The executable the Launcher resolved to (#26)."
+          },
+          "purpose": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunPurpose",
+                "description": "`null` for back-filled TS records (#33)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settle": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunSettle",
+                "description": "`null` when nothing was spawned to settle (#37)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "awake_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The runner's own measure, without suspended time (#38).",
+            "minimum": 0
+          },
+          "suspended_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "wake_grace": {
+            "type": "boolean",
+            "description": "A Wake grace moved the run's deadline (#38)."
+          },
+          "claude_code_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` for back-filled TS records and Refused runs (#42)."
+          },
+          "lingered": {
+            "type": "boolean",
+            "description": "`claude` lingered after `result`; not a timeout for Auto-compact or the Timeout breaker\n(#47)."
+          }
+        }
+      },
+      "RunSession": {
+        "type": "string",
+        "enum": [
+          "new",
+          "resumed"
+        ]
+      },
+      "RunSettle": {
+        "type": "object",
+        "description": "What happened to the run's process group after the leader exited (#37).",
+        "required": [
+          "stragglers",
+          "outcome",
+          "pipe_held",
+          "settle_ms"
+        ],
+        "properties": {
+          "stragglers": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Group members alive at leader exit; best-effort on Windows.",
+            "minimum": 0
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/SettleOutcome"
+          },
+          "pipe_held": {
+            "type": "boolean",
+            "description": "Something outside the group still held the output pipe."
+          },
+          "settle_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "RunState": {
+        "type": "string",
+        "enum": [
+          "running"
         ]
       },
       "Runnable": {
@@ -2223,6 +3371,16 @@
           }
         }
       },
+      "SettleOutcome": {
+        "type": "string",
+        "enum": [
+          "clean",
+          "exited",
+          "terminated",
+          "killed",
+          "survived"
+        ]
+      },
       "TimeoutBreakerSettings": {
         "type": "object",
         "description": "`timeout_breaker` (#32). Each limit is `null` when off; both `null` turns the breaker off.",
@@ -2818,6 +3976,302 @@
           "running",
           "done"
         ]
+      },
+      "UsageCoverage": {
+        "type": "object",
+        "description": "What the sums leave out, so a total is never silently partial (#39 D11, #44).",
+        "required": [
+          "index_from",
+          "runs_without_usage",
+          "runs_no_baseline",
+          "runs_unknown_price",
+          "index"
+        ],
+        "properties": {
+          "index_from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The oldest run in the Run index; `null` when it is empty."
+          },
+          "runs_without_usage": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Runs with no usage, e.g. back-filled TS records.",
+            "minimum": 0
+          },
+          "runs_no_baseline": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "runs_unknown_price": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Runs whose basis is `unknown`: tokens counted, cost left out.",
+            "minimum": 0
+          },
+          "index": {
+            "$ref": "#/components/schemas/RunIndexState"
+          }
+        }
+      },
+      "UsageDay": {
+        "type": "object",
+        "description": "One day's sums, in `tz` (management-api §2.10).",
+        "required": [
+          "date",
+          "runs",
+          "tokens_in",
+          "tokens_out",
+          "cost_usd"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "runs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "tokens_in": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tokens_out": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          }
+        }
+      },
+      "UsageGroup": {
+        "type": "string",
+        "enum": [
+          "scope",
+          "launcher",
+          "model",
+          "job"
+        ]
+      },
+      "UsageReport": {
+        "type": "object",
+        "description": "`usage.get`: one Daemon's usage between two dates in the caller's `tz` (management-api\n§2.10). Every cost sum skips `null` costs, and `coverage` counts what was skipped.",
+        "required": [
+          "from",
+          "to",
+          "tz",
+          "currency",
+          "totals",
+          "days",
+          "rows",
+          "coverage"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "description": "First day, inclusive, in `tz`."
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "description": "Last day, inclusive, in `tz`."
+          },
+          "tz": {
+            "type": "string",
+            "description": "The IANA time zone the caller chose for day boundaries."
+          },
+          "currency": {
+            "type": "string",
+            "description": "Always `USD`."
+          },
+          "totals": {
+            "$ref": "#/components/schemas/UsageTotals"
+          },
+          "days": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageDay"
+            }
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageRow"
+            }
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/UsageCoverage"
+          }
+        }
+      },
+      "UsageRow": {
+        "type": "object",
+        "description": "One `group_by` group's sums (management-api §2.10, #39).",
+        "required": [
+          "key",
+          "label",
+          "kind",
+          "launcher",
+          "runs",
+          "tokens_in",
+          "tokens_out",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cache_hit_pct",
+          "cost_usd",
+          "cost_trust"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The group's identity: a Scope key, a Launcher, a model ID or a job name."
+          },
+          "label": {
+            "type": "string",
+            "description": "What the app shows, e.g. a channel name for a `discord:<id>` Scope."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/UsageGroup"
+          },
+          "launcher": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Launcher behind the row's runs; `null` when they used several."
+          },
+          "runs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "tokens_in": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tokens_out": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_read_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_write_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_hit_pct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "cost_trust": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CostTrust"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "UsageTotals": {
+        "type": "object",
+        "description": "The whole report's sums (#39 D10).",
+        "required": [
+          "runs",
+          "tokens_in",
+          "tokens_out",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cache_hit_pct",
+          "cost_usd",
+          "cost_trust"
+        ],
+        "properties": {
+          "runs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "tokens_in": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tokens_out": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_read_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_write_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_hit_pct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Percent (0–100) of input tokens read from cache; `null` with no input tokens."
+          },
+          "cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "`null` when no run in the report was priced."
+          },
+          "cost_trust": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CostTrust",
+                "description": "The weakest trust over the priced runs; `null` with `cost_usd`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       }
     }
   }
