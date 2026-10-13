@@ -695,3 +695,9 @@ These belong to the first implementation PRs and to #18's suite.
 - **New `xtask deps` rule:** `parity → core, runner, store, jobs, ts-compat, chat, discord, api`. Nothing depends on `parity`.
 - **The `discord` adapter** takes a `DiscordEndpoints { gateway, rest }` constructor argument so replay can redirect it. It is not a settings key.
 - **Test tooling:** `proptest`, `similar-asserts`, tokio's paused clock and axum's `ws` feature. No snapshot crate.
+
+### From [Specify logging and observability](https://github.com/Winter-wub/claudeclaw/issues/23)
+
+- **Secrets:** `store`'s `Secret<String>` becomes `secrecy::SecretString` (secrecy 0.10.3, a new workspace dependency). Content types get a hand-written `Debug` that prints only sizes.
+- **Logging pipeline:** a binary-owned log sink stamps `seq`, reports dropped lines as `log.dropped`, caps a day at 256 MiB, and mirrors WARN+ to the Worker's stderr.
+- **Run index:** a Rust-only `daemon/runs/<YYYY-MM>.jsonl`, back-filled from TS run logs.
