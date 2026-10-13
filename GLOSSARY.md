@@ -20,13 +20,25 @@ _Avoid_: daemon (when meaning only this process), runner
 The part of the Daemon that connects one chat transport (Discord now; Telegram and Slack later) to it through the chat seam, owning the connection, who may talk, attachment intake and rendering; it never runs Claude Code itself.
 _Avoid_: bot, integration, channel (when meaning the transport)
 
+**Hire / Fire**:
+Creating a Discord thread with its own agent folder and session under a channel (hire), or deleting that thread and moving its agent folder to `agents/.archive/` (fire), from Discord or the Desktop app.
+_Avoid_: spawn, kill, delete thread (for fire)
+
 **Turn**:
 One inbound message or scheduled prompt handed to the Daemon for a Scope, queued behind that Scope's earlier Turns.
 _Avoid_: request, job (when meaning a chat message), task
 
 **Give-up**:
-The Watchdog's final stop after more than 5 Worker crashes in 10 minutes: it records the give-up, DMs the owner and exits, and nothing restarts the Daemon until a person chooses Restart anyway.
+The Watchdog's final stop after more than 5 Worker crashes in 10 minutes: it records the give-up, DMs the owner and exits, and every later start is a Held start until a person clears it (Restart anyway, `start --clear-give-up` or `clear-give-up`).
 _Avoid_: crash, fatal stop, shutdown
+
+**Held start**:
+A `claudeclaw start` the Watchdog refuses because the last Give-up hasn't been cleared; it exits 70 (0 under launchd) and starts no Worker.
+_Avoid_: failed start, refused run (reserved for a run), blocked start
+
+**Service manager**:
+launchd or systemd running the Daemon from one of the example unit files, named to the Watchdog with `--service-manager`.
+_Avoid_: supervisor (`supervisor.json` is the Watchdog's own file), init, service (when meaning the Daemon)
 
 **Crash record**:
 The bounded history of recent Worker crashes (time, exit, reported reason, redacted stderr tail) that the Watchdog keeps in its status file and the Management API serves.
@@ -40,13 +52,41 @@ _Avoid_: offline mode, stale data, mirror
 The PATH the Worker gives every Launcher it starts and uses to find `direct`'s `claude` and script interpreters; it comes from the user's login shell (macOS, Linux) or the registry (Windows), with `run_path.prepend` first, and is rebuilt at every Worker start.
 _Avoid_: shell env, GUI PATH, daemon PATH, launchd PATH
 
+**Run locale**:
+The character-type setting the Worker gives every Launcher run: the inherited locale when it is already UTF-8, otherwise `LC_CTYPE=C.UTF-8` (or the first valid fallback), with every other locale category left as inherited.
+_Avoid_: run language, daemon locale, LANG default
+
 **System-prompt file**:
-The per-run file under `daemon/tmp/` holding the text the Daemon appends to Claude Code's system prompt, passed as `--append-system-prompt-file` and deleted when the run is reaped.
+The per-run file under `daemon/tmp/` holding the text the Daemon appends to Claude Code's system prompt, passed as `--append-system-prompt-file` and deleted when the run is settled or reaped.
 _Avoid_: ASP file, prompt file, temp prompt
 
 **Statusline**:
 The one line Claude Code shows under its prompt in an interactive session opened in a Daemon's project dir, rendered by `claudeclaw statusline` from the Management API's status (or the offline status when the Daemon is down).
 _Avoid_: status bar, state.json, statusline.cjs (TS 1.x artefacts)
+
+**Auto-compact**:
+The Daemon's recovery for a resumed session's timed-out Turn: run `/compact` on the session with its own shorter timeout, then re-run the Turn once; done at most once per Failing stretch.
+_Avoid_: compaction retry, auto-summary, compact-on-timeout
+
+**Failing stretch**:
+A session's Turns since its last successful Turn; the Auto-compact budget and the Timeout breaker's time limit are measured over it, and a successful Turn or a session change ends it.
+_Avoid_: streak, outage, failure window
+
+**Timeout breaker**:
+The opt-in per-session guard that stops the Daemon auto-compacting and retrying a timed-out Turn once that (Scope, Launcher) session has timed out too often in a row or for too long; it never refuses or delays a Turn and closes on the session's next successful Turn.
+_Avoid_: watchdog (reserved for the process; TS's `watchdog.*` keys), circuit breaker, kill switch
+
+**Awake time**:
+Time during which the machine and the Daemon's process were actually running; sleep, hibernation and a stopped process don't count. Run timeouts, the Hang kill and Stalls are measured in it; scheduler fire times use the wall clock.
+_Avoid_: uptime, CPU time, monotonic time, elapsed time
+
+**Resume**:
+The Worker noticing, from a 10-second or larger gap between its Awake clock and a suspend-counting clock, that it was not running (sleep, dark wake, VM pause, stopped process); it triggers the Wake grace and a schedule re-check.
+_Avoid_: wake event, wakeup, power event
+
+**Wake grace**:
+After a Resume, a running run's guarantee of at least 120 seconds more Awake time before its timeout, capped at 120 seconds extra over the run's lifetime.
+_Avoid_: grace period, timeout extension, sleep grace
 
 **Hang kill**:
 The Watchdog killing a Worker that has not answered its liveness ping for 45 seconds of awake time; recorded and counted as a crash (`cause: hung`).
@@ -59,6 +99,14 @@ _Avoid_: hang (reserved for the whole Worker), freeze, deadlock
 **Run registry**:
 The Worker's live list of every Claude Code process it spawned, each with an OS start-time stamp, kept in `daemon/state/runs.json` and read to Reap after the Worker is gone.
 _Avoid_: active-runs (the TS counter file), process table, pid file
+
+**Straggler**:
+A process still in a run's process group or Job object after the run's leader has exited normally, typically the real server behind a wrapped MCP command.
+_Avoid_: orphan, zombie, leftover (reserved for what a Reap could not end), child
+
+**Settle**:
+The runner's end of every run after its leader exits: a 2-second grace, then TERM and KILL for any Stragglers (Job termination on Windows); the run leaves the Run registry and frees its Scope only once settled.
+_Avoid_: cleanup, reap (reserved for a gone Worker's runs), teardown
 
 **Reap**:
 To end a gone Worker's leftover runs; done by whoever holds `daemon.lock` with no live Worker, killing only the processes the Run registry proves are still the ones recorded.
@@ -88,12 +136,36 @@ _Avoid_: Web API, server API, admin endpoint
 A Desktop app installation that has been paired with a Daemon and holds its own revocable key for it.
 _Avoid_: client, session, user
 
+**Principal**:
+The identity the Management API resolves for a request: Local (the socket or pipe), a Device, an API token, or Pairing (an unknown certificate allowed only to pair); permissions and audit entries are stated per Principal.
+_Avoid_: caller, user, client, actor
+
+**Revision**:
+A short content hash of an editable file (job, settings, persona) that the Management API returns and checks through `If-Match`, so an edit made elsewhere is reported as a conflict instead of being overwritten.
+_Avoid_: version, etag (in prose), mtime
+
+**Deadline**:
+The per-route time limit declared in `claudeclaw-api` that the Desktop app, the CLI and the server backstop all apply to one Management API request; streams have an idle limit instead.
+_Avoid_: timeout (reserved for a run's timeout), TTL
+
+**Detach**:
+A client stops waiting on a long Management API operation (cancel, Deadline, disconnect) while the Daemon finishes the work and records its result; in v1 no client action kills a run.
+_Avoid_: cancel (when meaning the run is stopped), abort, kill
+
+**Pairing code**:
+A one-time, 10-minute code of 8 Crockford base32 characters (shown `XXXX-XXXX`), created only on the Daemon's host, that lets one new Device pair; burned after 5 wrong attempts.
+_Avoid_: PIN, OTP, invite code, password
+
+**Pairing string**:
+The single line `ccpair1.<code>.<fingerprint>.<port>[.<host>]` that `claudeclaw pair` prints for pasting into the Desktop app; it carries the Pairing code with the Daemon's pinned key, so the app checks the pin before sending the code.
+_Avoid_: pairing link, pairing URL, QR, token
+
 **API token**:
 A named, revocable credential, limited by its Token permissions, that lets automation on another machine call a narrow part of the Management API.
 _Avoid_: apiToken (the legacy single setting it replaces), password, key
 
 **Refused run**:
-A run the Daemon declines to start because its Launcher is missing, not executable or fails to start; nothing runs and no other Launcher is tried.
+A run the Daemon declines to start, or that ends before Claude Code accepts it: its Launcher is missing, not executable or fails to start (including exit 126/127 with no output), or the Claude Code it runs rejects the Daemon's argv (`unknown option`). Nothing runs and no other Launcher is tried.
 _Avoid_: failed run (when nothing ran), fallback
 
 **Parked session**:
@@ -104,7 +176,35 @@ _Avoid_: old session, archived session
 The Desktop app adopting an already-running Daemon (e.g. one started from the CLI), so the app watches and revives it instead of starting a second one.
 _Avoid_: connect (for this meaning), adopt, take over
 
+**Transcript**:
+Claude Code's own JSONL record of a session at `<Config dir>/projects/<project dir>/<session id>.jsonl`, which the Daemon only reads (for Chat history) and never writes, copies or prunes.
+_Avoid_: run log, chat log, history file, session file
+
+**Config dir**:
+The directory where Claude Code keeps its settings, credentials and Transcripts: `CLAUDE_CONFIG_DIR` if set, else `~/.claude`. A Launcher may change it; the Daemon learns it from each run's `init` event.
+_Avoid_: profile dir, session namespace, home, claude dir
+
+**Cost baseline**:
+A session's cumulative Claude Code cost and per-model tokens after its last Daemon run; a resumed run's cost is its reported cumulative minus this baseline.
+_Avoid_: running total, session cost (for the per-run figure)
+
+**Minimum Claude Code**:
+The oldest Claude Code version the Daemon supports (2.1.214), set by the newest flag, stream field or upstream stream-json fix the runner depends on; below it, runs still go ahead with a `claude_code_outdated` warning.
+_Avoid_: required version, CC floor, supported version (alone)
+
+**Fake API**:
+A local HTTP server answering Claude Code's Messages API with canned responses, so real Claude Code can run with no provider and no key; used by cc-compat and ticket probes.
+_Avoid_: mock provider, stub server, Recorder launcher (which replaces Claude Code, not the provider)
+
+**cc-compat**:
+The CI workflow that installs real Claude Code at the Minimum Claude Code and at latest and drives the runner's real argv against a Fake API; the only CI job that runs real Claude Code.
+_Avoid_: e2e suite, live test, integration tests, Parity suite (which compares Rust to TS)
+
 ## Logs
+
+**App log**:
+The Desktop app's own structured JSONL log (`app.<date>.jsonl` in the OS log dir), recording what the app did with no owner identifiers or content; it joins a Bug-report export only through the app's verify pass.
+_Avoid_: desktop log, UI log, frontend log, webview console
 
 **Daemon log**:
 The Worker's and Watchdog's own structured JSONL logs under `daemon/logs/`, recording what the Daemon did by identifiers, counts and outcomes, never secrets or prompt or message content.
@@ -126,11 +226,31 @@ _Avoid_: support bundle, diagnostics dump, crash report, debug zip
 A placeholder of the form `<kind>:#<n>` (e.g. `discord:#2`) standing for one real identifier everywhere inside one Bug-report export; numbering restarts per export, so two exports can't be linked.
 _Avoid_: hash, alias, anonymised ID, masked ID
 
+**Housekeeping**:
+The Worker's one daily task that deletes files by the listed retention rules (Inbox age and cap, opt-in Run-log and audit retention, Run-index compaction, session-backup cap, orphaned Scope state); it deletes only files the Daemon wrote and can be previewed with `claudeclaw housekeeping --dry-run`.
+_Avoid_: cleanup, garbage collection, pruning job, reap (reserved for a gone Worker's runs), Settle
+
+**Inbox**:
+The `inbox/<transport>/` dirs where the Daemon saves attachments it hands to Claude Code as files; Housekeeping deletes Daemon-named files there 30 days after download by default or beyond a total cap.
+_Avoid_: uploads, attachments dir, downloads, outbox
+
+**Back-fill**:
+The Worker's background pass that adds an `origin: ts` Run-index record for every TS-pattern Run log not yet indexed; it runs after `ready` on every start and reports progress.
+_Avoid_: migration, import (reserved for the First-start import), reindex
+
 ## Jobs
 
 **Job**:
 A markdown file in a jobs directory whose YAML frontmatter holds a cron `schedule` and options and whose body is the prompt; the Daemon runs it in its own Scope. An agent Job lives under `agents/<agent>/jobs/`.
 _Avoid_: cron, task, schedule (when meaning the file)
+
+**Change scan**:
+The Worker's loop that notices edits to Job files and `settings.json`: a stat pass every 2 seconds and a read-and-hash pass every 30, applying a change only once the file is stable across two passes.
+_Avoid_: watcher, file watch, notify, hot reload (when meaning the mechanism)
+
+**Orphaned job**:
+A Job whose file disappeared from disk without a Management API delete; its sessions and job state are kept and pruned after 30 days unless a Job with the same name reappears.
+_Avoid_: deleted job, dead job, missing job
 
 **One-shot job**:
 A Job with `recurring: false`; after it finishes, the Daemon sets `enabled: false` and keeps the file.
@@ -143,6 +263,34 @@ _Avoid_: migration, upgrade, conversion, first-run setup
 **Job import**:
 The one-time pass over TS data on the Daemon's first start, also runnable on demand. After taking a backup, it rewrites only the Job lines whose meaning differs between the TS and Rust Daemons, into spellings both read identically.
 _Avoid_: migration, conversion, upgrade
+
+## Releases
+
+**Release key**:
+The minisign key pair that signs every release's `SHA256SUMS` and the Desktop app's updater artefacts; the private half is a secret in the approval-gated `release` environment, with a backup key kept offline and both public keys embedded in the binary.
+_Avoid_: signing cert, GPG key, update key
+
+**Update channel**:
+Which releases an install updates to: stable (non-pre-release only) or pre-release (the highest semver, alpha and rc included); implied by the running version, never set by the user.
+_Avoid_: track, ring, beta channel
+
+**Release candidate**:
+A `v2.X.Y-rc.N` release; its tag runs gate G1 (`parity-rc` plus a fresh capture check), and it is the build a Shadow instance and Day 0 run.
+_Avoid_: RC build, preview, beta
+
+## Verification
+
+**Verification register**:
+The committed `verification/checks.toml` listing every behaviour that needs proof beyond unit tests, with where it runs, what proves it and the gate it blocks; enforced by `cargo xtask verify` and the release workflow.
+_Avoid_: test plan, QA checklist
+
+**Known gap**:
+A Verification register entry the project does not verify on real hardware or by hand; every release's notes list it under "Not verified in this release".
+_Avoid_: unverified item, TODO, caveat
+
+**Self-test**:
+The Desktop app's hidden `--selftest` modes that run headless against the real bundle in CI, inside a temp dir, never touching known Daemons.
+_Avoid_: smoke mode, test mode, debug flag
 
 ## Cutover
 
