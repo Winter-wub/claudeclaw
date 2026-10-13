@@ -916,3 +916,13 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
 - **Example unit files:**
   - plist: `ExitTimeOut 45` (launchd's default is 5s).
   - systemd: `KillMode=mixed`, `TimeoutStopSec=45s`, `RestartPreventExitStatus=70 73`.
+
+### From [Decide how the Worker detects job-file changes](https://github.com/Winter-wub/claudeclaw/issues/46)
+
+- **`store::scan` (Change scan), no `notify`:** every 2s a stat pass (ctime is part of the key), and every 30s a SHA-256 pass, over the job dirs and `settings.json`.
+  - A change is applied only once it is stable across two passes.
+  - A file counts as removed only after two passes without it.
+  - Dot-prefixed `.md` files are ignored.
+- **Daemon writes:** re-stat before the rename, then update the snapshot directly.
+- **Edits:** API edits survive the frontmatter guard. Edits made outside the daemon are restored, with a `job_frontmatter_restored` notice.
+- **Orphaned jobs:** sessions and job state are kept for 30 days (`jobs.json` and `core::sessions` gain the fields for this).
