@@ -48,6 +48,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo xtask deps
+      - run: cargo xtask openapi --check
 
   deny:
     needs: changes
