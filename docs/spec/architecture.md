@@ -900,3 +900,11 @@ The full resource list is in [`docs/spec/management-api.md`](https://github.com/
 - **Pairing string:** `pair` also prints `ccpair1.<code>.<fingerprint>.<port>[.<host>]`. `api` gains a shared `PairingString` parser.
 - **Desktop app:** `pair(host, code)` becomes `pair(PairTarget)`. With a Pairing string, the app pins the key before it connects.
 - **§5 `core::notify`:** every `device.paired` and `device.revoked` raises an owner notice.
+
+### From [Specify the desktop app's own diagnostics and long API calls](https://github.com/Winter-wub/claudeclaw/issues/40)
+
+- **App log:** `tracing` JSONL in Tauri's `app_log_dir()` under the bundle id `io.github.winter-wub.claudeclaw` (also set as `identifier` in `tauri.conf.json`). It keeps 14 daily files and contains no content or identifiers. `tauri-plugin-log` is not used.
+- **Bug-report export:** the App log joins it as an app-appended section, behind a fail-closed verify pass. `daemon_offline_export` writes to stdout (`--out -`). There is a new `daemon` Pseudonym kind.
+- **Deadlines:** a single `api::Deadline` table, shared by the app and the CLI, sets the per-route deadline. The server enforces a backstop (`504 deadline_exceeded`), and streams use an idle limit instead.
+- **Detach:** run-starting handlers detach, because hyper drops a handler as soon as its client disconnects. So cancel means "stop waiting", and in v1 no client action kills a run.
+- **Releases:** a UI source-map is published as a release asset.
