@@ -136,6 +136,14 @@ _Avoid_: caller, user, client, actor
 A short content hash of an editable file (job, settings, persona) that the Management API returns and checks through `If-Match`, so an edit made elsewhere is reported as a conflict instead of being overwritten.
 _Avoid_: version, etag (in prose), mtime
 
+**Deadline**:
+The per-route time limit declared in `claudeclaw-api` that the Desktop app, the CLI and the server backstop all apply to one Management API request; streams have an idle limit instead.
+_Avoid_: timeout (reserved for a run's timeout), TTL
+
+**Detach**:
+A client stops waiting on a long Management API operation (cancel, Deadline, disconnect) while the Daemon finishes the work and records its result; in v1 no client action kills a run.
+_Avoid_: cancel (when meaning the run is stopped), abort, kill
+
 **Pairing code**:
 A one-time, 10-minute code of 8 Crockford base32 characters (shown `XXXX-XXXX`), created only on the Daemon's host, that lets one new Device pair; burned after 5 wrong attempts.
 _Avoid_: PIN, OTP, invite code, password
@@ -185,6 +193,10 @@ The CI workflow that installs real Claude Code at the Minimum Claude Code and at
 _Avoid_: e2e suite, live test, integration tests, Parity suite (which compares Rust to TS)
 
 ## Logs
+
+**App log**:
+The Desktop app's own structured JSONL log (`app.<date>.jsonl` in the OS log dir), recording what the app did with no owner identifiers or content; it joins a Bug-report export only through the app's verify pass.
+_Avoid_: desktop log, UI log, frontend log, webview console
 
 **Daemon log**:
 The Worker's and Watchdog's own structured JSONL logs under `daemon/logs/`, recording what the Daemon did by identifiers, counts and outcomes, never secrets or prompt or message content.
