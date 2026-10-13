@@ -90,11 +90,7 @@ impl PartialSchema for Scope {
                 "A Scope: `global`, `discord:<id>` (channel or thread), `job:<name>` \
                  (`<agent>/<stem>` for an agent's job) or `agent:<name>`.",
             ))
-            .examples([
-                "global",
-                "discord:1234",
-                "job:researcher/paper-digest",
-            ])
+            .examples(["global", "discord:1234", "job:researcher/paper-digest"])
             .into()
     }
 }
