@@ -47,8 +47,9 @@ claudeclaw-ts-compat = { path = "crates/ts-compat" }
 # Third-party crates (architecture §10).
 anyhow = "1.0.104"
 cargo_metadata = "0.23.1"
+chrono = { version = "0.4.45", default-features = false, features = ["std", "serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha2 = "0.11.1"
 thiserror = "2.0.21"
-utoipa = { version = "6.0.0", features = ["preserve_order"] }
+utoipa = { version = "6.0.0", features = ["chrono", "preserve_order"] }

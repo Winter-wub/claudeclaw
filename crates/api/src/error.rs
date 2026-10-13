@@ -4,8 +4,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use utoipa::openapi::RefOr;
-use utoipa::openapi::schema::{ObjectBuilder, Schema, Type};
+use utoipa::openapi::schema::Schema;
 use utoipa::{PartialSchema, ToSchema};
+
+use crate::wire::string_enum;
 
 /// `{"error": {"code", "message", "hint", "details"}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -125,18 +127,6 @@ impl PartialSchema for ErrorCode {
 }
 
 impl ToSchema for ErrorCode {}
-
-/// A string schema listing the serde names of `values`, for enums whose catch-all variant must
-/// stay out of the schema.
-pub(crate) fn string_enum<T: Serialize>(values: &[T]) -> RefOr<Schema> {
-    let names = values
-        .iter()
-        .map(|v| serde_json::to_value(v).expect("unit variant"));
-    ObjectBuilder::new()
-        .schema_type(Type::String)
-        .enum_values(Some(names))
-        .into()
-}
 
 #[cfg(test)]
 mod tests {
