@@ -1,6 +1,8 @@
 //! Shared wire conventions for every type in this crate (management-api §1.1).
 //!
 //! - **Field names** are `snake_case`; `/v1/settings` alone uses `settings.json`'s own names.
+//! - **Values named after a CLI command or flag** are that name in `snake_case`
+//!   (`clear-give-up` → `clear_give_up`); the CLI keeps its own spelling (#70).
 //! - **Times** are `chrono::DateTime<Utc>` (RFC 3339 UTC). **Durations** are `*_ms: u64`.
 //! - **IDs** are `String`, snowflakes included.
 //! - **Nullable vs optional.** A field the spec writes as `x|null` is an `Option<T>` that is

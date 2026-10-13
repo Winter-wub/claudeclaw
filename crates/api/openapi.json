@@ -796,7 +796,7 @@
         "type": "string",
         "enum": [
           "start",
-          "clear-give-up"
+          "clear_give_up"
         ]
       },
       "ClearedGiveUp": {

@@ -178,7 +178,7 @@ wire_enum! {
         /// `start --clear-give-up`.
         Start = "start",
         /// `claudeclaw clear-give-up`.
-        ClearGiveUp = "clear-give-up",
+        ClearGiveUp = "clear_give_up",
     }
 }
 
@@ -674,7 +674,7 @@ mod tests {
                 "held_starts": null,
                 "reminded_at": null,
                 "cleared_at": "2026-10-01T09:30:00Z",
-                "cleared_by": "clear-give-up",
+                "cleared_by": "clear_give_up",
             }],
             "crashes": [
                 {

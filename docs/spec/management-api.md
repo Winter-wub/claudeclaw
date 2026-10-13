@@ -35,6 +35,7 @@ These apply to every route in §2.
 - **Times** are RFC 3339 UTC strings. **Durations** in responses are `*_ms` integers. Query-string waits are whole seconds (`wait=30`).
 - **IDs are strings**: snowflakes, UUID v7 turn/run IDs, Device and token IDs.
 - **Field names** are `snake_case`, as in #22's JSON and #23's types. The one exception is `/v1/settings`, whose keys are `settings.json`'s own key names (§2.6), so a dotted `config set` path and the file agree.
+- **Values named after a CLI command or flag** are that name in `snake_case`: `clear-give-up` becomes `clear_give_up` in `stop.by` and `give_ups[].cleared_by`. The CLI keeps its own spelling (#70).
 - `operationId` = the **Op** column below (`jobs.update`). The same string is the audit log's `action`, so the prototype's `jobs.update` / `launchers.test` audit rows come for free.
 
 ### 1.2 Principals and the "Who" column

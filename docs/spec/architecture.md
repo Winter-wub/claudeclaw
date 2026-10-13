@@ -910,3 +910,4 @@ One line per closed ticket on the wayfinder map [#2](https://github.com/Winter-w
 - [#47](https://github.com/Winter-wub/claudeclaw/issues/47) Verify whether Claude Code's Bash tool runs commands in their own process group — §4 `runner::spawn`, §12
 - [#48](https://github.com/Winter-wub/claudeclaw/issues/48) Decide whether direct runs follow a CLAUDE_CONFIG_DIR set outside the daemon — §4 `runner::launcher`; [`management-api.md`](management-api.md) §2.1
 - [#50](https://github.com/Winter-wub/claudeclaw/issues/50) Decide whether a new or rescheduled job catches up a slot that passed before it existed — §4 `scheduler`
+- [#70](https://github.com/Winter-wub/claudeclaw/issues/70) Decide the one spelling of the clear-give-up value _(maintainer decision)_ — §4 Watchdog status file (`stop.by`, `give_ups[]`); [`management-api.md`](management-api.md) §1.1
