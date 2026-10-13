@@ -462,3 +462,11 @@ For the coordinator to carry into the architecture spec and the listed tickets:
 - New `notice.kind`: `job_frontmatter_restored`.
 - New `problems[].kind`: `jobs_dir_unavailable`.
 - `jobs.get` reads the file fresh rather than from the snapshot.
+
+### From [Bound the daemon's on-disk growth](https://github.com/Winter-wub/claudeclaw/issues/44)
+
+- **`RunIndexState`** is added to `DaemonStatus.run_index`, `RunPage.index`, `UsageReport.coverage.index` and `JobsAudit.index`.
+- **`RunRecord.outcome`** gains `unknown`, for `origin: ts` records only.
+- **`LogSummary.disk`** gains new fields.
+- **New op `housekeeping.run`** (`POST /v1/housekeeping`, admin), bringing the total to 71 operations.
+- **New problem/notice kind `disk_low`** and a new error, `507 insufficient_storage`.
