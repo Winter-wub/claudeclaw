@@ -16,6 +16,14 @@ _Avoid_: supervisor, monitor
 The Daemon's child process that runs the scheduler, the chat adapters and every Claude Code run.
 _Avoid_: daemon (when meaning only this process), runner
 
+**Chat adapter**:
+The part of the Daemon that connects one chat transport (Discord now; Telegram and Slack later) to it through the chat seam, owning the connection, who may talk, attachment intake and rendering; it never runs Claude Code itself.
+_Avoid_: bot, integration, channel (when meaning the transport)
+
+**Turn**:
+One inbound message or scheduled prompt handed to the Daemon for a Scope, queued behind that Scope's earlier Turns.
+_Avoid_: request, job (when meaning a chat message), task
+
 **Launcher**:
 The path to a single runnable executable that the Daemon invokes in place of `claude`, passing the normal `claude` argv. It carries no name and no environment of its own; any wrapping (such as `ccs <profile>`) and its env live in the user's script.
 _Avoid_: wrapper, runtime, provider, profile
