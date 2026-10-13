@@ -20,6 +20,10 @@ _Avoid_: daemon (when meaning only this process), runner
 The part of the Daemon that connects one chat transport (Discord now; Telegram and Slack later) to it through the chat seam, owning the connection, who may talk, attachment intake and rendering; it never runs Claude Code itself.
 _Avoid_: bot, integration, channel (when meaning the transport)
 
+**Hire / Fire**:
+Creating a Discord thread with its own agent folder and session under a channel (hire), or deleting that thread and moving its agent folder to `agents/.archive/` (fire), from Discord or the Desktop app.
+_Avoid_: spawn, kill, delete thread (for fire)
+
 **Turn**:
 One inbound message or scheduled prompt handed to the Daemon for a Scope, queued behind that Scope's earlier Turns.
 _Avoid_: request, job (when meaning a chat message), task
@@ -87,6 +91,14 @@ _Avoid_: Web API, server API, admin endpoint
 **Device**:
 A Desktop app installation that has been paired with a Daemon and holds its own revocable key for it.
 _Avoid_: client, session, user
+
+**Principal**:
+The identity the Management API resolves for a request: Local (the socket or pipe), a Device, an API token, or Pairing (an unknown certificate allowed only to pair); permissions and audit entries are stated per Principal.
+_Avoid_: caller, user, client, actor
+
+**Revision**:
+A short content hash of an editable file (job, settings, persona) that the Management API returns and checks through `If-Match`, so an edit made elsewhere is reported as a conflict instead of being overwritten.
+_Avoid_: version, etag (in prose), mtime
 
 **API token**:
 A named, revocable credential, limited by its Token permissions, that lets automation on another machine call a narrow part of the Management API.
