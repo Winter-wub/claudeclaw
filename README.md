@@ -6,21 +6,14 @@
 </p>
 
 <p align="center">
-  <img src="https://awesome.re/badge.svg" alt="Awesome" />
-  <a href="https://github.com/moazbuilds/ClaudeClaw/stargazers">
-    <img src="https://img.shields.io/github/stars/moazbuilds/ClaudeClaw?style=flat-square&color=f59e0b" alt="GitHub Stars" />
+  <a href="https://github.com/Winter-wub/claudeclaw/commits/main">
+    <img src="https://img.shields.io/github/last-commit/Winter-wub/claudeclaw/main?style=flat-square&color=0ea5e9" alt="Last Commit" />
+  </a>
+  <a href="https://github.com/Winter-wub/claudeclaw/issues/2">
+    <img src="https://img.shields.io/badge/Rust%202.0-planning-f59e0b?style=flat-square" alt="Rust 2.0: planning" />
   </a>
   <a href="https://github.com/moazbuilds/ClaudeClaw">
-    <img src="https://img.shields.io/static/v1?label=downloads&message=~15k%20every%2014%20days&color=2da44e&style=flat-square" alt="Downloads ~15k every 14 days" />
-  </a>
-  <a href="https://github.com/moazbuilds/ClaudeClaw/commits/master">
-    <img src="https://img.shields.io/github/last-commit/moazbuilds/ClaudeClaw?style=flat-square&color=0ea5e9" alt="Last Commit" />
-  </a>
-  <a href="https://github.com/moazbuilds/ClaudeClaw/graphs/contributors">
-    <img src="https://img.shields.io/github/contributors/moazbuilds/ClaudeClaw?style=flat-square&color=a855f7" alt="Contributors" />
-  </a>
-  <a href="https://x.com/moazbuilds">
-    <img src="https://img.shields.io/badge/X-%40moazbuilds-000000?style=flat-square&logo=x" alt="X @moazbuilds" />
+    <img src="https://img.shields.io/badge/forked%20from-moazbuilds%2FClaudeClaw-a855f7?style=flat-square" alt="Forked from moazbuilds/ClaudeClaw" />
   </a>
 </p>
 
@@ -29,6 +22,11 @@
 ClaudeClaw turns your Claude Code into a personal assistant that never sleeps. It runs as a background daemon, executing tasks on a schedule, responding to messages on Telegram, Discord, and Slack, transcribing voice commands, and integrating with any service you need.
 
 > Note: Please don't use ClaudeClaw for hacking any bank system or doing any illegal activities. Thank you.
+
+> [!IMPORTANT]
+> **This is a hard fork** of [moazbuilds/ClaudeClaw](https://github.com/moazbuilds/ClaudeClaw), maintained independently; changes are not sent upstream.
+> - **1.x (TypeScript, this branch)** is what runs today. It is **frozen to bug fixes**: no new features land in TS.
+> - **2.0 (Rust)** is being specified on a public planning map, **[ClaudeClaw in Rust with pluggable launchers](https://github.com/Winter-wub/claudeclaw/issues/2)**. It covers a single-binary daemon with a Watchdog, user-defined Launchers, a desktop app (Windows, macOS, Ubuntu) that replaces the Web UI, and drop-in reading of existing `.claude/claudeclaw/` data. See [Rust 2.0](#rust-20) below.
 
 ## Why ClaudeClaw?
 
@@ -48,7 +46,7 @@ ClaudeClaw turns your Claude Code into a personal assistant that never sleeps. I
 ## Getting Started in 5 Minutes
 
 ```bash
-claude plugin marketplace add moazbuilds/claudeclaw
+claude plugin marketplace add Winter-wub/claudeclaw
 claude plugin install claudeclaw
 ```
 Then open a Claude Code session and run:
@@ -56,6 +54,8 @@ Then open a Claude Code session and run:
 /claudeclaw:start
 ```
 The setup wizard walks you through model, heartbeat, Telegram, Discord, Slack, and security, then your daemon is live with a web dashboard.
+
+If you previously installed the upstream plugin, remove it first: both use the `/claudeclaw:*` command namespace.
 
 ### Contributor Note: Plugin Version Metadata
 
@@ -71,6 +71,19 @@ bun run bump:marketplace-version
 Docs-only and other non-shipped changes do not require these bumps.
 
 ## Upgrading
+
+### Fork changes since upstream 1.0.44
+
+- **Runtime launcher.** Claude Code can run through a [CCS](https://github.com/kaitranntt/ccs) profile, settable per channel/thread from the Web UI or Discord `/config` ([docs/RUNTIME_LAUNCHER.md](docs/RUNTIME_LAUNCHER.md)).
+- **Missed cron runs are caught up.** Runs missed while the daemon wasn't ticking still fire, within 6 hours.
+- **In-flight guard.** A long job is no longer re-fired every tick while it is still running.
+- **Every Discord attachment reaches Claude.** PDFs, JSON, spreadsheets, archives and any other file, plus every image or text file after the first, are saved to `.claude/claudeclaw/inbox/discord/` and passed to Claude as paths. Files over 25 MB are reported instead of downloaded.
+- **Tool reactions on Discord.** While Claude works, your message collects one emoji per kind of tool used (📖 read, ✏️ edit, 💻 shell, 🌐 web, 🤖 subagent, 🧩 skill, 🔌 MCP, 🛠️ other). They are cleared when the reply is posted.
+- **Fixes:**
+  - Session-recovery retries work again: they no longer wrap `claude` twice.
+  - A malformed cron schedule is rejected when jobs load instead of crashing the scheduler tick.
+  - `/jobs create` writes `recurring: true`, so new jobs no longer run once and vanish from the schedule.
+  - `/jobs run` no longer starts a daemon by accident.
 
 ### v1.0.26 — Allowlist behavior change (Telegram & Discord)
 
@@ -107,16 +120,21 @@ Text attachments sent to the Discord bot are now truncated at **2,048 bytes** (p
 
 ---
 
-## What Would Be Built Next?
+## Rust 2.0
 
-> **Mega Post:** Help shape the next ClaudeClaw features.
-> Vote, suggest ideas, and discuss priorities in **[this post](https://github.com/moazbuilds/claudeclaw/issues/14)**.
+ClaudeClaw 2.0 is a Rust rewrite, planned in the open before any code is written. Each decision lives in a closed ticket on the **[planning map](https://github.com/Winter-wub/claudeclaw/issues/2)**; open tickets are the questions still being worked. Highlights so far:
 
-<p align="center">
-  <a href="https://github.com/moazbuilds/claudeclaw/issues/14">
-    <img src="https://img.shields.io/badge/Roadmap-Mega%20Post-blue?style=for-the-badge&logo=github" alt="Roadmap Mega Post" />
-  </a>
-</p>
+- **One binary, supervised.** A Watchdog process restarts the Worker with backoff, gives up loudly on a crash loop, and allows one daemon per project dir.
+- **Bring your own launcher.** A launcher is any executable that receives the normal `claude` argv: `claude` itself, a `ccs` script, a router, or your own wrapper. If it can't run, the run is refused, never silently switched to another launcher.
+- **Desktop app.** Tauri 2 on Windows, macOS and Ubuntu, with the daemon bundled. It manages local and paired remote daemons through one Management API, and replaces the Web UI.
+- **Drop-in.** The first start reads today's `.claude/claudeclaw/` data, copies rather than moves it, and previews everything with `claudeclaw import --dry-run`.
+- **Proven parity.** A differential test suite runs the TS daemon to generate expected behaviour, and every intended difference is registered.
+
+Further reading:
+
+- [GLOSSARY.md](GLOSSARY.md): the project's vocabulary
+- [Architecture spec](https://github.com/Winter-wub/claudeclaw/blob/spec/architecture/docs/spec/architecture.md)
+- Research: [TS daemon contract](https://github.com/Winter-wub/claudeclaw/blob/research/ts-daemon-contract/docs/research/ts-daemon-contract.md), [Rust crates](https://github.com/Winter-wub/claudeclaw/blob/research/rust-crates/docs/research/rust-crates.md), [Claude Code launchers](https://github.com/Winter-wub/claudeclaw/blob/research/claude-code-launchers/docs/research/claude-code-launchers.md)
 
 ## Features
 
@@ -126,7 +144,7 @@ Text attachments sent to the Discord bot are now truncated at **2,048 bytes** (p
 
 ### Communication
 - **Telegram:** Text, image, and voice support.
-- **Discord:** DMs, server mentions/replies, slash commands, voice messages, and image attachments.
+- **Discord:** DMs, server mentions/replies, slash commands, voice messages, attachments of any type, and live tool-use reactions.
 - **Slack:** Socket Mode bot — DMs, channel mentions, threads, voice messages, and file attachments. Configure `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` in your environment or `settings.json`.
 - **Time Awareness:** Message time prefixes help the agent understand delays and daily patterns.
 
@@ -141,7 +159,7 @@ See [docs/MULTI_SESSION.md](docs/MULTI_SESSION.md) for technical details.
 
 ### Reliability and Control
 - **GLM Fallback:** Automatically continue with GLM models if your primary limit is reached.
-- **Runtime Launcher:** Route Claude Code through a [CCS](https://github.com/kaitranntt/ccs) profile instead of your Anthropic quota, or switch back to the direct `claude` binary — from the Web UI, without restarting the daemon.
+- **Runtime Launcher:** Route Claude Code through a [CCS](https://github.com/kaitranntt/ccs) profile instead of your Anthropic quota, or switch back to the direct `claude` binary, globally or per channel/thread. Switch from the Web UI or Discord `/config` without restarting the daemon.
 - **Web Dashboard:** Manage jobs, monitor runs, and inspect logs in real time.
 - **Security Levels:** Four access levels from read-only to full system access.
 - **Model Selection:** Switch models based on your workload.
@@ -192,7 +210,7 @@ See [docs/RUNTIME_LAUNCHER.md](docs/RUNTIME_LAUNCHER.md) for the runtime launche
 
 ## Contributors
 
-Thanks for helping make ClaudeClaw better.
+ClaudeClaw was created by [@moazbuilds](https://github.com/moazbuilds) and its contributors. This fork builds on their work.
 
 <a href="https://github.com/moazbuilds/claudeclaw/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=moazbuilds/claudeclaw" />
