@@ -10,6 +10,7 @@ This repo is a **public** hard fork of `moazbuilds/claudeclaw`. Upstream is no l
 
 - **TypeScript daemon** (`src/`, Bun) is the running implementation. It is **frozen to bug fixes**: no new features land in TS.
 - **Rust rewrite** is being planned on the wayfinder map: [issue #2](https://github.com/Winter-wub/claudeclaw/issues/2). Decisions live in its closed tickets; open tickets are the remaining questions. Resume with `/wayfinder https://github.com/Winter-wub/claudeclaw/issues/2`.
+- **Spec** for the Rust daemon is [`docs/spec/architecture.md`](docs/spec/architecture.md) (ends with a Decision index linking every closed ticket) and [`docs/spec/management-api.md`](docs/spec/management-api.md). Change them through a PR, citing the deciding ticket as (#N).
 - **Vocabulary** is fixed in [`GLOSSARY.md`](GLOSSARY.md) (Daemon, Watchdog, Worker, Launcher, Scope, Plugin shim, Desktop app). Use those terms in code, docs and issues.
 - **Research and contracts** live on `research/*` branches and are linked from their tickets, e.g. the TS daemon's on-disk and Claude Code contract.
 
