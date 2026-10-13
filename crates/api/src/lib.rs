@@ -7,6 +7,7 @@
 pub mod deadline;
 pub mod error;
 pub mod export;
+pub mod jobs;
 pub mod logs;
 pub mod permission;
 pub mod revision;
@@ -22,6 +23,7 @@ mod wire;
 
 pub use deadline::{Call, Deadline};
 pub use error::{ApiError, ErrorBody, ErrorCode};
+pub use jobs::{ImportFinding, JobDetail, JobSummary};
 pub use permission::TokenPermission;
 pub use revision::Revision;
 pub use routes::Route;
@@ -58,6 +60,7 @@ struct ApiDoc;
 pub fn openapi() -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
     doc.merge(turns::Doc::openapi());
+    doc.merge(jobs::Doc::openapi());
     doc.merge(scopes::Doc::openapi());
     doc.merge(sessions::Doc::openapi());
     doc.merge(settings::Doc::openapi());
