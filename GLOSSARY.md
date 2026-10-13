@@ -232,6 +232,14 @@ _Avoid_: hash, alias, anonymised ID, masked ID
 A markdown file in a jobs directory whose YAML frontmatter holds a cron `schedule` and options and whose body is the prompt; the Daemon runs it in its own Scope. An agent Job lives under `agents/<agent>/jobs/`.
 _Avoid_: cron, task, schedule (when meaning the file)
 
+**Change scan**:
+The Worker's loop that notices edits to Job files and `settings.json`: a stat pass every 2 seconds and a read-and-hash pass every 30, applying a change only once the file is stable across two passes.
+_Avoid_: watcher, file watch, notify, hot reload (when meaning the mechanism)
+
+**Orphaned job**:
+A Job whose file disappeared from disk without a Management API delete; its sessions and job state are kept and pruned after 30 days unless a Job with the same name reappears.
+_Avoid_: deleted job, dead job, missing job
+
 **One-shot job**:
 A Job with `recurring: false`; after it finishes, the Daemon sets `enabled: false` and keeps the file.
 _Avoid_: single job, temporary job
