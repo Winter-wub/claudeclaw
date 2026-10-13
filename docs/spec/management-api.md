@@ -455,3 +455,10 @@ For the coordinator to carry into the architecture spec and the listed tickets:
 
 - `sessions.compact` becomes a Turn: it returns 202, with progress over SSE and an optional `?wait`. The app never uses `?wait`.
 - Every route has an `api::Deadline`. New error: `504 deadline_exceeded`.
+
+### From [Decide how the Worker detects job-file changes](https://github.com/Winter-wub/claudeclaw/issues/46)
+
+- The `job.changed` event gets a new shape (see the ticket).
+- New `notice.kind`: `job_frontmatter_restored`.
+- New `problems[].kind`: `jobs_dir_unavailable`.
+- `jobs.get` reads the file fresh rather than from the snapshot.
