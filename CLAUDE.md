@@ -15,7 +15,7 @@ This repo is a **public** hard fork of `moazbuilds/claudeclaw`. Upstream is no l
 
 ## Rules
 
-- **Public repo.** Never put tokens, Discord/guild/channel IDs, personal names, job contents or `/Users/...` paths in commits, docs or issues. Describe shapes, not values.
+- **Public repo.** Never put tokens, Discord/guild/channel IDs, personal names, job contents or `/Users/...` paths in commits, docs or issues. Describe shapes, not values. `scripts/check-public-safety.sh` enforces the mechanical part: a pre-commit hook (`git config core.hooksPath .githooks`) and the `Public Safety` CI job. Put your own names/IDs in the local-only `.git/info/public-safety-deny`.
 - **Commit identity** is set in this clone's local git config (Winter-wub noreply). Don't commit from other clones that carry a different global identity.
 - **Tests:** run `bun test` from this repo, never from a live daemon directory. `bunfig.toml` sandboxes the cwd, but a live `.claude/claudeclaw/settings.json` has been wiped before.
 - **`main`** is the default branch. Work lands through PRs, except small doc-only updates (glossary, this file).

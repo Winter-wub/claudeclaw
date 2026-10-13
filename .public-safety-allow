@@ -1,0 +1,7 @@
+# Exact placeholder strings that look like personal data but are not. One per line.
+# Discord-style example IDs used in docs.
+987654321012345678
+123456789012345678
+987654321098765432
+# Fictional home dir used in test fixtures.
+/home/claw/
