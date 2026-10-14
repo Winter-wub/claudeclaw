@@ -1,6 +1,9 @@
 //! Per-OS process primitives shared by the Reap and the Settle (#29 D3, D8; #37 D5).
 //!
-//! Each call is one short, synchronous OS query or signal. Nothing here waits.
+//! Each call is a synchronous OS query or signal, and nothing here waits. Some are **blocking**:
+//! on Linux the stamp, the group members and the env marker read `/proc` with `std::fs`, so async
+//! code calls [`process_stamp`], [`group_members`] and [`has_env_entry`] through
+//! `spawn_blocking` (#27, architecture §2). `kill(2)` probes and signals are fine inline.
 
 use std::io;
 
@@ -52,7 +55,7 @@ pub(crate) fn process_stamp(pid: u32) -> io::Result<ProcessStamp> {
 /// [`io::ErrorKind::NotFound`].
 #[cfg(windows)]
 pub(crate) fn process_stamp(pid: u32) -> io::Result<ProcessStamp> {
-    let p = win::Process::open(pid, false)?;
+    let p = win::Process::open_query(pid)?;
     if !p.is_running() {
         return Err(io::ErrorKind::NotFound.into());
     }
@@ -255,21 +258,23 @@ pub(crate) fn parse_stat(stat: &str) -> Option<Stat> {
 
 #[cfg(windows)]
 pub(crate) mod win {
-    //! Windows process handles, creation times and the Toolhelp32 descendant walk (#29 D3,
+    //! Windows process handles, creation times and the run's accounting Job object (#29 D3,
     //! #37 D2 step 3).
 
     use std::io;
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE,
+        CloseHandle, ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, FILETIME, HANDLE, STILL_ACTIVE,
+        WAIT_OBJECT_0,
     };
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-        TH32CS_SNAPPROCESS,
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+        JobObjectBasicProcessIdList, QueryInformationJobObject,
     };
     use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_TERMINATE, TerminateProcess,
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
     };
 
     /// An owned process handle.
@@ -279,13 +284,21 @@ pub(crate) mod win {
     unsafe impl Send for Process {}
 
     impl Process {
-        /// Opens `pid` for queries, and for termination too when `terminate` is set. A pid that
-        /// doesn't exist is `NotFound`.
-        pub(crate) fn open(pid: u32, terminate: bool) -> io::Result<Self> {
-            let mut access = PROCESS_QUERY_LIMITED_INFORMATION;
-            if terminate {
-                access |= PROCESS_TERMINATE;
-            }
+        /// Opens `pid` for queries. A pid that doesn't exist is `NotFound`.
+        pub(crate) fn open_query(pid: u32) -> io::Result<Self> {
+            Self::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)
+        }
+
+        /// Opens `pid` for queries, termination and waiting, so the process that is verified is
+        /// the one that is killed: the handle pins it and its pid can't be reused (#29 D3).
+        pub(crate) fn open_for_kill(pid: u32) -> io::Result<Self> {
+            Self::open(
+                pid,
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
+            )
+        }
+
+        fn open(pid: u32, access: u32) -> io::Result<Self> {
             // SAFETY: plain FFI call; a null result is checked.
             let h = unsafe { OpenProcess(access, 0, pid) };
             if h.is_null() {
@@ -323,12 +336,35 @@ pub(crate) mod win {
             Ok((u64::from(c.dwHighDateTime) << 32) | u64::from(c.dwLowDateTime))
         }
 
+        /// Needs [`Process::open_for_kill`].
         pub(crate) fn terminate(&self, code: u32) -> io::Result<()> {
             // SAFETY: `self.0` is a valid handle opened with `PROCESS_TERMINATE`.
             if unsafe { TerminateProcess(self.0, code) } == 0 {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
+        }
+
+        /// Whether the process has exited, without waiting. Needs [`Process::open_for_kill`].
+        pub(crate) fn has_exited(&self) -> bool {
+            // SAFETY: `self.0` is a valid handle opened with `SYNCHRONIZE`.
+            unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
+        }
+
+        /// Whether the image is the console host a `CREATE_NO_WINDOW` spawn gets.
+        fn is_console_host(&self) -> bool {
+            let mut buf = [0u16; 1024];
+            let mut len = buf.len() as u32;
+            // SAFETY: `buf` is writable for `len` UTF-16 units.
+            let ok = unsafe {
+                QueryFullProcessImageNameW(self.0, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len)
+            };
+            if ok == 0 {
+                return false;
+            }
+            let path = String::from_utf16_lossy(&buf[..len as usize]);
+            let name = path.rsplit(['\\', '/']).next().unwrap_or_default();
+            name.eq_ignore_ascii_case("conhost.exe")
         }
     }
 
@@ -339,64 +375,103 @@ pub(crate) mod win {
         }
     }
 
-    /// `(pid, parent pid)` for every process, from one Toolhelp32 snapshot. The console host
-    /// that a `CREATE_NO_WINDOW` spawn gets is left out: it isn't a Straggler and exits with
-    /// its last client.
-    fn snapshot() -> Vec<(u32, u32)> {
-        // SAFETY: plain FFI call; the handle is checked and closed below.
-        let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-        if snap == INVALID_HANDLE_VALUE || snap.is_null() {
-            return Vec::new();
+    /// A Job object the runner owns only to count a run's processes (#37 D2 step 3). It has no
+    /// limits; process-wrap's kill-on-close `JobObject` is nested inside it and does the killing.
+    pub(crate) struct Job(HANDLE);
+
+    // SAFETY: a job handle may be used from any thread; the queries take no shared state.
+    unsafe impl Send for Job {}
+    // SAFETY: as above.
+    unsafe impl Sync for Job {}
+
+    impl std::fmt::Debug for Job {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Job")
         }
-        let mut out = Vec::new();
-        // SAFETY: an all-zero PROCESSENTRY32W is valid; `dwSize` is set before use.
-        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-        entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
-        // SAFETY: `snap` is a valid snapshot and `entry` is writable with `dwSize` set.
-        let mut ok = unsafe { Process32FirstW(snap, &mut entry) };
-        while ok != 0 {
-            let len = entry
-                .szExeFile
-                .iter()
-                .position(|c| *c == 0)
-                .unwrap_or(entry.szExeFile.len());
-            let exe = String::from_utf16_lossy(&entry.szExeFile[..len]);
-            if !exe.eq_ignore_ascii_case("conhost.exe") {
-                out.push((entry.th32ProcessID, entry.th32ParentProcessID));
-            }
-            // SAFETY: as above.
-            ok = unsafe { Process32NextW(snap, &mut entry) };
-        }
-        // SAFETY: `snap` is a handle owned here.
-        unsafe { CloseHandle(snap) };
-        out
     }
 
-    /// The live descendants of `root`, which was created at `root_created`: processes whose
-    /// parent is `root` or a found descendant, each created after its parent (so a reused
-    /// parent pid isn't followed). Best effort: a dead middle link hides its children (#37 D2
-    /// step 3).
-    pub(crate) fn descendants(root: u32, root_created: u64) -> Vec<u32> {
-        let procs = snapshot();
-        let mut found: Vec<(u32, u64)> = Vec::new();
-        let mut frontier = vec![(root, root_created)];
-        while let Some((parent, parent_created)) = frontier.pop() {
-            for &(pid, ppid) in &procs {
-                if ppid != parent || pid == root || found.iter().any(|(p, _)| *p == pid) {
+    impl Job {
+        pub(crate) fn new() -> io::Result<Self> {
+            // SAFETY: null attributes and name create an unnamed, non-inheritable job.
+            let h = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if h.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(Self(h))
+        }
+
+        /// Assigns a process, which must still be suspended so all its descendants follow it.
+        pub(crate) fn assign(&self, process: HANDLE) -> io::Result<()> {
+            // SAFETY: both handles are valid for the call.
+            if unsafe { AssignProcessToJobObject(self.0, process) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+
+        /// Every process in the job and its nested jobs, from the job's own accounting.
+        fn pids(&self) -> io::Result<Vec<u32>> {
+            // The list's header is two u32s, then `usize` pids.
+            let header = 8 / size_of::<usize>();
+            let mut cap = 64usize;
+            loop {
+                let mut buf = vec![0usize; header + cap];
+                let bytes = (buf.len() * size_of::<usize>()) as u32;
+                let list = buf.as_mut_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+                // SAFETY: `buf` is writable for `bytes` and aligned for the list.
+                let ok = unsafe {
+                    QueryInformationJobObject(
+                        self.0,
+                        JobObjectBasicProcessIdList,
+                        list.cast(),
+                        bytes,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if ok == 0 {
+                    let err = io::Error::last_os_error();
+                    if err.raw_os_error() == Some(ERROR_MORE_DATA as i32) {
+                        cap *= 4;
+                        continue;
+                    }
+                    return Err(err);
+                }
+                // SAFETY: the call filled the header.
+                let (assigned, listed) = unsafe {
+                    (
+                        (*list).NumberOfAssignedProcesses as usize,
+                        (*list).NumberOfProcessIdsInList as usize,
+                    )
+                };
+                if assigned > listed {
+                    cap = assigned + 16;
                     continue;
                 }
-                let Ok(p) = Process::open(pid, false) else {
-                    continue;
-                };
-                let Ok(created) = p.creation_time() else {
-                    continue;
-                };
-                if created >= parent_created && p.is_running() {
-                    found.push((pid, created));
-                    frontier.push((pid, created));
-                }
+                return Ok(buf[header..header + listed]
+                    .iter()
+                    .filter_map(|p| u32::try_from(*p).ok())
+                    .collect());
             }
         }
-        found.into_iter().map(|(p, _)| p).collect()
+
+        /// The job's live processes, without console hosts. An unreadable job counts as empty.
+        pub(crate) fn members(&self) -> Vec<u32> {
+            self.pids()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|pid| {
+                    Process::open_query(*pid)
+                        .map(|p| p.is_running() && !p.is_console_host())
+                        .unwrap_or(false)
+                })
+                .collect()
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is a handle this value owns.
+            unsafe { CloseHandle(self.0) };
+        }
     }
 }

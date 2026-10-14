@@ -8,6 +8,12 @@
 //! (Job object on Windows) is empty and both pipes are closed (the Scope's next Turn may start).
 //! [`SpawnEvent::StdoutEof`] comes whenever stdout reaches EOF, before `Settled`.
 //!
+//! **Stopping.** Dropping a [`Run`] doesn't stop it. Graceful shutdown (§5 step 3) calls
+//! [`Run::terminate`] (or a [`Terminator`]) on every run and waits for each `Settled`: the group
+//! gets TERM, 5 s, KILL (#47 D4), and a run that is already settling skips its Straggler grace
+//! (#37 D3). Dropping the runtime before that lets tokio's kill-on-drop SIGKILL the leader alone,
+//! which orphans what it started.
+//!
 //! **Seam with `stream`.** This module never parses stream-json. The caller feeds each
 //! [`SpawnEvent::Stdout`] line to the stream parser and judges the run (#37 D2 step 2) once it has
 //! the [`LeaderExit`] and either a `result` event or [`SpawnEvent::StdoutEof`]; otherwise at
@@ -42,6 +48,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder, LinesCodec, LinesCodecError};
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::clock::{AwakeTime, RunDeadline, millis};
@@ -180,6 +187,8 @@ pub struct LeaderExit {
     pub signal: Option<i32>,
     /// The awake-time timeout fired and the group was killed (#38 D1).
     pub timed_out: bool,
+    /// [`Run::terminate`] ended the leader: TERM, 5 s, KILL on the group (§5 step 3).
+    pub stopped: bool,
     /// The [`ResultProbe`] matched a stdout line before the leader exited.
     pub result_seen: bool,
     /// The timeout fired after a `result` had been read: judge by that `result`, not as a
@@ -255,6 +264,9 @@ pub struct Settle {
     pub stderr: OutputStats,
     /// The whole prompt reached the child's stdin (`run.stdin_write_failed` otherwise, #25 D1).
     pub stdin_written: bool,
+    /// [`Run::terminate`] came while the run was settling, so the Straggler grace was skipped
+    /// (#37 D3).
+    pub stopped: bool,
 }
 
 /// Spawns runs against one Awake clock (#38 D2).
@@ -299,7 +311,7 @@ impl Spawner {
 
     /// Spawns `spec` in its own process group (Unix) or kill-on-close Job object (Windows) and
     /// supervises it to the settle in a background task. Must be called inside a tokio runtime.
-    pub fn spawn(&self, spec: SpawnSpec) -> Result<Run, SpawnError> {
+    pub async fn spawn(&self, spec: SpawnSpec) -> Result<Run, SpawnError> {
         if !spec.program.is_absolute() {
             return Err(SpawnError::RelativeProgram);
         }
@@ -330,18 +342,19 @@ impl Spawner {
                 None => cmd.env_remove(key),
             };
         }
-        let mut child = wrap_command(cmd).spawn().map_err(SpawnError::Spawn)?;
+        let (mut wrap, job) = wrap_command(cmd);
+        let mut child = wrap.spawn().map_err(SpawnError::Spawn)?;
+        // The deadline starts at the spawn (#38 D2), whenever the supervising task first runs.
+        let spawned_at = *self.clock.borrow();
         let pid = child.id().expect("a child that was never waited has a pid");
-        let stamp = match reap::process_stamp(pid) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::debug!(err = %e, "the run's start stamp couldn't be read");
-                None
-            }
-        };
-        if let Some(hook) = &self.hook {
-            hook.spawned(&run_id, pid, stamp.as_ref());
-        }
+        #[cfg(windows)]
+        let job = job
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .expect("the accounting job is set at spawn");
+        #[cfg(unix)]
+        let () = job;
 
         let span = tracing::Span::current();
         let (tx, rx) = mpsc::unbounded_channel();
@@ -371,16 +384,37 @@ impl Spawner {
             )
         });
 
+        // Read before anything waits the child, so the pid can't have been reused (#29 D2).
+        // Blocking on Linux (`/proc`).
+        let stamp = match tokio::task::spawn_blocking(move || reap::process_stamp(pid)).await {
+            Ok(Ok(s)) => Some(s),
+            Ok(Err(e)) => {
+                tracing::debug!(err = %e, "the run's start stamp couldn't be read");
+                None
+            }
+            Err(e) => {
+                tracing::debug!(err = %e, "reading the run's start stamp failed");
+                None
+            }
+        };
+        if let Some(hook) = &self.hook {
+            hook.spawned(&run_id, pid, stamp.as_ref());
+        }
+
+        let stop = CancellationToken::new();
         let supervised = Supervised {
             run_id,
             child,
+            #[cfg(unix)]
             pid,
             #[cfg(windows)]
-            stamp: stamp.clone(),
+            job,
             clock: self.clock.clone(),
+            spawned_at,
             timeout,
             timings: self.timings,
             hook: self.hook.clone(),
+            stop: stop.clone(),
             tx,
             result_at,
             stdin_task,
@@ -392,16 +426,19 @@ impl Spawner {
         Ok(Run {
             pid,
             stamp,
+            stop: Terminator(stop),
             events: rx,
         })
     }
 }
 
-/// A running run. Dropping it doesn't stop the run: it is still supervised to its settle.
+/// A running run. Dropping it doesn't stop the run: it is still supervised to its settle. Use
+/// [`Run::terminate`] to stop it.
 #[derive(Debug)]
 pub struct Run {
     pid: u32,
     stamp: Option<ProcessStamp>,
+    stop: Terminator,
     events: mpsc::UnboundedReceiver<SpawnEvent>,
 }
 
@@ -420,24 +457,103 @@ impl Run {
     pub async fn next_event(&mut self) -> Option<SpawnEvent> {
         self.events.recv().await
     }
+
+    /// Stops the run (§5 step 3); see [`Terminator::terminate`].
+    pub fn terminate(&self) {
+        self.stop.terminate();
+    }
+
+    /// A handle that can stop the run from elsewhere, e.g. the shutdown path, while another task
+    /// reads the events.
+    pub fn terminator(&self) -> Terminator {
+        self.stop.clone()
+    }
+}
+
+/// Stops one run (§5 step 3, #47 D4).
+#[derive(Debug, Clone)]
+pub struct Terminator(CancellationToken);
+
+impl Terminator {
+    /// While the leader runs: TERM the whole group, wait 5 s, KILL it (Windows ends the Job
+    /// object at once); reported as [`LeaderExit::stopped`]. While the run settles: skip the
+    /// Straggler grace and go straight to TERM, 5 s, KILL (#37 D3); reported as
+    /// [`Settle::stopped`]. After the settle, or on a second call, nothing happens. The run still
+    /// ends with [`SpawnEvent::Settled`].
+    pub fn terminate(&self) {
+        self.0.cancel();
+    }
 }
 
 /// The wrapper stack every run uses (#36 E1): `ProcessGroup::leader()` on Unix; on Windows a
-/// `JobObject` plus `CREATE_NO_WINDOW` (#25 D3). `KillOnDrop` is required on Windows, where it is
-/// what makes the Job object kill-on-close (#29 D1), and kills the leader during unwinding on
-/// Unix (#37 D5).
-pub(crate) fn wrap_command(cmd: Command) -> CommandWrap {
+/// `JobObject` plus `CREATE_NO_WINDOW` (#25 D3), nested in an accounting Job object that counts
+/// the run's processes. `KillOnDrop` is required on Windows, where it is what makes the Job object
+/// kill-on-close (#29 D1), and kills the leader during unwinding on Unix (#37 D5).
+pub(crate) fn wrap_command(cmd: Command) -> (CommandWrap, JobSlot) {
     let mut wrap = CommandWrap::from(cmd);
+    #[cfg(unix)]
+    let slot = ();
     #[cfg(unix)]
     wrap.wrap(ProcessGroup::leader());
     #[cfg(windows)]
+    let slot = JobSlot::default();
+    #[cfg(windows)]
     {
+        // First, so its `wrap_child` runs while the child is still suspended.
+        wrap.wrap(AccountingJob(slot.clone()));
         wrap.wrap(JobObject);
         // After `JobObject`, whose `pre_spawn` replaces the creation flags.
         wrap.wrap(NoWindow);
     }
     wrap.wrap(KillOnDrop);
-    wrap
+    (wrap, slot)
+}
+
+/// Where the Windows accounting job lands at spawn; nothing on Unix.
+#[cfg(unix)]
+pub(crate) type JobSlot = ();
+
+/// Where the Windows accounting job lands at spawn.
+#[cfg(windows)]
+pub(crate) type JobSlot = Arc<Mutex<Option<Arc<reap::win::Job>>>>;
+
+/// Puts the still-suspended child in a Job object of the runner's own, before process-wrap's
+/// `JobObject` assigns and resumes it. process-wrap's job is then nested inside this one, so this
+/// job's process list holds every process of the run, including those whose parent has exited.
+/// process-wrap keeps its job handle private, and #37 D2 step 3 needs the job's own accounting
+/// to tell when the run is empty.
+#[cfg(windows)]
+#[derive(Debug)]
+struct AccountingJob(JobSlot);
+
+#[cfg(windows)]
+impl process_wrap::tokio::CommandWrapper for AccountingJob {
+    fn wrap_child(
+        &mut self,
+        inner: Box<dyn ChildWrapper>,
+        _core: &CommandWrap,
+    ) -> io::Result<Box<dyn ChildWrapper>> {
+        let assigned = (|| {
+            let handle = inner
+                .try_inner_child()
+                .and_then(Child::raw_handle)
+                .ok_or_else(|| io::Error::other("the child has no process handle"))?;
+            let job = reap::win::Job::new()?;
+            job.assign(handle.cast())?;
+            Ok::<_, io::Error>(job)
+        })();
+        match assigned {
+            Ok(job) => {
+                *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(job));
+                Ok(inner)
+            }
+            Err(e) => {
+                let mut inner = inner;
+                let _ = inner.start_kill();
+                Err(e)
+            }
+        }
+    }
 }
 
 /// Adds `CREATE_NO_WINDOW` (#25 D3). Registered after `JobObject`: `JobObject::pre_spawn` sets
@@ -607,14 +723,19 @@ async fn read_lines<R: AsyncRead + Unpin>(
 struct Supervised {
     run_id: String,
     child: Box<dyn ChildWrapper>,
+    /// The leader's pid, which is the pgid.
+    #[cfg(unix)]
     pid: u32,
-    /// The leader's creation time anchors the descendant walk.
+    /// Counts the run's processes (see `AccountingJob`).
     #[cfg(windows)]
-    stamp: Option<ProcessStamp>,
+    job: Arc<reap::win::Job>,
     clock: watch::Receiver<AwakeTime>,
+    /// The Awake time at the spawn, where the deadline starts.
+    spawned_at: AwakeTime,
     timeout: Duration,
     timings: SpawnTimings,
     hook: Option<Arc<dyn SpawnHook>>,
+    stop: CancellationToken,
     tx: mpsc::UnboundedSender<SpawnEvent>,
     result_at: Arc<OnceLock<Instant>>,
     stdin_task: Option<JoinHandle<bool>>,
@@ -623,45 +744,69 @@ struct Supervised {
     system_prompt_file: Option<PathBuf>,
 }
 
+/// How the leader's run ended.
+enum Ended {
+    Exited(io::Result<ExitStatus>),
+    TimedOut,
+    Stopped,
+}
+
+/// What has been sent to the group so far.
+#[derive(Debug, Clone, Copy, Default)]
+struct Signalled {
+    /// When TERM went out (Unix).
+    term_at: Option<Instant>,
+    /// KILL went out (Unix), or the Job object was ended (Windows).
+    killed: bool,
+}
+
 impl Supervised {
     async fn run(mut self) {
         let started = Instant::now();
-        let mut deadline = RunDeadline::new(*self.clock.borrow_and_update(), self.timeout);
+        let mut deadline = RunDeadline::new(self.spawned_at, self.timeout);
+        // Ticks published since the spawn count too.
+        let expired = deadline.observe(*self.clock.borrow_and_update());
         let mut clock_alive = true;
 
-        // The leader runs until it exits or its awake-time deadline passes (#38 D2).
-        let waited = loop {
+        // The leader runs until it exits, its awake-time deadline passes (#38 D2), or the run is
+        // stopped (§5 step 3).
+        let ended = loop {
+            if expired {
+                break Ended::TimedOut;
+            }
             let child = leader(&mut self.child);
             tokio::select! {
-                status = child.wait() => break Some(status),
+                status = child.wait() => break Ended::Exited(status),
+                () = self.stop.cancelled() => break Ended::Stopped,
                 changed = self.clock.changed(), if clock_alive => {
                     if changed.is_err() {
                         clock_alive = false;
                     } else if deadline.observe(*self.clock.borrow_and_update()) {
-                        break None;
+                        break Ended::TimedOut;
                     }
                 }
             }
         };
 
-        let (status, kill_started, lingered) = match waited {
-            Some(status) => (status, None, false),
-            None => {
-                let killed_at = Instant::now();
+        let mut signalled = Signalled::default();
+        let (status, timed_out, stopped_leader, lingered) = match ended {
+            Ended::Exited(status) => (status, false, false, false),
+            Ended::TimedOut => {
                 let result_at = self.result_at.get().copied();
                 if let Some(at) = result_at {
                     tracing::warn!(
                         event = "run.lingered",
                         run_id = %self.run_id,
-                        linger_ms = millis(killed_at.saturating_duration_since(at)),
+                        linger_ms = millis(at.elapsed()),
                         "the run's process stayed after its result; judged by that result"
                     );
                 }
-                (
-                    self.kill_on_timeout().await,
-                    Some(killed_at),
-                    result_at.is_some(),
-                )
+                let status = self.stop_leader(&mut signalled).await;
+                (status, true, false, result_at.is_some())
+            }
+            Ended::Stopped => {
+                let status = self.stop_leader(&mut signalled).await;
+                (status, false, true, false)
             }
         };
 
@@ -677,7 +822,8 @@ impl Supervised {
         let exit = LeaderExit {
             code,
             signal,
-            timed_out: kill_started.is_some(),
+            timed_out,
+            stopped: stopped_leader,
             result_seen: self.result_at.get().is_some(),
             lingered,
             awake_ms: deadline.awake_ms(now),
@@ -690,8 +836,8 @@ impl Supervised {
         }
         let _ = self.tx.send(SpawnEvent::LeaderExited(exit));
 
-        let stragglers = self.stragglers();
-        let outcome = self.settle_group(stragglers, kill_started).await;
+        let stragglers = self.stragglers().await;
+        let (outcome, stopped_settle) = self.settle_group(signalled).await;
 
         // The pipe cap (#37 D2 step 6).
         let pipe_deadline = Instant::now() + self.timings.pipe_cap;
@@ -726,6 +872,7 @@ impl Supervised {
             stdout: self.stdout.as_ref().map(Reader::stats).unwrap_or_default(),
             stderr: self.stderr.as_ref().map(Reader::stats).unwrap_or_default(),
             stdin_written,
+            stopped: stopped_settle,
         };
         log_settle(&self.run_id, &settle);
         if let Some(hook) = &self.hook {
@@ -736,50 +883,58 @@ impl Supervised {
         let _ = self.tx.send(SpawnEvent::Settled(settle));
     }
 
-    /// The timeout kill: TERM the group, wait up to `term_grace` for the leader, then KILL the
-    /// group (#47 D4: TERM before KILL). Windows ends the Job object at once (#25 D3).
-    async fn kill_on_timeout(&mut self) -> io::Result<ExitStatus> {
-        self.terminate_group();
+    /// The timeout and stop kill: TERM the group, wait up to `term_grace` for the leader, then
+    /// KILL the group (#47 D4: TERM before KILL). Windows ends the Job object at once (#25 D3).
+    /// The clock is no longer read, so a Resume in the wait changes nothing (#38 D7).
+    async fn stop_leader(&mut self, signalled: &mut Signalled) -> io::Result<ExitStatus> {
+        self.terminate_group(signalled);
         if let Ok(status) =
             tokio::time::timeout(self.timings.term_grace, leader(&mut self.child).wait()).await
         {
             return status;
         }
-        self.kill_group();
+        self.kill_group(signalled);
         leader(&mut self.child).wait().await
     }
 
     #[cfg(unix)]
-    fn terminate_group(&mut self) {
+    fn terminate_group(&mut self, signalled: &mut Signalled) {
+        signalled.term_at = Some(Instant::now());
         if let Err(e) = reap::signal_group(self.pid, nix::sys::signal::Signal::SIGTERM) {
             tracing::debug!(err = %e, "SIGTERM to the run's group failed");
         }
     }
 
     #[cfg(unix)]
-    fn kill_group(&mut self) {
+    fn kill_group(&mut self, signalled: &mut Signalled) {
+        signalled.killed = true;
         if let Err(e) = reap::signal_group(self.pid, nix::sys::signal::Signal::SIGKILL) {
             tracing::debug!(err = %e, "SIGKILL to the run's group failed");
         }
     }
 
+    /// `TerminateJobObject`; there is no TERM for console-less processes (#25 D3).
     #[cfg(windows)]
-    fn terminate_group(&mut self) {
-        // `TerminateJobObject`; there is no TERM for console-less processes.
+    fn terminate_group(&mut self, signalled: &mut Signalled) {
+        self.kill_group(signalled);
+    }
+
+    #[cfg(windows)]
+    fn kill_group(&mut self, signalled: &mut Signalled) {
+        signalled.killed = true;
         if let Err(e) = self.child.start_kill() {
             tracing::debug!(err = %e, "ending the run's Job object failed");
         }
     }
 
-    #[cfg(windows)]
-    fn kill_group(&mut self) {
-        self.terminate_group();
-    }
-
-    /// The group's members at leader exit (#37 D2 step 3).
+    /// The group's members at leader exit (#37 D2 step 3). Blocking on Linux (`/proc`).
     #[cfg(unix)]
-    fn stragglers(&self) -> u32 {
-        u32::try_from(reap::group_members(self.pid).len()).unwrap_or(u32::MAX)
+    async fn stragglers(&self) -> u32 {
+        let pgid = self.pid;
+        let members = tokio::task::spawn_blocking(move || reap::group_members(pgid).len())
+            .await
+            .unwrap_or(0);
+        u32::try_from(members).unwrap_or(u32::MAX)
     }
 
     #[cfg(unix)]
@@ -787,24 +942,21 @@ impl Supervised {
         reap::group_alive(self.pid)
     }
 
-    /// The leader's live descendants at leader exit, best effort (#37 D2 step 3).
+    /// The accounting job's live processes at leader exit (#37 D2 step 3).
     #[cfg(windows)]
-    fn stragglers(&self) -> u32 {
-        u32::try_from(self.descendants().len()).unwrap_or(u32::MAX)
+    async fn stragglers(&self) -> u32 {
+        let job = self.job.clone();
+        let members = tokio::task::spawn_blocking(move || job.members().len())
+            .await
+            .unwrap_or(0);
+        u32::try_from(members).unwrap_or(u32::MAX)
     }
 
+    /// From the Job object's own process list, not a parent-pid walk, so a process whose parent
+    /// has exited still counts.
     #[cfg(windows)]
     fn group_alive(&self) -> bool {
-        !self.descendants().is_empty()
-    }
-
-    #[cfg(windows)]
-    fn descendants(&self) -> Vec<u32> {
-        let created = match &self.stamp {
-            Some(ProcessStamp::Windows { creation_time }) => *creation_time,
-            _ => 0,
-        };
-        reap::win::descendants(self.pid, created)
+        !self.job.members().is_empty()
     }
 
     /// Polls until the group is empty or `deadline` passes; returns whether it emptied.
@@ -820,49 +972,48 @@ impl Supervised {
         }
     }
 
-    /// The Settle's group sequence (#37 D2 steps 4–5). After a timeout kill the TERM has already
-    /// been sent at `kill_started`, so only its remaining grace and the KILL are left.
-    async fn settle_group(
-        &mut self,
-        stragglers: u32,
-        kill_started: Option<Instant>,
-    ) -> SettleOutcome {
+    /// Like [`Self::empty_by`], but a stop request ends the wait early (`Err`).
+    async fn empty_by_unless_stopped(&self, deadline: Instant) -> Result<bool, ()> {
+        tokio::select! {
+            emptied = self.empty_by(deadline) => Ok(emptied),
+            () = self.stop.cancelled() => Err(()),
+        }
+    }
+
+    /// The Settle's group sequence (#37 D2 steps 4–5), and whether a stop request cut its
+    /// grace. After a timeout or stop the leader's group already got TERM (or KILL), so the
+    /// outcome reports that kill, never `clean`.
+    async fn settle_group(&mut self, mut signalled: Signalled) -> (SettleOutcome, bool) {
         let t = self.timings;
-        if !self.group_alive() {
-            return match (stragglers, kill_started) {
-                (0, _) => SettleOutcome::Clean,
-                (_, None) => SettleOutcome::Exited,
-                (_, Some(_)) => SettleOutcome::Terminated,
-            };
-        }
-        match kill_started {
-            None => {
-                if self.empty_by(Instant::now() + t.straggler_grace).await {
-                    return SettleOutcome::Exited;
-                }
-                if cfg!(unix) {
-                    self.terminate_group();
-                    if self.empty_by(Instant::now() + t.term_grace).await {
-                        return SettleOutcome::Terminated;
-                    }
-                }
+        let mut stopped = false;
+        if signalled.term_at.is_none() && !signalled.killed {
+            // A normal leader exit.
+            if !self.group_alive() {
+                return (SettleOutcome::Clean, false);
             }
-            Some(at) => {
-                if cfg!(unix) && self.empty_by(at + t.term_grace).await {
-                    return if stragglers == 0 {
-                        SettleOutcome::Clean
-                    } else {
-                        SettleOutcome::Terminated
-                    };
-                }
+            match self
+                .empty_by_unless_stopped(Instant::now() + t.straggler_grace)
+                .await
+            {
+                Ok(true) => return (SettleOutcome::Exited, false),
+                Ok(false) => {}
+                Err(()) => stopped = true,
             }
+            self.terminate_group(&mut signalled);
         }
-        self.kill_group();
-        if self.empty_by(Instant::now() + t.kill_wait).await {
+        if !signalled.killed {
+            let term_at = signalled.term_at.unwrap_or_else(Instant::now);
+            if self.empty_by(term_at + t.term_grace).await {
+                return (SettleOutcome::Terminated, stopped);
+            }
+            self.kill_group(&mut signalled);
+        }
+        let outcome = if self.empty_by(Instant::now() + t.kill_wait).await {
             SettleOutcome::Killed
         } else {
             SettleOutcome::Survived
-        }
+        };
+        (outcome, stopped)
     }
 }
 
@@ -911,12 +1062,13 @@ mod tests {
     #[test]
     fn the_wrapper_stack_has_kill_on_drop() {
         // #36 E1: without `KillOnDrop` the Job object isn't kill-on-close on Windows.
-        let wrap = wrap_command(Command::new("x"));
+        let (wrap, _job) = wrap_command(Command::new("x"));
         assert!(wrap.has_wrap::<KillOnDrop>());
         #[cfg(unix)]
         assert!(wrap.has_wrap::<ProcessGroup>());
         #[cfg(windows)]
         {
+            assert!(wrap.has_wrap::<AccountingJob>());
             assert!(wrap.has_wrap::<JobObject>());
             assert!(wrap.has_wrap::<NoWindow>());
         }
@@ -948,6 +1100,7 @@ mod tests {
             code,
             signal: None,
             timed_out: false,
+            stopped: false,
             result_seen: false,
             lingered: false,
             awake_ms: 0,
@@ -1104,15 +1257,19 @@ mod tests {
         let spawner = Spawner::new(rx);
         let err = spawner
             .spawn(spec(Path::new("relative/claude"), &[]))
+            .await
             .unwrap_err();
         assert!(matches!(err, SpawnError::RelativeProgram));
         for bad in ["a\nb", "a\rb", "a\0b"] {
             let abs = std::env::temp_dir().join("claude");
-            let err = spawner.spawn(spec(&abs, &["--print", bad])).unwrap_err();
+            let err = spawner
+                .spawn(spec(&abs, &["--print", bad]))
+                .await
+                .unwrap_err();
             assert!(matches!(err, SpawnError::ArgvUnsafe { index: 1 }));
         }
         let missing = std::env::temp_dir().join("claudeclaw-no-such-launcher");
-        let err = spawner.spawn(spec(&missing, &[])).unwrap_err();
+        let err = spawner.spawn(spec(&missing, &[])).await.unwrap_err();
         assert!(matches!(err, SpawnError::Spawn(_)));
         assert!(!err.to_string().contains("claudeclaw-no-such-launcher"));
     }
@@ -1138,7 +1295,7 @@ mod unix_tests {
     }
 
     async fn run_to_settle(spawner: &Spawner, spec: SpawnSpec) -> Seen {
-        let mut run = spawner.spawn(spec).unwrap();
+        let mut run = spawner.spawn(spec).await.unwrap();
         let mut seen = Seen::default();
         drain(&mut run, &mut seen, LIMIT).await;
         seen
@@ -1226,7 +1383,7 @@ mod unix_tests {
         let (clock, spawner) = spawner();
         let mut s = sh("echo started; exec sleep 30");
         s.timeout = Duration::from_secs(1);
-        let mut run = spawner.spawn(s).unwrap();
+        let mut run = spawner.spawn(s).await.unwrap();
         let mut seen = Seen::default();
         until_line(&mut run, &mut seen, "started").await;
         // More than the timeout of wall time passes with no awake time: no kill.
@@ -1238,6 +1395,8 @@ mod unix_tests {
         assert!(!exit.lingered);
         assert_eq!(exit.signal, Some(libc::SIGTERM));
         assert_eq!(exit.awake_ms, 1_000);
+        // The timeout's TERM emptied the group: that is the settle's outcome, not `clean`.
+        assert_eq!(seen.settle().outcome, SettleOutcome::Terminated);
     }
 
     #[tokio::test]
@@ -1245,7 +1404,7 @@ mod unix_tests {
         let (clock, spawner) = spawner();
         let mut s = sh("echo started; exec sleep 30");
         s.timeout = Duration::from_secs(1);
-        let mut run = spawner.spawn(s).unwrap();
+        let mut run = spawner.spawn(s).await.unwrap();
         let mut seen = Seen::default();
         until_line(&mut run, &mut seen, "started").await;
         clock.send_replace(AwakeTime {
@@ -1275,7 +1434,7 @@ mod unix_tests {
         let (clock, spawner) = spawner();
         let mut s = sh("trap 'echo got-term' TERM; echo ready; while :; do sleep 0.05; done");
         s.timeout = Duration::from_secs(1);
-        let mut run = spawner.spawn(s).unwrap();
+        let mut run = spawner.spawn(s).await.unwrap();
         let mut seen = Seen::default();
         until_line(&mut run, &mut seen, "ready").await;
         clock.send_replace(awake(1_000));
@@ -1288,6 +1447,107 @@ mod unix_tests {
         assert!(exit.timed_out);
         assert_eq!(exit.signal, Some(libc::SIGKILL), "then KILL");
         assert!(exit.wall_ms >= fast().term_grace.as_millis() as u64);
+        assert_eq!(seen.settle().outcome, SettleOutcome::Killed);
+    }
+
+    #[tokio::test]
+    async fn a_resume_during_the_sigterm_wait_changes_nothing() {
+        // #38 D7/D8: TERM → KILL runs on tokio's clock; a Resume in it neither revives the run
+        // nor moves the KILL.
+        let (clock, spawner) = spawner();
+        let mut s = sh("trap 'echo got-term' TERM; echo ready; while :; do sleep 0.05; done");
+        s.timeout = Duration::from_secs(1);
+        let mut run = spawner.spawn(s).await.unwrap();
+        let mut seen = Seen::default();
+        until_line(&mut run, &mut seen, "ready").await;
+        clock.send_replace(awake(1_000));
+        until_line(&mut run, &mut seen, "got-term").await;
+        let resumed_at = Instant::now();
+        clock.send_replace(AwakeTime {
+            awake_ms: 1_000,
+            resumes: 1,
+            last_resume_suspended_ms: 60_000,
+            suspended_ms: 60_000,
+        });
+        drain(&mut run, &mut seen, LIMIT).await;
+        let exit = seen.exit();
+        assert!(exit.timed_out);
+        assert!(!exit.wake_grace, "the deadline had already passed");
+        assert_eq!(exit.signal, Some(libc::SIGKILL));
+        assert!(
+            resumed_at.elapsed() < Duration::from_secs(10),
+            "no grace was added"
+        );
+        assert_eq!(exit.suspended_ms, 60_000);
+        assert_eq!(seen.settle().outcome, SettleOutcome::Killed);
+    }
+
+    #[tokio::test]
+    async fn terminate_stops_the_whole_group_with_term_first() {
+        let (_clock, spawner) = spawner();
+        // Room for the trap to finish under a loaded test run, so no KILL is needed.
+        let spawner = spawner.with_timings(SpawnTimings {
+            term_grace: Duration::from_secs(3),
+            ..fast()
+        });
+        // The leader traps TERM and waits on a background member of its group. `wait` returns
+        // as soon as the trapped TERM arrives (POSIX), and the trap reaps the TERMed member, so no
+        // zombie is left for launchd/init. The member is a fresh `sh`, so once it has printed it
+        // has the default TERM action (a forked shell still runs its parent's trap until exec).
+        let s = sh("trap 'echo got-term; wait; exit 0' TERM; \
+                    sh -c 'echo member-up; exec sleep 30' & wait");
+        let mut run = spawner.spawn(s).await.unwrap();
+        let pid = run.pid();
+        let mut seen = Seen::default();
+        until_line(&mut run, &mut seen, "member-up").await;
+        let members: Vec<u32> = reap::group_members(pid)
+            .into_iter()
+            .filter(|m| *m != pid)
+            .collect();
+        assert!(!members.is_empty(), "a member shares the leader's group");
+        run.terminate();
+        drain(&mut run, &mut seen, LIMIT).await;
+        assert!(
+            seen.stdout.iter().any(|l| l == "got-term"),
+            "TERM reached the leader"
+        );
+        let exit = seen.exit();
+        assert!(exit.stopped);
+        assert!(!exit.timed_out);
+        assert_eq!(exit.code, Some(0), "{exit:?}");
+        assert_eq!(
+            seen.settle().outcome,
+            SettleOutcome::Terminated,
+            "{:?}",
+            seen.settle()
+        );
+        assert!(!reap::group_alive(pid), "the whole group is gone");
+        assert!(members.iter().all(|m| !reap::pid_alive(*m)));
+        // After the settle it is a no-op.
+        run.terminate();
+    }
+
+    #[tokio::test]
+    async fn terminate_while_settling_skips_the_straggler_grace() {
+        let (_clock, spawner) = spawner();
+        let spawner = spawner.with_timings(SpawnTimings {
+            straggler_grace: Duration::from_secs(10),
+            ..fast()
+        });
+        let mut run = spawner
+            .spawn(sh("sleep 30 >/dev/null 2>&1 & echo done"))
+            .await
+            .unwrap();
+        let stop = run.terminator();
+        let mut seen = Seen::default();
+        assert!(exited_within(&mut run, &mut seen, LIMIT).await);
+        assert!(!seen.exit().stopped, "the leader exited on its own");
+        stop.terminate();
+        drain(&mut run, &mut seen, LIMIT).await;
+        let settle = seen.settle();
+        assert!(settle.stopped);
+        assert_eq!(settle.outcome, SettleOutcome::Terminated);
+        assert!(settle.settle_ms < 5_000, "the 10 s grace was skipped");
     }
 
     #[tokio::test]
@@ -1296,7 +1556,7 @@ mod unix_tests {
         let mut s = sh("echo '{\"type\":\"result\"}'; exec sleep 30");
         s.timeout = Duration::from_secs(1);
         s.result_probe = Some(|l| l.contains("\"type\":\"result\""));
-        let mut run = spawner.spawn(s).unwrap();
+        let mut run = spawner.spawn(s).await.unwrap();
         let mut seen = Seen::default();
         until_line(&mut run, &mut seen, "{\"type\":\"result\"}").await;
         clock.send_replace(awake(1_000));
@@ -1386,7 +1646,7 @@ mod unix_tests {
         let (_clock, spawner) = spawner();
         let hook = Arc::new(Recorder::default());
         let spawner = spawner.with_hook(hook.clone());
-        let mut run = spawner.spawn(sh("exit 0")).unwrap();
+        let mut run = spawner.spawn(sh("exit 0")).await.unwrap();
         let pid = run.pid();
         assert!(run.stamp().is_some());
         let mut seen = Seen::default();
@@ -1422,7 +1682,7 @@ mod windows_tests {
     }
 
     async fn run_to_settle(spawner: &Spawner, spec: SpawnSpec) -> Seen {
-        let mut run = spawner.spawn(spec).unwrap();
+        let mut run = spawner.spawn(spec).await.unwrap();
         let mut seen = Seen::default();
         drain(&mut run, &mut seen, LIMIT).await;
         seen
@@ -1452,13 +1712,52 @@ mod windows_tests {
         let (clock, spawner) = spawner();
         let mut s = spec(&system32("ping.exe"), &["-n", "30", "127.0.0.1"]);
         s.timeout = Duration::from_secs(1);
-        let mut run = spawner.spawn(s).unwrap();
+        let mut run = spawner.spawn(s).await.unwrap();
         let mut seen = Seen::default();
         assert!(!exited_within(&mut run, &mut seen, Duration::from_millis(1_500)).await);
         clock.send_replace(awake(1_000));
         drain(&mut run, &mut seen, LIMIT).await;
         assert!(seen.exit().timed_out);
         assert_eq!(seen.exit().code, Some(1), "TerminateJobObject's exit code");
+        assert_eq!(seen.settle().outcome, SettleOutcome::Killed);
+    }
+
+    #[tokio::test]
+    async fn terminate_ends_the_job() {
+        let (_clock, spawner) = spawner();
+        let mut run = spawner
+            .spawn(spec(&system32("ping.exe"), &["-n", "30", "127.0.0.1"]))
+            .await
+            .unwrap();
+        let mut seen = Seen::default();
+        assert!(!exited_within(&mut run, &mut seen, Duration::from_millis(300)).await);
+        run.terminate();
+        drain(&mut run, &mut seen, LIMIT).await;
+        assert!(seen.exit().stopped);
+        assert_eq!(seen.exit().code, Some(1));
+        assert_eq!(seen.settle().outcome, SettleOutcome::Killed);
+    }
+
+    #[tokio::test]
+    async fn a_grandchild_whose_parent_exited_still_counts() {
+        // cmd → cmd → ping, where the middle cmd exits at once: a parent-pid walk loses the
+        // ping, the Job object's own process list doesn't.
+        let (_clock, spawner) = spawner();
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("orphan.cmd");
+        tokio::fs::write(
+            &script,
+            "@echo off\r\nstart /B cmd /C \"start /B ping -n 30 127.0.0.1 >NUL\"\r\n\
+             ping -n 2 127.0.0.1 >NUL\r\necho done\r\n",
+        )
+        .await
+        .unwrap();
+        let seen = run_to_settle(&spawner, spec(&script, &[])).await;
+        assert_eq!(seen.stdout, ["done"]);
+        let settle = seen.settle();
+        assert_eq!(settle.outcome, SettleOutcome::Killed);
+        assert!(settle.stragglers >= 1);
+        assert!(!settle.pipe_held);
     }
 
     #[tokio::test]

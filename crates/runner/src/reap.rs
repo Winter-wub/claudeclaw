@@ -17,6 +17,8 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
+#[cfg(all(unix, test))]
+pub(crate) use os::pid_alive;
 #[cfg(windows)]
 pub(crate) use os::win;
 #[cfg(unix)]
@@ -68,6 +70,8 @@ impl From<std::io::Error> for ReapError {
 /// Reads the OS start stamp of a live `pid` (#29 D2): `proc_pidinfo` on macOS, `boot_id` plus
 /// `/proc/<pid>/stat` on Linux, `GetProcessTimes` on Windows. Read it before the child is waited,
 /// so the pid can't have been reused.
+///
+/// **Blocking** (it reads `/proc` on Linux): async code calls it through `spawn_blocking`.
 pub fn process_stamp(pid: u32) -> Result<ProcessStamp, ReapError> {
     Ok(os::process_stamp(pid)?)
 }
@@ -273,17 +277,35 @@ pub async fn reap_with(
         })
         .collect();
 
+    let start = Instant::now();
+    // Verify and send the first signal in one blocking pass: the checks read `/proc` on Linux
+    // (#27), and no await falls between an entry's last identity check and its signal (#29 D3).
+    let owned = entries.to_vec();
+    let verdicts = tokio::task::spawn_blocking(move || {
+        owned
+            .iter()
+            .map(|e| verify_and_signal(e, reason))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!(err = %e, "the Reap's verification failed; every entry is unverified");
+        Vec::new()
+    });
     let mut to_kill = Vec::new();
-    for (i, entry) in entries.iter().enumerate() {
-        match verify(entry, reason) {
-            Verdict::Ours(pid) => to_kill.push((i, pid)),
+    for (i, verdict) in verdicts.into_iter().enumerate() {
+        match verdict {
+            Verdict::Ours(target) => {
+                runs[i].signal = Some(FIRST_SIGNAL);
+                to_kill.push((i, target));
+            }
             Verdict::Done(outcome, members) => {
                 runs[i].outcome = outcome;
                 runs[i].members = members;
             }
         }
     }
-    kill(&mut runs, &to_kill, timings).await;
+    finish(&mut runs, to_kill, start, timings).await;
 
     let mut counts = ReapCounts::default();
     for (entry, run) in entries.iter().zip(&runs) {
@@ -329,15 +351,34 @@ fn log_reaped(entry: &ReapEntry, run: &ReapedRun, reason: ReapReason) {
     }
 }
 
-enum Verdict {
-    /// Proven ours: end it. The pid (= pgid on Unix).
-    Ours(u32),
+enum Verdict<T> {
+    /// Proven ours, and already sent [`FIRST_SIGNAL`].
+    Ours(T),
     Done(ReapOutcome, Vec<u32>),
 }
 
-/// #29 D3's rules, in order (Unix).
+/// Unix: TERM first (#47 D4). The target is the pgid.
 #[cfg(unix)]
-fn verify(entry: &ReapEntry, reason: ReapReason) -> Verdict {
+const FIRST_SIGNAL: ReapSignal = ReapSignal::Term;
+
+/// Windows: `TerminateProcess`, through the handle that was verified.
+#[cfg(windows)]
+const FIRST_SIGNAL: ReapSignal = ReapSignal::Kill;
+
+/// #29 D3's rules, in order (Unix); a verified group is sent SIGTERM at once. Blocking.
+#[cfg(unix)]
+fn verify_and_signal(entry: &ReapEntry, reason: ReapReason) -> Verdict<u32> {
+    let verdict = verify(entry, reason);
+    if let Verdict::Ours(pgid) = verdict
+        && let Err(e) = os::signal_group(pgid, nix::sys::signal::Signal::SIGTERM)
+    {
+        tracing::debug!(err = %e, "SIGTERM to a reaped group failed");
+    }
+    verdict
+}
+
+#[cfg(unix)]
+fn verify(entry: &ReapEntry, reason: ReapReason) -> Verdict<u32> {
     let Some(pid) = entry.pid else {
         return Verdict::Done(ReapOutcome::UnknownPid, Vec::new());
     };
@@ -376,47 +417,69 @@ fn verify(entry: &ReapEntry, reason: ReapReason) -> Verdict {
     }
 }
 
-/// #29 D3 on Windows: the kernel already ended the job; a live, matching pid is terminated and
-/// `survived`.
+/// #29 D3 on Windows: the kernel already ended the job; a live pid with the recorded creation
+/// time is terminated (and `survived`). The check and the kill use one handle, which pins the
+/// process, so a reused pid can't be hit in between.
 #[cfg(windows)]
-fn verify(entry: &ReapEntry, _reason: ReapReason) -> Verdict {
+fn verify_and_signal(entry: &ReapEntry, _reason: ReapReason) -> Verdict<win::Process> {
+    use std::io::ErrorKind;
+
     let Some(pid) = entry.pid else {
         return Verdict::Done(ReapOutcome::UnknownPid, Vec::new());
     };
-    let now = match os::process_stamp(pid) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    let process = match win::Process::open_for_kill(pid) {
+        Ok(p) => p,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
             return Verdict::Done(ReapOutcome::AlreadyGone, Vec::new());
         }
-        Err(_) => return Verdict::Done(ReapOutcome::Unverified, Vec::new()),
+        // Not ours to kill, e.g. another user's process: tell which with a query handle.
+        Err(_) => {
+            let outcome = match (os::process_stamp(pid), &entry.stamp) {
+                (Err(e), _) if e.kind() == ErrorKind::NotFound => ReapOutcome::AlreadyGone,
+                (Ok(now), Some(recorded)) if now == *recorded => ReapOutcome::Survived,
+                (Ok(now), Some(recorded)) if now.same_os(recorded) => ReapOutcome::NotOurs,
+                _ => ReapOutcome::Unverified,
+            };
+            return Verdict::Done(outcome, Vec::new());
+        }
     };
+    if !process.is_running() {
+        return Verdict::Done(ReapOutcome::AlreadyGone, Vec::new());
+    }
+    let Ok(creation_time) = process.creation_time() else {
+        return Verdict::Done(ReapOutcome::Unverified, Vec::new());
+    };
+    let now = ProcessStamp::Windows { creation_time };
     match &entry.stamp {
-        Some(recorded) if *recorded == now => Verdict::Ours(pid),
+        Some(recorded) if *recorded == now => {
+            if let Err(e) = process.terminate(1) {
+                tracing::debug!(err = %e, "TerminateProcess on a reaped run failed");
+            }
+            Verdict::Ours(process)
+        }
         Some(recorded) if recorded.same_os(&now) => Verdict::Done(ReapOutcome::NotOurs, Vec::new()),
         _ => Verdict::Done(ReapOutcome::Unverified, Vec::new()),
     }
 }
 
-/// SIGTERM every verified group at once, wait, SIGKILL what is left, wait (#29 D4).
+/// The TERM went out at verification: wait, SIGKILL what is left, wait (#29 D4).
 #[cfg(unix)]
-async fn kill(runs: &mut [ReapedRun], to_kill: &[(usize, u32)], t: ReapTimings) {
+async fn finish(
+    runs: &mut [ReapedRun],
+    mut left: Vec<(usize, u32)>,
+    start: Instant,
+    t: ReapTimings,
+) {
     use nix::sys::signal::Signal;
 
-    if to_kill.is_empty() {
+    if left.is_empty() {
         return;
     }
-    let start = Instant::now();
-    for &(i, pgid) in to_kill {
-        runs[i].signal = Some(ReapSignal::Term);
-        if let Err(e) = os::signal_group(pgid, Signal::SIGTERM) {
-            tracing::debug!(err = %e, "SIGTERM to a reaped group failed");
-        }
-    }
-    let mut left: Vec<(usize, u32)> = to_kill.to_vec();
     wait_groups(runs, &mut left, start, start + t.term_grace, t.poll).await;
     if left.is_empty() {
         return;
     }
+    // A group that is still alive keeps its pgid, so it is still the verified one.
     for &(i, pgid) in &left {
         runs[i].signal = Some(ReapSignal::Kill);
         if let Err(e) = os::signal_group(pgid, Signal::SIGKILL) {
@@ -456,33 +519,24 @@ async fn wait_groups(
     }
 }
 
-/// `TerminateProcess` on each live, matching pid; the outcome is `survived` (#29 D1, D3).
+/// Waits, through the verified handles, for the terminated processes to exit. The outcome is
+/// `survived` either way: the kernel should already have ended them (#29 D1).
 #[cfg(windows)]
-async fn kill(runs: &mut [ReapedRun], to_kill: &[(usize, u32)], t: ReapTimings) {
-    let start = Instant::now();
-    for &(i, pid) in to_kill {
-        runs[i].signal = Some(ReapSignal::Kill);
-        runs[i].outcome = ReapOutcome::Survived;
-        match win::Process::open(pid, true) {
-            Ok(p) => {
-                if let Err(e) = p.terminate(1) {
-                    tracing::debug!(err = %e, "TerminateProcess on a reaped run failed");
-                }
-            }
-            Err(e) => tracing::debug!(err = %e, "opening a reaped run failed"),
-        }
-    }
-    // Give the kernel a moment so a caller that re-checks sees them gone.
+async fn finish(
+    runs: &mut [ReapedRun],
+    left: Vec<(usize, win::Process)>,
+    start: Instant,
+    t: ReapTimings,
+) {
     let deadline = start + t.kill_wait;
-    while to_kill
-        .iter()
-        .any(|&(_, pid)| os::process_stamp(pid).is_ok())
-        && Instant::now() < deadline
-    {
+    for (i, _) in &left {
+        runs[*i].outcome = ReapOutcome::Survived;
+    }
+    while left.iter().any(|(_, p)| !p.has_exited()) && Instant::now() < deadline {
         tokio::time::sleep(t.poll).await;
     }
-    for &(i, _) in to_kill {
-        runs[i].ms = crate::clock::millis(start.elapsed());
+    for (i, _) in &left {
+        runs[*i].ms = crate::clock::millis(start.elapsed());
     }
 }
 
@@ -793,10 +847,19 @@ mod tests {
                 .spawn()
                 .unwrap();
             let pid = child.id().unwrap();
+            let stamp = process_stamp(pid).unwrap();
             child.wait().await.unwrap();
-            drop(child);
-            let r = reap_with(&[entry(Some(pid), None)], ReapReason::Startup, fast()).await;
+            // `child` still holds its process handle, so the pid can't be reused by a parallel
+            // test until the Reap has looked at it.
+            let r = reap_with(
+                &[entry(Some(pid), Some(stamp))],
+                ReapReason::Startup,
+                fast(),
+            )
+            .await;
             assert_eq!(r.runs[0].outcome, ReapOutcome::AlreadyGone);
+            assert_eq!(r.runs[0].signal, None);
+            drop(child);
         }
     }
 }
