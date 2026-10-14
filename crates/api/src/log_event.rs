@@ -408,6 +408,8 @@ pub mod daemon {
     pub const WATCHDOG_EXIT: &str = "watchdog.exit";
     /// #45.
     pub const WATCHDOG_SUPERVISOR_UNREADABLE: &str = "watchdog.supervisor_unreadable";
+    /// INFO, once per wait for an Offline write's lock (#22, #45).
+    pub const LOCK_WAIT_OFFLINE_WRITE: &str = "lock.wait_offline_write";
     /// #29.
     pub const REAP_START: &str = "reap.start";
     /// #29.
@@ -759,6 +761,10 @@ pub mod daemon {
         EventFields {
             event: WATCHDOG_SUPERVISOR_UNREADABLE,
             fields: &[],
+        },
+        EventFields {
+            event: LOCK_WAIT_OFFLINE_WRITE,
+            fields: &["holder_pid"],
         },
         EventFields {
             event: REAP_START,

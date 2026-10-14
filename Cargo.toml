@@ -50,6 +50,7 @@ cargo_metadata = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "serde"] }
 croner = "4.0.1"
 futures-util = "0.3.34"
+nix = { version = "0.31", default-features = false }
 secrecy = "0.10.3"
 serde-saphyr = "1.3.0"
 tempfile = "3.27.0"
@@ -60,4 +61,5 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha2 = "0.11.1"
 thiserror = "2.0.21"
+tracing = "0.1.44"
 utoipa = { version = "6.0.0", features = ["chrono", "preserve_order"] }

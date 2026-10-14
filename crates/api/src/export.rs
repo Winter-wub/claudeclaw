@@ -232,6 +232,7 @@ pub const FIELD_CLASSES: &[(&str, FieldClass)] = &[
     ("guild_id", Identifier(K::Discord)),
     ("hard", Structural),
     ("has_run_log", Structural),
+    ("holder_pid", Structural),
     ("interval_ms", Structural),
     ("invalid", Structural),
     ("is_error", Structural),
