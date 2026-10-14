@@ -324,7 +324,7 @@ The domain services the Worker composes. It owns:
 - **`conversations`**:
   - one serial queue per Scope, a tokio task per active Scope that exits when idle; the next Turn starts only once the previous run is settled (#37);
   - turning a `Turn` into a run: prompt shaping (clock prefix, `<untrusted-…>` wrapping, the System-prompt file text from `CLAUDE.md`), model choice (including agentic routing), and the timeout category;
-  - interrupted-chat replies on shutdown (#9) and after a crash once the Reap proved the run dead, which also clears stuck reactions (#29).
+  - interrupted-chat replies on shutdown (#9) and after a crash once the Reap proved the run dead, which also clear stuck reactions (#29). Both go through `Notifier::interrupted(origin)`: the adapter replies to the origin message and removes its own progress reactions. After a crash the origin comes from the Run registry's `origin`, which `core` fills from `Turn.origin` at spawn (#79).
 - **`runs`**: the Run registry, maintained through a spawn hook (#29).
 - **`health`** (#27): a stall monitor that watches beacons: `scheduler`, `adapter:<transport>` and `outcome_sink` (5 min each), and `turn:<scope>` (each run's own timeout + 120 s Wake grace + 5 s + 2 min, re-armed by every run in the Turn, #33, #38). It ticks every 5 s and accrues quiet time in steps capped at 10 s. A Stall logs `worker.stalled`, sends `fatal("stall: …")`, shuts down gracefully and exits 75; the Watchdog counts it.
 - **`housekeeping`** (#44): one daily Housekeeping task. It runs 10 min after Worker start, then every 24 h of wall clock, and after a Resume if a pass is overdue; after a First-start import the first pass waits 24 h. A pass deletes **only files the Daemon wrote itself, under a listed rule**, in this order: Inbox (age 30 days, a maintainer decision, then a total cap; files younger than 24 h or attached to a queued or running Turn are protected), opt-in Run logs, Run-index compaction, opt-in audit, session backups (keep the newest 20), orphaned Scope state, and `notices.json` entries unseen for 30 days. Counts go to the Daemon log (`housekeeping.done`) and one audit entry per kind (`principal: system:housekeeping`). `claudeclaw housekeeping [--dry-run]` and `POST /v1/housekeeping` preview or run a pass.
@@ -470,12 +470,15 @@ pub enum ChatScope {                       // how an adapter names where a messa
 
 pub struct Turn {                          // one inbound message, already authorised by the adapter
     pub scope: ChatScope,
+    pub origin: MessageRef,                // the message this Turn answers; core keeps it in the Run registry (#79)
     pub author: Author,                    // display name only; IDs stay in the adapter
     pub text: String,                      // raw user text; core does the untrusted-wrapping
     pub context_lines: Vec<String>,        // "[In reply to …]", forwarded text, channel tag
     pub attachments: Vec<LocalFile>,       // already downloaded into inbox/<transport>/
     pub agent_dir: Option<String>,         // thread cwd under agents/ (TS parity)
 }
+
+pub struct MessageRef { pub channel: String, pub message: String }  // opaque transport IDs; = api ChatOrigin minus the transport (#79)
 
 pub trait ChatHost: Send + Sync {          // implemented by core, given to every adapter
     fn converse(&self, turn: Turn) -> RunHandle;        // queued on the Scope's serial queue
@@ -492,6 +495,7 @@ pub struct RunHandle {                     // events stream while Claude works, 
 
 pub trait Notifier: Send + Sync {          // implemented by each adapter, registered with core
     fn notify_owners(&self, msg: OwnerNotice) -> BoxFuture<'_, Result<(), NotifyError>>;
+    fn interrupted(&self, origin: MessageRef) -> BoxFuture<'_, Result<(), NotifyError>>; // #9 reply + clear own reactions (#29, #79)
 }
 
 pub trait AdapterControl: Send + Sync {    // implemented by each adapter, registered beside Notifier (#21)
@@ -522,7 +526,7 @@ pub trait Adapter: Send + 'static {
 
 **Scope keys.**
 - Rust-only state uses unambiguous typed keys: `discord:<id>`, `job:<name>`, `agent:<name>`, and later `tg:<…>` and `slk:<…>`.
-- `store::rollback` translates them to TS keys for the mirror and for `runtime.launchers` reads. Discord channels and threads become bare snowflakes, jobs become the bare name, agents stay `agent:<name>`, and `tg:`/`slk:` keep their TS prefixes.
+- `store::rollback` translates them to TS keys for the mirror and for `runtime.launchers` reads. Discord channels and threads become bare snowflakes, jobs become the bare name, agents stay `agent:<name>`, and `tg:`/`slk:` keep their TS prefixes. An agent's job (`job:<agent>/<name>`) mirrors to `threads["agent:<agent>"]`, the key TS runs every job of that agent under, so the agent's jobs share one TS entry (last writer wins), as in TS. `agents/<agent>/session.json` is the agent's own session, used for agent runs with no thread.
 - This removes TS's ambiguity between a job name and a channel ID (trap 5) without changing any TS file.
 
 **Phase 2.**
@@ -932,3 +936,4 @@ One line per closed ticket on the wayfinder map [#2](https://github.com/Winter-w
 - [#69](https://github.com/Winter-wub/claudeclaw/issues/69) Decide how FIELD_CLASSES covers the App log's fields _(maintainer decision)_ — §4 `claudeclaw-api` (Field class tables, catalogues, CI checks), §9 Logs, §14 Packaging traps
 - [#70](https://github.com/Winter-wub/claudeclaw/issues/70) Decide the one spelling of the clear-give-up value _(maintainer decision)_ — §4 Watchdog status file (`stop.by`, `give_ups[]`); [`management-api.md`](management-api.md) §1.1
 - [#74](https://github.com/Winter-wub/claudeclaw/issues/74) Settle the Daemon log catalogue's unnamed fields and clashes _(maintainer decision)_ — §9.1 Logs
+- [#79](https://github.com/Winter-wub/claudeclaw/issues/79) Decide how core clears a chat's stuck reactions after a crash _(maintainer decision)_ — §4 `core::conversations`, §6
