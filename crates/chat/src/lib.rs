@@ -32,4 +32,4 @@ pub use react::{ReactDirective, extract_react_directive, strip_react_directives}
 pub use run::{ChatOutcome, OutcomeKind, RunEvent, RunHandle, RunSender, UtilityHandle};
 pub use scope::{ChatScope, Transport};
 pub use split::{reply_chunks, split_message};
-pub use turn::{Author, LocalFile, Turn};
+pub use turn::{Author, LocalFile, MessageRef, Turn};
