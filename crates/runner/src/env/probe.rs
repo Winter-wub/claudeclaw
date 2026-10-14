@@ -560,22 +560,34 @@ mod tests {
         async fn the_timeout_kills_the_whole_process_group() {
             let dir = tempfile::tempdir().unwrap();
             let pid_file = dir.path().join("bg.pid");
-            // The rc file starts a background job, then hangs.
+            // The rc file starts a background job and publishes its pid before anything else
+            // (atomically, via a rename), then hangs.
             let shell = script(
                 dir.path(),
                 "hangsh",
                 &format!(
-                    "sleep 300 &\necho $! > '{}'\nsleep 300\n",
-                    pid_file.display()
+                    "sleep 300 &\necho $! > '{tmp}'\nmv '{tmp}' '{pid}'\nsleep 300\n",
+                    tmp = dir.path().join("bg.pid.tmp").display(),
+                    pid = pid_file.display()
                 ),
             );
             let started = std::time::Instant::now();
-            let err = probe(dir.path(), shell, Duration::from_millis(500))
-                .capture()
-                .await
-                .unwrap_err();
+            let p = probe(dir.path(), shell, Duration::from_secs(2));
+            // The pid file appears while the probe is still waiting, however loaded the machine.
+            let wait_for_pid = async {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !pid_file.exists() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the hang script never started"
+                    );
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            };
+            let (captured, ()) = tokio::join!(p.capture(), wait_for_pid);
+            let err = captured.unwrap_err();
             assert_eq!(err.kind(), CaptureErrorKind::Timeout);
-            assert!(started.elapsed() < Duration::from_secs(5));
+            assert!(started.elapsed() < Duration::from_secs(10));
 
             let pid: i32 = std::fs::read_to_string(&pid_file)
                 .unwrap()

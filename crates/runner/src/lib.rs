@@ -7,10 +7,17 @@
 //! - [`argv`]: the typed `claude` argv and its guards (architecture §4 runner `argv`; #25).
 //! - [`stream`]: the pure stream-json parser and `judge()` (architecture §4 runner `stream`).
 //! - [`version`]: `MIN_CLAUDE_CODE` and the `claude_code_outdated` judgement (#42).
+//! - [`clock`]: the Worker-wide Awake clock and the Wake grace (#38).
+//! - [`spawn`]: process group / Job object, stdin, output cap, Awake-time timeout and Settle (#25,
+//!   #26, #36, #37, #38, #47).
+//! - [`reap`]: start stamps and the Reap of a gone Worker's runs (#29).
 
 pub mod argv;
+pub mod clock;
 pub mod env;
 pub mod launcher;
+pub mod reap;
+pub mod spawn;
 pub mod stream;
 pub mod version;
 
