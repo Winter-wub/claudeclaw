@@ -148,6 +148,10 @@ impl DaemonLock {
             .map_err(StoreError::io("open", &path))?;
         let start = Instant::now();
         let mut logged_wait = false;
+        // Sticky: once the holder was seen as an Offline write, keep its longer limit. Its
+        // release empties the record just before unlocking, and a read in that window must not
+        // fall back to the short limit and give up.
+        let mut saw_offline = false;
         loop {
             match file.try_lock() {
                 Ok(()) => {
@@ -157,7 +161,8 @@ impl DaemonLock {
                 }
                 Err(TryLockError::WouldBlock) => {
                     let current = read_holder(&path);
-                    let offline = current.as_ref().is_some_and(Holder::is_offline_write);
+                    saw_offline |= current.as_ref().is_some_and(Holder::is_offline_write);
+                    let offline = saw_offline;
                     let limit = if offline {
                         wait.offline_write
                     } else {
@@ -328,6 +333,40 @@ mod tests {
             let lock = DaemonLock::try_acquire(&holder_layout, &cli).unwrap();
             tx.send(()).unwrap();
             thread::sleep(Duration::from_millis(400));
+            drop(lock);
+        });
+        rx.recv().unwrap();
+        let wait = LockWait {
+            step: Duration::from_millis(10),
+            held: Duration::from_millis(100),
+            offline_write: Duration::from_secs(5),
+        };
+        let start = Instant::now();
+        DaemonLock::acquire(&layout, &Holder::watchdog(8), wait).unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(300));
+        holder.join().unwrap();
+    }
+
+    // An Offline write's release empties the record just before it unlocks. A waiter that reads
+    // the empty record in that window must keep the longer wait, not give up on the short one.
+    #[cfg(unix)]
+    #[test]
+    fn an_emptied_record_keeps_the_offline_write_wait() {
+        let (_dir, layout) = layout();
+        let (tx, rx) = mpsc::channel();
+        let holder_layout = layout.clone();
+        let holder = thread::spawn(move || {
+            let cli = Holder::offline_write(7, "jobs import");
+            let lock = DaemonLock::try_acquire(&holder_layout, &cli).unwrap();
+            tx.send(()).unwrap();
+            thread::sleep(Duration::from_millis(50));
+            OpenOptions::new()
+                .write(true)
+                .open(holder_layout.daemon_lock())
+                .unwrap()
+                .set_len(0)
+                .unwrap();
+            thread::sleep(Duration::from_millis(300));
             drop(lock);
         });
         rx.recv().unwrap();
