@@ -75,6 +75,22 @@ pub struct JobRecord {
     /// When the job file was confirmed removed; cleared if it comes back (#46 D4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orphaned_since: Option<DateTime<Utc>>,
+    /// The latest cron slot the scheduler fired or skipped (`in_flight`, `rate_limited`), so
+    /// catch-up after a restart never replays a slot already decided (#9, PR #91).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_handled_through: Option<DateTime<Utc>>,
+    /// The run in flight, its pending retry or its interrupted re-run continues a Run now, not a
+    /// scheduled slot, so its end never finishes a One-shot job (#12 §3, PR #91).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub run_now: bool,
+    /// The frontmatter that decides timing (`schedule`, `recurring`, `enabled`, validity) as the
+    /// scheduler last applied it, opaque to the store (#50, PR #91).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_key: Option<String>,
+    /// When the schedule in `schedule_key` took effect, so a body edit or `touch` while the
+    /// Daemon is down doesn't move catch-up's cut-off (#50, PR #91).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_took_effect: Option<DateTime<Utc>>,
     /// Keys this build doesn't know.
     #[serde(flatten)]
     extra: Map<String, Value>,
@@ -82,6 +98,10 @@ pub struct JobRecord {
 
 fn is_zero(n: &u32) -> bool {
     *n == 0
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// How a job's last run ended. Keys this build doesn't know are kept, and so is an `outcome`
@@ -299,6 +319,47 @@ mod tests {
             serde_json::to_value(JobResult::new(RunOutcome::Failed, Some(1))).unwrap(),
             json!({"outcome": "failed", "exit_code": 1})
         );
+    }
+
+    /// The scheduler's fields (PR #91) round-trip; a file without them loads as before.
+    #[test]
+    fn scheduler_fields_round_trip_and_default_when_absent() {
+        let (_dir, layout) = layout();
+        std::fs::create_dir_all(layout.state_dir()).unwrap();
+        let old = json!({"jobs": {"daily": {"last_started_at": "2026-10-13T09:00:00Z"}}});
+        std::fs::write(layout.job_state(), old.to_string()).unwrap();
+        let mut state = JobState::load(&layout).unwrap();
+        let daily = state.get("daily").unwrap();
+        assert_eq!(daily.slot_handled_through, None);
+        assert!(!daily.run_now);
+        assert_eq!(
+            (&daily.schedule_key, daily.schedule_took_effect),
+            (&None, None)
+        );
+        state.save(&layout).unwrap();
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(layout.job_state()).unwrap()).unwrap();
+        assert_eq!(saved, old, "nothing added to an old record");
+
+        let daily = state.entry("daily");
+        daily.slot_handled_through = Some(at("2026-10-13T09:30:00Z"));
+        daily.run_now = true;
+        daily.schedule_key = Some("0,30 * * * *|true|true|true".into());
+        daily.schedule_took_effect = Some(at("2026-10-01T00:00:00Z"));
+        state.save(&layout).unwrap();
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(layout.job_state()).unwrap()).unwrap();
+        assert_eq!(
+            saved["jobs"]["daily"],
+            json!({
+                "last_started_at": "2026-10-13T09:00:00Z",
+                "slot_handled_through": "2026-10-13T09:30:00Z",
+                "run_now": true,
+                "schedule_key": "0,30 * * * *|true|true|true",
+                "schedule_took_effect": "2026-10-01T00:00:00Z",
+            })
+        );
+        assert_eq!(JobState::load(&layout).unwrap(), state);
     }
 
     #[test]
