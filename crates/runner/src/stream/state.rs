@@ -87,6 +87,38 @@ pub(super) struct Init {
     pub(super) version: Option<ClaudeCodeVersion>,
     pub(super) api_key_source: Option<String>,
     pub(super) transcript_hint: Option<TranscriptHint>,
+    /// `init.model`: the model ID Claude Code resolved for the session.
+    pub(super) model: Option<String>,
+}
+
+/// One content block of the current message, as far as text deltas need it.
+#[derive(Clone, PartialEq)]
+enum SeenBlock {
+    Text(String),
+    ToolUse(String),
+    Other,
+}
+
+impl SeenBlock {
+    fn of(block: &ContentBlock) -> Option<Self> {
+        match block {
+            ContentBlock::Text { text } => Some(SeenBlock::Text(text.clone())),
+            ContentBlock::ToolUse { id, .. } => Some(SeenBlock::ToolUse(id.clone())),
+            ContentBlock::ToolResult { .. } => None,
+            ContentBlock::Other => Some(SeenBlock::Other),
+        }
+    }
+}
+
+/// Text-delta bookkeeping for one thread: the main thread or one subagent (TS
+/// `src/runner.ts:494-541`, kept per thread).
+#[derive(Clone, Default)]
+struct ThreadText {
+    message_id: Option<String>,
+    /// The current message's blocks so far, by index.
+    blocks: Vec<SeenBlock>,
+    /// Text was delivered for the current message.
+    delivered: bool,
 }
 
 /// A run's stream so far: feed it every stdout line with [`StreamState::observe`], then pass it
@@ -99,9 +131,10 @@ pub struct StreamState {
     pub(super) init: Option<Init>,
     pub(super) result: Option<ResultEvent>,
     pub(super) last_main_usage: Option<Usage>,
-    // Text-delta bookkeeping (TS `src/runner.ts:494-541`).
-    last_message_id: Option<String>,
-    delivered: String,
+    /// The last main-thread assistant `message.model` (#39 D4).
+    pub(super) last_main_model: Option<String>,
+    /// Keyed by `parent_tool_use_id`; the main thread is `None`.
+    threads: HashMap<Option<String>, ThreadText>,
     /// tool_use_id → tool name.
     pending_tools: HashMap<String, String>,
     /// tool_use_id → Agent description.
@@ -204,33 +237,61 @@ impl StreamState {
             version,
             api_key_source: s.api_key_source.clone(),
             transcript_hint,
+            model: s.model.clone(),
         });
     }
 
     fn assistant(&mut self, a: &AssistantEvent, out: &mut Vec<StreamEvent>) {
         let Some(msg) = &a.message else { return };
         let subagent = a.parent_tool_use_id.is_some();
-        if !subagent && let Some(usage) = msg.usage {
-            self.last_main_usage = Some(usage);
+        if !subagent {
+            if let Some(usage) = msg.usage {
+                self.last_main_usage = Some(usage);
+            }
+            // Claude Code's own error messages say `<synthetic>`, which is no model.
+            if let Some(model) = msg.model.as_deref().filter(|m| *m != "<synthetic>") {
+                self.last_main_model = Some(model.to_owned());
+            }
         }
 
-        // TS `src/runner.ts:522-526`: a new message after text gets a "\n" separator.
-        if msg.id != self.last_message_id {
-            if !self.delivered.is_empty() {
+        let thread = self
+            .threads
+            .entry(a.parent_tool_use_id.clone())
+            .or_default();
+        // TS `src/runner.ts:522-526`: a new message after text gets a "\n" separator, here
+        // within the same thread only.
+        if msg.id != thread.message_id {
+            if thread.delivered {
                 out.push(StreamEvent::TextDelta {
                     text: "\n".into(),
                     subagent,
                 });
             }
-            self.delivered.clear();
-            self.last_message_id = msg.id.clone();
+            thread.message_id = msg.id.clone();
+            thread.blocks.clear();
+            thread.delivered = false;
         }
 
+        // An event holds either a snapshot of the message so far (the blocks already seen, at
+        // the same indexes, the last text possibly grown) or its next blocks. Only a snapshot's
+        // already-seen blocks are de-duplicated.
+        let incoming: Vec<(&ContentBlock, SeenBlock)> = msg
+            .content
+            .iter()
+            .filter_map(|b| SeenBlock::of(b).map(|s| (b, s)))
+            .collect();
+        let seen = std::mem::take(&mut thread.blocks);
+        let snapshot = is_snapshot(&seen, incoming.iter().map(|(_, s)| s));
+        let first_new = if snapshot { seen.len() } else { 0 };
+
         let mut text = String::new();
-        for block in &msg.content {
+        for (i, (block, _)) in incoming.iter().enumerate() {
             match block {
-                ContentBlock::Text { text: t } => text.push_str(t),
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::Text { text: t } => match seen.get(i) {
+                    Some(SeenBlock::Text(old)) if snapshot => text.push_str(&t[old.len()..]),
+                    _ => text.push_str(t),
+                },
+                ContentBlock::ToolUse { id, name, input } if i >= first_new => {
                     self.pending_tools.insert(id.clone(), name.clone());
                     out.push(StreamEvent::ToolUse {
                         id: id.clone(),
@@ -249,24 +310,18 @@ impl StreamState {
                         });
                     }
                 }
-                ContentBlock::ToolResult { .. } | ContentBlock::Other => {}
+                _ => {}
             }
         }
-
-        // An event holds either a snapshot of the message so far or its next block.
-        let delta = if let Some(rest) = text.strip_prefix(self.delivered.as_str()) {
-            let delta = rest.to_owned();
-            self.delivered = text;
-            delta
+        let incoming = incoming.into_iter().map(|(_, s)| s);
+        thread.blocks = if snapshot {
+            incoming.collect()
         } else {
-            self.delivered.push_str(&text);
-            text
+            seen.into_iter().chain(incoming).collect()
         };
-        if !delta.is_empty() {
-            out.push(StreamEvent::TextDelta {
-                text: delta,
-                subagent,
-            });
+        if !text.is_empty() {
+            thread.delivered = true;
+            out.push(StreamEvent::TextDelta { text, subagent });
         }
     }
 
@@ -318,6 +373,27 @@ impl StreamState {
             }
         }
     }
+}
+
+/// Whether `incoming` repeats `seen` at the same indexes: same kinds, same tool-use IDs, equal
+/// texts except the last seen one, which may have grown.
+fn is_snapshot<'a>(seen: &[SeenBlock], incoming: impl Iterator<Item = &'a SeenBlock>) -> bool {
+    let incoming: Vec<&SeenBlock> = incoming.collect();
+    if seen.is_empty() || incoming.len() < seen.len() {
+        return false;
+    }
+    seen.iter()
+        .zip(&incoming)
+        .enumerate()
+        .all(|(i, (old, new))| match (old, new) {
+            (SeenBlock::Text(o), SeenBlock::Text(n)) if i + 1 == seen.len() => {
+                n.starts_with(o.as_str())
+            }
+            (SeenBlock::Text(o), SeenBlock::Text(n)) => o == n,
+            (SeenBlock::ToolUse(o), SeenBlock::ToolUse(n)) => o == n,
+            (SeenBlock::Other, SeenBlock::Other) => true,
+            _ => false,
+        })
 }
 
 /// JS `String(v ?? "")` for the values tool inputs carry.

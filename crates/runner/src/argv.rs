@@ -290,15 +290,18 @@ fn count(s: &OsStr, chars: &[char]) -> usize {
 
 /// An upper bound on the command line Rust std builds on Windows, in UTF-16 units: every
 /// element quoted, every escape counted. For `.cmd`/`.bat` that is
-/// `cmd.exe /e:ON /v:OFF /d /c "<"script"> <args>"` with `"` doubled and `%` expanded to
-/// `%%cd:~,%` (#25 E1); otherwise `"<program>" <args>` with `"` and `\` escaped.
+/// `cmd.exe /e:ON /v:OFF /d /c "<"script"> <args>"` (std `make_bat_command_line`), each argument
+/// escaped as std's `append_bat_arg` does: `"` doubled, `\` doubled before a `"` and at the end
+/// of a quoted argument, `%` (and CR) expanded to `%%cd:~,%` (#25 E1). Otherwise it is
+/// `"<program>" <args>` (std `make_command_line`), with `\` and `"` escaped as `append_arg`
+/// does. Each `\` and `"` is counted as one extra unit, the most either escaping adds.
 fn windows_command_line_len(program: &Path, args: &[OsString]) -> usize {
     let program = program.as_os_str();
     if is_batch(Path::new(program)) {
         const PREFIX: &str = "cmd.exe /e:ON /v:OFF /d /c \"";
         let mut len = PREFIX.len() + utf16_len(program) + 2 + 1;
         for arg in args {
-            len += 1 + utf16_len(arg) + 2 + count(arg, &['"']) + 7 * count(arg, &['%']);
+            len += 1 + utf16_len(arg) + 2 + count(arg, &['"', '\\']) + 7 * count(arg, &['%', '\r']);
         }
         len
     } else {
@@ -552,6 +555,118 @@ mod tests {
             28 + 17 + 2 + 1 + (1 + 6 + 2 + 14)
         );
         assert!(is_batch(cmd) && is_batch(Path::new("x.bat")) && !is_batch(exe));
+    }
+
+    /// Rust std's `append_bat_arg` (library/std/src/sys/args/windows.rs), for ASCII text:
+    /// the exact length it appends for one argument.
+    fn std_bat_arg_len(arg: &str) -> usize {
+        const UNQUOTED: &str = r"#$*+-./:?@\_";
+        let quote = arg.is_empty()
+            || arg.ends_with('\\')
+            || arg.chars().any(|c| {
+                c.is_ascii() && !(c.is_ascii_alphanumeric() || UNQUOTED.contains(c))
+                    || c.is_control()
+            });
+        let mut out = String::new();
+        if quote {
+            out.push('"');
+        }
+        let mut backslashes = 0;
+        for c in arg.chars() {
+            if c == '\\' {
+                backslashes += 1;
+            } else {
+                if c == '"' {
+                    out.extend(std::iter::repeat_n('\\', backslashes));
+                    out.push('"');
+                } else if c == '%' || c == '\r' {
+                    out.push_str("%%cd:~,");
+                }
+                backslashes = 0;
+            }
+            out.push(c);
+        }
+        if quote {
+            out.extend(std::iter::repeat_n('\\', backslashes));
+            out.push('"');
+        }
+        out.len()
+    }
+
+    /// Rust std's `append_arg` with `Quote::Auto`, for ASCII text.
+    fn std_arg_len(arg: &str) -> usize {
+        let quote = arg.is_empty() || arg.contains([' ', '\t']);
+        let mut out = String::new();
+        if quote {
+            out.push('"');
+        }
+        let mut backslashes = 0;
+        for c in arg.chars() {
+            if c == '\\' {
+                backslashes += 1;
+            } else {
+                if c == '"' {
+                    out.extend(std::iter::repeat_n('\\', backslashes + 1));
+                }
+                backslashes = 0;
+            }
+            out.push(c);
+        }
+        if quote {
+            out.extend(std::iter::repeat_n('\\', backslashes));
+            out.push('"');
+        }
+        out.len()
+    }
+
+    #[test]
+    fn windows_estimate_bounds_std_escaping() {
+        let args = [
+            r"C:\dir\",
+            r"C:\dir with space\\\",
+            r"a\\\\b",
+            r#"a\\"b"#,
+            r#"\\\""#,
+            r#""quoted\""#,
+            r"%PATH%\",
+            r"\\server\share\",
+            "",
+            "plain",
+            "a b\t",
+        ];
+        for prog in [r"C:\bin\claude.cmd", r"C:\bin\claude.exe"] {
+            let program = Path::new(prog);
+            for arg in args {
+                let os: Vec<OsString> = vec![arg.into()];
+                let exact = if is_batch(program) {
+                    "cmd.exe /e:ON /v:OFF /d /c \"".len()
+                        + prog.len()
+                        + 2
+                        + 1
+                        + std_bat_arg_len(arg)
+                        + 1
+                } else {
+                    prog.len() + 2 + 1 + std_arg_len(arg)
+                };
+                let estimate = windows_command_line_len(program, &os);
+                assert!(estimate >= exact, "{prog} {arg:?}: {estimate} < {exact}");
+            }
+        }
+    }
+
+    #[test]
+    fn backslashes_push_a_batch_launcher_over_the_limit() {
+        // 4,100 backslashes and a quote: over 8,200 units once std doubles them.
+        let bat = Path::new(r"C:\bin\claude.cmd");
+        let arg = format!("{}\"", "\\".repeat(4_100));
+        let err = check_windows_len(bat, &[arg.into()]).unwrap_err();
+        assert!(matches!(
+            err,
+            ArgvError::TooLong {
+                limit: WINDOWS_BATCH_LIMIT,
+                ..
+            }
+        ));
     }
 
     #[test]

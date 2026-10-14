@@ -245,6 +245,110 @@ mod tests {
         assert_eq!(texts(&evs), ["Hel", "lo", "\n", "Bye", "\n", "AB"]);
     }
 
+    fn thread_texts(evs: &[StreamEvent], want_subagent: bool) -> String {
+        evs.iter()
+            .filter_map(|e| match e {
+                StreamEvent::TextDelta { text, subagent } if *subagent == want_subagent => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn subagent_messages_keep_their_own_separator_state() {
+        // A subagent message between two main messages doesn't eat the main "\n" (TS
+        // `src/runner.ts:523-526` gives "Hi\nBye").
+        let evs = events(&[
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Hi"},{"type":"tool_use","id":"a1","name":"Agent","input":{"description":"d"}}]},"parent_tool_use_id":null}"#,
+            r#"{"type":"assistant","message":{"id":"s1","content":[{"type":"tool_use","id":"g1","name":"Glob","input":{"pattern":"*"}}]},"parent_tool_use_id":"a1"}"#,
+            r#"{"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"Bye"}]},"parent_tool_use_id":null}"#,
+        ]);
+        assert_eq!(thread_texts(&evs, false), "Hi\nBye");
+        assert_eq!(thread_texts(&evs, true), "");
+
+        // The reverse: subagent text first doesn't start the main reply with "\n".
+        let evs = events(&[
+            r#"{"type":"assistant","message":{"id":"s1","content":[{"type":"text","text":"sub"}]},"parent_tool_use_id":"a1"}"#,
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Hello"}]},"parent_tool_use_id":null}"#,
+            r#"{"type":"assistant","message":{"id":"s2","content":[{"type":"text","text":"more"}]},"parent_tool_use_id":"a1"}"#,
+        ]);
+        assert_eq!(thread_texts(&evs, false), "Hello");
+        assert_eq!(thread_texts(&evs, true), "sub\nmore");
+    }
+
+    #[test]
+    fn a_later_block_is_not_cut_by_an_earlier_one() {
+        // One message's blocks arriving one per event: text, thinking, text.
+        let evs = events(&[
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Done"}]}}"#,
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"thinking","thinking":"hm"}]}}"#,
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Done. Next"}]}}"#,
+        ]);
+        assert_eq!(texts(&evs), ["Done", "Done. Next"]);
+    }
+
+    #[test]
+    fn a_snapshot_repeats_nothing() {
+        // The same message re-sent with all its blocks so far: only new text and new tools.
+        let evs = events(&[
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Look"},{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}"#,
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Look"},{"type":"tool_use","id":"t1","name":"Read","input":{}},{"type":"text","text":"ed"},{"type":"tool_use","id":"t2","name":"Bash","input":{}}]}}"#,
+        ]);
+        assert_eq!(texts(&evs), ["Look", "ed"]);
+        let tools: Vec<&str> = evs
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ToolUse { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tools, ["t1", "t2"]);
+    }
+
+    #[test]
+    fn outcome_model_is_the_main_threads_full_id() {
+        let usage = r#""modelUsage":{"claude-main-1":{"contextWindow":1000000},"claude-sub-1":{"contextWindow":200000}}"#;
+        let result = format!(r#"{{"type":"result","subtype":"success","is_error":false,{usage}}}"#);
+        let judged = |lines: &[&str]| {
+            let mut s = StreamState::new();
+            for l in lines {
+                s.push_line(l);
+            }
+            judge(&s, &ExitReport::default(), &crate::argv::ClaudeArgs::new())
+        };
+        let init = r#"{"type":"system","subtype":"init","model":"claude-main-1"}"#;
+
+        // The last main-thread message's model; a subagent's or a synthetic one doesn't count.
+        let out = judged(&[
+            init,
+            r#"{"type":"assistant","message":{"id":"m1","model":"claude-main-1","content":[]}}"#,
+            r#"{"type":"assistant","parent_tool_use_id":"a1","message":{"id":"s1","model":"claude-sub-1","content":[]}}"#,
+            r#"{"type":"assistant","message":{"id":"m2","model":"<synthetic>","content":[]}}"#,
+            &result,
+        ]);
+        assert_eq!(out.model.as_deref(), Some("claude-main-1"));
+        assert_eq!(out.context_window(), Some(1_000_000));
+
+        // Falls back to init.model when no main-thread message named one.
+        let out = judged(&[init, &result]);
+        assert_eq!(out.model.as_deref(), Some("claude-main-1"));
+        assert_eq!(out.context_window(), Some(1_000_000));
+
+        // A main-thread model newer than init wins.
+        let out = judged(&[
+            init,
+            r#"{"type":"assistant","message":{"id":"m1","model":"claude-sub-1","content":[]}}"#,
+            &result,
+        ]);
+        assert_eq!(out.context_window(), Some(200_000));
+
+        // No model anywhere: no window.
+        let out = judged(&[&result]);
+        assert_eq!((out.model.as_deref(), out.context_window()), (None, None));
+    }
+
     #[test]
     fn tool_use_and_results() {
         let evs = events(&[

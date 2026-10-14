@@ -83,7 +83,8 @@ fn plain_reply() {
 
     // #39 D4, D9, E10.
     assert_eq!(out.last_main_usage.unwrap().context_tokens(), 119);
-    assert_eq!(out.context_window("claude-test"), Some(1_000_000));
+    assert_eq!(out.model.as_deref(), Some("claude-test"));
+    assert_eq!(out.context_window(), Some(1_000_000));
     let m = &out.model_usage["claude-test"];
     assert_eq!(m.cost_basis, CostBasis::List);
     assert_eq!(m.provider.as_deref(), Some("firstParty"));

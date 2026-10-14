@@ -162,6 +162,9 @@ pub struct RunOutcome {
     pub total_cost_usd: Option<f64>,
     /// The last main-thread assistant `message.usage`, for the context meter (#39 D4).
     pub last_main_usage: Option<Usage>,
+    /// The main thread's full model ID, the key into `model_usage`: the last main-thread
+    /// assistant `message.model`, else `init.model` (#39 D4).
+    pub model: Option<String>,
     pub clock: RunClock,
 }
 
@@ -177,6 +180,7 @@ impl fmt::Debug for RunOutcome {
             .field("claude_code_version", &self.claude_code_version)
             .field("reply_bytes", &self.reply.as_ref().map(String::len))
             .field("api_error_status", &self.api_error_status)
+            .field("model", &self.model)
             .field("clock", &self.clock)
             .finish_non_exhaustive()
     }
@@ -190,9 +194,10 @@ impl RunOutcome {
             .map(ClaudeCodeVersion::check)
     }
 
-    /// The context window `modelUsage` reports for `model` (#39 D4, E10).
-    pub fn context_window(&self, model: &str) -> Option<u64> {
-        self.model_usage.get(model)?.context_window
+    /// The context window `modelUsage` reports for the main thread's [`RunOutcome::model`]
+    /// (#39 D4, E10). The caller's alias (`opus`) is not a `modelUsage` key; this full ID is.
+    pub fn context_window(&self) -> Option<u64> {
+        self.model_usage.get(self.model.as_deref()?)?.context_window
     }
 }
 
@@ -235,6 +240,10 @@ pub fn judge(state: &StreamState, exit: &ExitReport, args: &ClaudeArgs) -> RunOu
         model_usage: result.map(|r| r.model_usage.clone()).unwrap_or_default(),
         total_cost_usd: result.and_then(|r| r.total_cost_usd),
         last_main_usage: state.last_main_usage,
+        model: state
+            .last_main_model
+            .clone()
+            .or_else(|| init.and_then(|i| i.model.clone())),
         clock: exit.clock,
     }
 }
