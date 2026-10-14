@@ -956,7 +956,9 @@ fn discord(r: &mut Reader<'_>, token: &str) -> DiscordSettings {
         image_output_roots: r
             .strings("discord.imageOutputRoots")
             .into_iter()
-            .filter(|p| Path::new(p).is_absolute())
+            // Node's `path.isAbsolute` (src/config.ts:398): on Windows a rooted path such as
+            // `/abs` counts too, which `Path::is_absolute` rejects without a drive letter.
+            .filter(|p| Path::new(p).is_absolute() || Path::new(p).has_root())
             .collect(),
         streaming: matches!(r.get("discord.streaming"), Some(Value::Bool(true))),
     }
