@@ -375,6 +375,12 @@ impl Layout {
         format!(r"\\.\pipe\claudeclaw-{}", self.dir_hash())
     }
 
+    /// `logs/<agent>/` (S): the Run logs of the agent's jobs, named `<agent>/<label>` (#14
+    /// rule 5, #17 §4).
+    pub fn agent_run_logs_dir(&self, agent: &str) -> PathBuf {
+        self.run_logs_dir().join(agent)
+    }
+
     /// The flat jobs dir for a `jobsDir` setting (#46 D2), as TS resolves it
     /// (`src/config.ts:22-23`, `:456`): the trimmed value, under the project dir unless it is
     /// absolute (Node's `path.isAbsolute`, so a rooted `/abs` counts on Windows too). Unset or
