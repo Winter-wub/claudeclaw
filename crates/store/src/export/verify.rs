@@ -8,12 +8,14 @@
 //! are checked only in data keys (settings keys, unclassified Daemon log keys), where no code
 //! word can explain them.
 
-use claudeclaw_api::export::ExportSection;
+use claudeclaw_api::export::{ExportSection, FieldClass, field_class};
 use serde_json::{Map, Value};
 
 use super::ExportError;
 use super::render::{Block, Section};
-use super::scrub::{Boundary, Target, char_after, char_before, classified, digit_runs};
+use super::scrub::{
+    Boundary, Target, char_after, char_before, classified, digit_runs, snowflake_number,
+};
 
 /// Checks each rendered section against `targets` (from `Known::verify_targets`) and its data
 /// keys against `key_targets` (`Known::key_targets`). Targets are lowercased; matching is ASCII
@@ -175,10 +177,15 @@ fn field_with(v: &Value, name: &str, needle: &str, boundary: Boundary) -> Option
     }
 }
 
-/// The field whose string (or key) holds a 17–20 digit run; JSON numbers are never scanned.
+/// The field whose string (or key) holds a 17–20 digit run, or whose JSON integer has 17–20
+/// digits outside a Structural field (a snowflake stored as a number). Floats and Structural
+/// numbers are not scanned (#28 Evidence: `0.30000000000000004`).
 fn digit_run_field(v: &Value, name: &str) -> Option<String> {
     match v {
         Value::String(s) => has_digit_run(s).then(|| name.to_owned()),
+        Value::Number(n) => (field_class(name) != FieldClass::Structural
+            && snowflake_number(n).is_some())
+        .then(|| name.to_owned()),
         Value::Array(items) => items.iter().find_map(|x| digit_run_field(x, name)),
         Value::Object(map) => map.iter().find_map(|(k, x)| {
             if has_digit_run(k) {
@@ -279,16 +286,37 @@ mod tests {
     }
 
     #[test]
-    fn a_digit_run_in_a_string_fails_but_a_number_does_not() {
+    fn a_digit_run_in_a_string_fails_and_a_number_only_outside_structural_fields() {
         let run: String = std::iter::repeat_n('8', 18).collect();
         let number: Value = serde_json::from_str(&run).unwrap();
-        let ok = vec![Section::new(ExportSection::Runs).json(json!({"n": number}))];
-        assert!(check(&ok, &[], &[]).is_ok());
+        let ok = vec![
+            Section::new(ExportSection::Runs).json(json!({"duration_ms": number, "cost_usd": 0.5})),
+        ];
+        assert!(check(&ok, &[], &[]).is_ok(), "a Structural number is kept");
+        let bad = vec![
+            Section::new(ExportSection::DaemonLog)
+                .jsonl(vec![json!({"fields": {"thread_id": number}})]),
+        ];
+        assert_eq!(
+            leak(check(&bad, &[], &[])),
+            (ExportSection::DaemonLog, "thread_id".into(), "discord")
+        );
 
         let bad = vec![Section::new(ExportSection::Runs).json(json!({"err": format!("id {run}")}))];
         assert_eq!(
             leak(check(&bad, &[], &[])),
             (ExportSection::Runs, "err".into(), "discord")
+        );
+    }
+
+    #[test]
+    fn a_surviving_fragment_of_a_home_path_fails() {
+        let sections = vec![Section::new(ExportSection::DaemonLog).jsonl(vec![
+            json!({"message": "open path:#1 Documents/AcmeCorp/plan.md: denied"}),
+        ])];
+        assert_eq!(
+            leak(check(&sections, &[word("documents/acmecorp", "path")], &[])),
+            (ExportSection::DaemonLog, "message".into(), "path")
         );
     }
 

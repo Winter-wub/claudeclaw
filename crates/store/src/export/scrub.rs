@@ -1,6 +1,6 @@
 //! The Pseudonymiser and the scrub passes (#28 D4, D5).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{IpAddr, SocketAddr};
 
 use claudeclaw_api::export::{FIELD_CLASSES, FieldClass, PseudonymKind, field_class};
@@ -236,6 +236,9 @@ pub(crate) struct Scrubber {
     ids: HashMap<(PseudonymKind, String), u32>,
     counts: BTreeMap<&'static str, u32>,
     reverse: BTreeMap<String, String>,
+    /// `<dir>/<dir>` fragments of paths under the home dir seen in free text, for the verify
+    /// pass: if one survives, part of a path escaped the path scanner.
+    home_fragments: BTreeSet<String>,
 }
 
 impl Scrubber {
@@ -248,6 +251,7 @@ impl Scrubber {
             ids: HashMap::new(),
             counts: BTreeMap::new(),
             reverse: BTreeMap::new(),
+            home_fragments: BTreeSet::new(),
         }
     }
 
@@ -262,6 +266,73 @@ impl Scrubber {
     /// The reverse map `{pseudonym: real value}` (#28 D4 "The key").
     pub(crate) fn reverse(&self) -> &BTreeMap<String, String> {
         &self.reverse
+    }
+
+    /// Records the `<dir>/<dir>` fragments of every path under the home dir (or `~/`) in
+    /// `text`, read on past spaces (see [`home_path_end`]).
+    fn note_home_paths(&mut self, text: &str) {
+        let mut starts: Vec<usize> = Vec::new();
+        if let Some(home) = &self.known.home_dir {
+            starts.extend(
+                text.match_indices(home.as_str())
+                    .map(|(i, _)| i + home.len()),
+            );
+        }
+        starts.extend(
+            text.match_indices("~/")
+                .filter(|(i, _)| !char_before(text, *i, None).is_some_and(is_path_char))
+                .map(|(i, _)| i + 1),
+        );
+        // A path inside the project dir stays project-relative in the export
+        // (`<project-dir>/agents/x`), so its dirs are not fragments to hunt for.
+        let in_project = |start: usize| {
+            let (Some(home), Some(project)) = (&self.known.home_dir, &self.known.project_dir)
+            else {
+                return false;
+            };
+            project.strip_prefix(home.as_str()).is_some_and(|rel| {
+                let rest = &text[start..];
+                rest.strip_prefix(rel)
+                    .is_some_and(|after| after.is_empty() || after.starts_with(['/', '\\']))
+            })
+        };
+        starts.retain(|start| !in_project(*start));
+        for start in starts {
+            let quote = char_before(text, start.saturating_sub(1), None)
+                .filter(|c| matches!(c, '"' | '\'' | '`'));
+            let rest = &text[start..];
+            let tail = &rest[..home_path_end(rest, quote)];
+            // Directory ranges between separators; the first is empty (the separator after
+            // the home dir) and the last may run into prose, so only inner pairs count.
+            let mut comps = Vec::new();
+            let mut from = 0;
+            for (i, c) in tail.char_indices() {
+                if c == '/' || c == '\\' {
+                    comps.push(from..i);
+                    from = i + 1;
+                }
+            }
+            comps.push(from..tail.len());
+            for pair in comps.windows(2).take(comps.len().saturating_sub(2)) {
+                let (pred, dir) = (&tail[pair[0].clone()], &tail[pair[1].clone()]);
+                let word = pred.rsplit(char::is_whitespace).next().unwrap_or(pred);
+                if word.is_empty() || dir.trim().is_empty() {
+                    continue;
+                }
+                let fragment = &tail[pair[0].end - word.len()..pair[1].end];
+                self.home_fragments.insert(fragment.to_ascii_lowercase());
+            }
+        }
+    }
+
+    /// Verify targets for every path under the home dir this scrubber saw: each
+    /// `<last word of a dir>/<next dir>` pair inside it, lowercased, word-bounded. A part of
+    /// such a path left in the text (say after a space the scanner stopped at) holds one.
+    pub(crate) fn home_targets(&self) -> Vec<Target> {
+        self.home_fragments
+            .iter()
+            .map(|f| (f.clone(), "path", Boundary::Word))
+            .collect()
     }
 
     /// The pseudonym of `value` as `kind`, assigning the next number on first sight.
@@ -356,7 +427,12 @@ impl Scrubber {
             Value::String(s) => Value::String(self.free_text(s)),
             Value::Array(items) => Value::Array(items.iter().map(|v| self.free_value(v)).collect()),
             Value::Object(map) => Value::Object(self.object(map)),
-            // JSON numbers are never scanned (#28 Evidence: `0.30000000000000004`).
+            // A snowflake stored as a JSON number is still one; other numbers, floats included
+            // (#28 Evidence: `0.30000000000000004`), are kept.
+            Value::Number(n) => match snowflake_number(n) {
+                Some(id) => Value::String(self.pseudonym(PseudonymKind::Discord, &id)),
+                None => value.clone(),
+            },
             other => other.clone(),
         }
     }
@@ -522,6 +598,7 @@ impl Scrubber {
         if text.is_empty() {
             return Vec::new();
         }
+        self.note_home_paths(text);
         let mut segs = vec![Seg::Text(text.to_owned())];
         for (secret, label) in &self.known.secrets {
             segs = replace_exact(segs, secret, &format!("<redacted:{label}>"));
@@ -865,17 +942,80 @@ fn next_path(text: &str, pos: usize, ctx: Ctx) -> Option<(usize, usize)> {
             i += 1;
             continue;
         };
-        i = start;
-        while i < bytes.len() && !is_path_end(bytes[i]) {
-            i += 1;
-        }
-        let mut end = i;
+        // A quoted path runs to its closing quote, spaces and all.
+        let quote = char_before(text, start, ctx.before).filter(|c| matches!(c, '"' | '\'' | '`'));
+        let quoted = quote.and_then(|q| {
+            let close = start + text[start..].find(q)?;
+            (!text[start..close].contains('\n')).then_some(close)
+        });
+        let mut end = quoted.unwrap_or_else(|| path_extent(bytes, start));
         while end > start + 1 && matches!(bytes[end - 1], b'.' | b':') {
             end -= 1;
         }
         return Some((start, end));
     }
     None
+}
+
+/// Where an unquoted path from `start` ends: at whitespace, a quote or closing punctuation,
+/// unless the text after the spaces continues it, i.e. its next token holds a `/` or `\`
+/// (`~/Mobile Documents/x`, `~/My Drive/x`).
+fn path_extent(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    loop {
+        while i < bytes.len() && !is_path_end(bytes[i]) {
+            i += 1;
+        }
+        let mut next = i;
+        while next < bytes.len() && matches!(bytes[next], b' ' | b'\t') {
+            next += 1;
+        }
+        if next == i {
+            return i;
+        }
+        let mut token = next;
+        while token < bytes.len() && !is_path_end(bytes[token]) {
+            token += 1;
+        }
+        if !bytes[next..token].iter().any(|b| matches!(b, b'/' | b'\\')) {
+            return i;
+        }
+        i = token;
+    }
+}
+
+/// Where a path under the home dir, read for verify fragments, ends in `rest`: at the closing
+/// quote of a quoted path, a newline, `;`, `|`, `<` or `>`, or at the first space of a dir name
+/// that holds a second one. Dir names like `Mobile Documents` and `My Drive` keep their one
+/// space; a run of prose words is not a dir name.
+fn home_path_end(rest: &str, quote: Option<char>) -> usize {
+    let mut first_space = None;
+    let mut spaces = 0;
+    for (i, c) in rest.char_indices() {
+        if Some(c) == quote || matches!(c, '\n' | ';' | '|' | '<' | '>') {
+            return i;
+        }
+        if c == '/' || c == '\\' {
+            first_space = None;
+            spaces = 0;
+        } else if c.is_whitespace() {
+            spaces += 1;
+            first_space.get_or_insert(i);
+            if spaces > 1 {
+                return first_space.unwrap_or(i);
+            }
+        }
+    }
+    rest.len()
+}
+
+/// A 17–20 digit integer, as a decimal string: a snowflake stored as a JSON number.
+pub(crate) fn snowflake_number(n: &serde_json::Number) -> Option<String> {
+    let digits = n
+        .as_u64()
+        .map(|v| v.to_string())
+        .or_else(|| n.as_i64().map(|v| v.unsigned_abs().to_string()))?;
+    (17..=20).contains(&digits.len()).then_some(digits)
 }
 
 /// `X:\` or `X:/` at `i`.
@@ -1173,5 +1313,56 @@ mod tests {
             s.free_text("https://discord.com/api/x and a/b"),
             "https://discord.com/api/x and a/b"
         );
+    }
+
+    #[test]
+    fn a_path_with_spaces_or_in_quotes_is_one_path() {
+        let mut s = scrubber(|k| k.set_home_dir("/home/claw"));
+        assert_eq!(
+            s.free_text("open /home/claw/Mobile Documents/AcmeCorp/plan.md was denied"),
+            "open path:#1 was denied"
+        );
+        assert_eq!(
+            s.free_text("in ~/My Drive/Clients/x.md, then stop"),
+            "in path:#2, then stop"
+        );
+        assert_eq!(
+            s.free_text("read '/home/claw/Shared Stuff/notes': no"),
+            "read 'path:#3': no"
+        );
+        assert_eq!(
+            s.free_text("moved /home/claw/a to the bin"),
+            "moved path:#4 to the bin",
+            "a following word with no separator is prose"
+        );
+    }
+
+    #[test]
+    fn home_path_fragments_become_verify_targets() {
+        let mut s = scrubber(|k| k.set_home_dir("/home/claw"));
+        s.free_text("open /home/claw/Mobile Documents/AcmeCorp/plan.md was denied");
+        s.free_text("\"~/.local/bin/claude\" ran");
+        // Prose after a path is not part of it, so `agents/zed` here is no target.
+        s.free_text("~/a/b failed for agents/zed/jobs/y.md");
+        let targets: Vec<String> = s.home_targets().into_iter().map(|t| t.0).collect();
+        assert_eq!(targets, [".local/bin", "documents/acmecorp"]);
+    }
+
+    #[test]
+    fn snowflakes_stored_as_numbers_are_pseudonymised_outside_structural_fields() {
+        let mut s = scrubber(|_| ());
+        let n: Value = serde_json::from_str(&flake('7', 18)).unwrap();
+        let value = json!({"thread_id": n, "extra": [n], "duration_ms": n, "count": 12});
+        assert_eq!(
+            Value::Object(s.object(value.as_object().unwrap())),
+            json!({
+                "thread_id": "discord:#1",
+                "extra": ["discord:#1"],
+                "duration_ms": n,
+                "count": 12,
+            })
+        );
+        let float = json!(0.30000000000000004);
+        assert_eq!(s.field("message", &float), float);
     }
 }

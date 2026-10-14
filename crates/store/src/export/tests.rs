@@ -954,3 +954,85 @@ fn the_summary_stays_under_two_kib() {
     assert!(summary.len() <= SUMMARY_MAX_BYTES, "{}", summary.len());
     assert!(summary.contains("via launcher:#1"), "{summary}");
 }
+
+#[test]
+fn a_home_path_with_spaces_is_scrubbed_whole_and_project_paths_are_kept() {
+    let f = fixture();
+    let home = f._dir.path().to_string_lossy().into_owned();
+    append_worker(
+        &f,
+        &[log_line(
+            8,
+            "2026-10-13T08:40:00Z",
+            "WARN",
+            "job.invalid",
+            &format!(
+                "open {home}/Mobile Documents/AcmeCorp/plan.md was denied; \
+                 see {home}/proj/agents/zed/jobs/y.md"
+            ),
+            json!({}),
+        )],
+    );
+    let out = run(&f, &ExportRequest::default());
+    let log = section_lines(&out.text, "Daemon log");
+    let line = log.iter().find(|l| l["seq"] == 8).unwrap();
+    let message = line["message"].as_str().unwrap();
+    assert!(!out.text.contains("AcmeCorp"), "{message}");
+    assert!(
+        message.ends_with("was denied; see <project-dir>/agents/zed/jobs/y.md"),
+        "{message}"
+    );
+}
+
+#[test]
+fn snowflakes_stored_as_numbers_never_appear() {
+    let f = fixture();
+    let id = flake('6');
+    let n: Value = serde_json::from_str(&id).unwrap();
+    append_worker(
+        &f,
+        &[log_line(
+            8,
+            "2026-10-13T08:40:00Z",
+            "INFO",
+            "discord.thread",
+            "thread",
+            json!({"thread_id": n, "ids": [n]}),
+        )],
+    );
+    let out = run(&f, &ExportRequest::default());
+    assert!(!out.text.contains(&id), "{}", out.text);
+    let log = section_lines(&out.text, "Daemon log");
+    let line = log.iter().find(|l| l["seq"] == 8).unwrap();
+    assert_eq!(line["fields"]["thread_id"], line["fields"]["ids"][0]);
+    assert!(
+        line["fields"]["thread_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("discord:#")
+    );
+}
+
+#[test]
+fn crash_record_numbers_follow_field_classes() {
+    // `uptime_ms` is Structural, so even a snowflake-sized value there is kept and passes
+    // verify; an unclassified number in a parsed `stderr_tail` line is pseudonymised.
+    let f = fixture();
+    let id = flake('6');
+    let mut status: Value =
+        serde_json::from_str(&fs::read_to_string(f.layout.supervisor()).unwrap()).unwrap();
+    status["crashes"][0]["uptime_ms"] = serde_json::from_str(&id).unwrap();
+    status["crashes"][0]["stderr_tail"] = json!([log_line(
+        9,
+        "2026-10-13T08:34:29Z",
+        "WARN",
+        "x",
+        "y",
+        json!({"thread_id": serde_json::from_str::<Value>(&id).unwrap()}),
+    )]);
+    fs::write(f.layout.supervisor(), status.to_string()).unwrap();
+    let out = run(&f, &ExportRequest::default());
+    let tail_start = out.text.find("stderr_tail").unwrap();
+    assert!(out.text[..tail_start].contains(&format!("\"uptime_ms\": {id}")));
+    assert!(!out.text[tail_start..].contains(&id));
+}

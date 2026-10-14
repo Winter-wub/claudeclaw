@@ -304,6 +304,8 @@ pub fn export(
             }
             continue;
         }
+        let mut targets = targets.clone();
+        targets.extend(scrubber.home_targets());
         verify::verify(&built.sections, &rendered, &targets, &key_targets)?;
         let manifest = ExportManifest {
             format: FORMAT.to_owned(),
