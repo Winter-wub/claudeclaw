@@ -267,8 +267,17 @@ pub fn fallback_path(layout: &Layout, key: &TsKey) -> Result<PathBuf, SessionsEr
 
 /// `agent`, if it names one dir directly under `agents/`. The API's Scope parser accepts
 /// `agent:..`, which would otherwise resolve `agents/../session.json` in the project dir.
+///
+/// The name must parse as exactly one normal path component (so not empty, `.` or `..`), and
+/// `/`, `\` and `:` are refused on every OS: on Windows, `agents\` joined with `C:` or `C:x` is
+/// a drive path that replaces `agents\` entirely.
 fn agent_name(agent: &str) -> Result<&str, SessionsError> {
-    if agent.is_empty() || agent == "." || agent == ".." || agent.contains(['/', '\\']) {
+    let mut components = Path::new(agent).components();
+    let one_normal = matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    );
+    if !one_normal || agent.contains(['/', '\\', ':']) {
         return Err(SessionsError::InvalidAgentName);
     }
     Ok(agent)
@@ -611,7 +620,19 @@ mod tests {
         let (dir, layout) = layout();
         fs::write(dir.path().join("session.json"), r#"{"sessionId":"root"}"#).unwrap();
         let session = TsSession::new("a-1", at(8));
-        for name in ["", ".", "..", "a/b", "../x", "a\\b"] {
+        for name in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            "../x",
+            "a\\b",
+            "C:",
+            "C:x",
+            "a:b",
+            "\\\\srv\\share",
+            "/abs",
+        ] {
             let key = TsKey::Agent(name.into());
             let refused = |r: Result<(), SessionsError>| {
                 assert!(
