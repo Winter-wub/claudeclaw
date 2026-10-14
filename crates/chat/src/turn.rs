@@ -10,6 +10,9 @@ use crate::ChatScope;
 #[derive(Clone, PartialEq, Eq)]
 pub struct Turn {
     pub scope: ChatScope,
+    /// The message this Turn answers. `core` keeps it in the Run registry's `origin`, so the
+    /// next Worker can send the interrupted reply after a crash (#29, #79).
+    pub origin: MessageRef,
     pub author: Author,
     /// The raw user text; `core` does the `<untrusted-…>` wrapping.
     pub text: String,
@@ -25,6 +28,7 @@ impl fmt::Debug for Turn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Turn")
             .field("scope", &self.scope)
+            .field("origin", &self.origin)
             .field("author", &self.author)
             .field("text_bytes", &self.text.len())
             .field("context_lines", &self.context_lines.len())
@@ -32,6 +36,18 @@ impl fmt::Debug for Turn {
             .field("agent_dir", &self.agent_dir.is_some())
             .finish()
     }
+}
+
+/// A reference to one inbound message (#79): opaque transport-defined IDs that `core` stores
+/// and hands back without reading them. The same pair as `api::supervisor::ChatOrigin`, which
+/// adds the transport. IDs are identifiers, not content, so `Debug` prints them, like
+/// [`ChatScope`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MessageRef {
+    /// The channel or thread the message is in.
+    pub channel: String,
+    /// The message itself.
+    pub message: String,
 }
 
 /// Who wrote a [`Turn`] (architecture §6): the display name only. User IDs stay in the
@@ -82,6 +98,10 @@ mod tests {
             scope: ChatScope::Channel {
                 transport: Transport::Discord,
                 id: "1234".into(),
+            },
+            origin: MessageRef {
+                channel: "1234".into(),
+                message: "5678".into(),
             },
             author: Author {
                 display_name: "Somebody".into(),
