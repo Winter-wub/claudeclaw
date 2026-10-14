@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::runs::RunOutcome;
 use crate::scope::Scope;
 use crate::wire::wire_enum;
 
@@ -111,19 +112,9 @@ pub struct AutoCompactState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct AutoCompactLast {
     pub at: DateTime<Utc>,
-    pub outcome: CompactOutcome,
+    /// The compact run's own outcome (#23, #33).
+    pub outcome: RunOutcome,
     pub duration_ms: u64,
-}
-
-wire_enum! {
-    /// How an auto-compact run ended: a run's outcome (#23, #33).
-    pub enum CompactOutcome {
-        Ok = "ok",
-        Failed = "failed",
-        Timeout = "timeout",
-        Interrupted = "interrupted",
-        RateLimited = "rate_limited",
-    }
 }
 
 /// `sessions.get` → the session plus its context meter (management-api §2.5, #39 D4).
@@ -219,7 +210,6 @@ pub struct SessionDeleted {
     TimeoutBreakerState,
     AutoCompactState,
     AutoCompactLast,
-    CompactOutcome,
     SessionDetail,
     SessionContext,
     TranscriptPage,
@@ -264,7 +254,7 @@ mod tests {
                 spent_at: Some(at(8)),
                 last: Some(AutoCompactLast {
                     at: at(8),
-                    outcome: CompactOutcome::Timeout,
+                    outcome: RunOutcome::Timeout,
                     duration_ms: 300_000,
                 }),
             },
@@ -446,8 +436,8 @@ mod tests {
             SessionStatus::Unknown
         );
         assert_eq!(
-            serde_json::from_value::<CompactOutcome>(json!("lingered")).unwrap(),
-            CompactOutcome::Unknown
+            serde_json::from_value::<RunOutcome>(json!("lingered")).unwrap(),
+            RunOutcome::Unknown
         );
     }
 }

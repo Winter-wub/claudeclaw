@@ -129,6 +129,9 @@ pub enum PseudonymKind {
     OsUser,
     /// Paths outside the project dir and the system prefixes.
     Path,
+    /// The app-local daemon UUID. Used only in the Desktop app section, where the app swaps it by
+    /// lookup, not by scrubbing (#40 D5, #69).
+    Daemon,
 }
 
 impl PseudonymKind {
@@ -149,6 +152,7 @@ impl PseudonymKind {
             PseudonymKind::Host => "host",
             PseudonymKind::OsUser => "os-user",
             PseudonymKind::Path => "path",
+            PseudonymKind::Daemon => "daemon",
         }
     }
 }
@@ -172,10 +176,12 @@ use FieldClass::{FreeText, Identifier, Structural};
 use PseudonymKind as K;
 
 /// Every Daemon-log and Run index field name, at any depth, with its class (#28 D5.1). Sorted by
-/// name. Each new event field needs an entry; one that has none is treated as [`FreeText`].
+/// name. A test checks it covers every field in [`crate::log_event::daemon::CATALOGUE`]; a field
+/// with no entry is treated as [`FreeText`] (#69).
 pub const FIELD_CLASSES: &[(&str, FieldClass)] = &[
     ("added", Structural),
     ("agent", Identifier(K::Agent)),
+    ("alive_tasks", Structural),
     ("api_error_status", Structural),
     ("api_key_source", Structural),
     ("attachments", Structural),
@@ -189,11 +195,14 @@ pub const FIELD_CLASSES: &[(&str, FieldClass)] = &[
     ("cache_read_tokens", Structural),
     ("cache_write_tokens", Structural),
     ("catch_up", Structural),
+    ("change", Structural),
     ("changed_keys", FreeText),
     ("channel_id", Identifier(K::Discord)),
     ("claude_code_version", Structural),
     ("code", Structural),
     ("col", Structural),
+    ("compact_timeout_ms", Structural),
+    ("consecutive_timeouts", Structural),
     ("console", Structural),
     ("cost_basis", Structural),
     ("cost_status", Structural),
@@ -202,24 +211,34 @@ pub const FIELD_CLASSES: &[(&str, FieldClass)] = &[
     ("deleted", Structural),
     ("device_id", Identifier(K::Device)),
     ("diagnostic", FreeText),
+    ("dir_kind", Structural),
     ("done", Structural),
     ("duration_ms", Structural),
+    ("elapsed_ms", Structural),
     ("ended_at", Structural),
     ("err", FreeText),
+    ("errno", Structural),
     ("event", Structural),
     ("exit_code", Structural),
     ("expected", Structural),
+    ("failing_secs", Structural),
     ("fatal", FreeText),
     ("file", FreeText),
     ("free_mib", Structural),
     ("freed_bytes", Structural),
+    // `job.state_carried`: the old and new job names of a rename (#46).
+    ("from", Identifier(K::Job)),
+    ("global_queue", Structural),
     ("guild_id", Identifier(K::Discord)),
     ("hard", Structural),
     ("has_run_log", Structural),
+    ("interval_ms", Structural),
     ("invalid", Structural),
     ("is_error", Structural),
     ("job", Identifier(K::Job)),
     ("kept", Structural),
+    // Frontmatter key names only, never values (#46).
+    ("keys", Structural),
     ("kind", Structural),
     ("label", Identifier(K::Label)),
     ("late_ms", Structural),
@@ -231,6 +250,7 @@ pub const FIELD_CLASSES: &[(&str, FieldClass)] = &[
     ("linger_ms", Structural),
     ("lingered", Structural),
     ("listener", Structural),
+    ("meaning", Structural),
     ("message", FreeText),
     ("message_id", Identifier(K::Discord)),
     ("method", Structural),
@@ -243,6 +263,7 @@ pub const FIELD_CLASSES: &[(&str, FieldClass)] = &[
     ("noise_lines", Structural),
     ("origin", Structural),
     ("outcome", Structural),
+    ("pass_ms", Structural),
     ("peer", Identifier(K::Ip)),
     ("pid", Structural),
     ("pipe_held", Structural),
@@ -251,20 +272,27 @@ pub const FIELD_CLASSES: &[(&str, FieldClass)] = &[
     ("purpose", Structural),
     ("queue_depth", Structural),
     ("quiet_ms", Structural),
+    ("quiet_s", Structural),
     ("raw", FreeText),
     ("reason", Structural),
     ("result_bytes", Structural),
+    ("revision", Structural),
     ("route", Structural),
     ("run_id", Structural),
     ("run_log", FreeText),
     ("scheduled_for", Structural),
     ("scope", FieldClass::Scope),
+    ("searched_roots", Structural),
+    ("secs", Structural),
     ("seq", Structural),
     ("session", Structural),
     ("session_id", Identifier(K::Session)),
     ("settle", Structural),
     ("settle_ms", Structural),
     ("signal", Structural),
+    ("silence_ms", Structural),
+    ("source", Structural),
+    ("spent_secs_ago", Structural),
     ("started_at", Structural),
     ("state", Structural),
     ("status", Structural),
@@ -274,6 +302,7 @@ pub const FIELD_CLASSES: &[(&str, FieldClass)] = &[
     ("target", Structural),
     ("text_bytes", Structural),
     ("timestamp", Structural),
+    ("to", Identifier(K::Job)),
     ("token_id", Identifier(K::Token)),
     ("token_name", Identifier(K::TokenName)),
     ("tokens_in", Structural),
@@ -282,13 +311,81 @@ pub const FIELD_CLASSES: &[(&str, FieldClass)] = &[
     ("tool_uses", Structural),
     ("total", Structural),
     ("turn_id", Structural),
+    ("turn_timeout_ms", Structural),
     ("unknown", Structural),
     ("until", Structural),
     ("uptime_ms", Structural),
     ("user_id", Identifier(K::Discord)),
     ("version", Structural),
+    ("waited_ms", Structural),
     ("wake_grace", Structural),
+    ("workers", Structural),
 ];
+
+/// The Field class of an App log field (#69). The App log is never scrubbed, so this is only a
+/// declaration that the field holds no owner identifier; an identifier class can't be written
+/// here at all (#40 D3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AppFieldClass {
+    /// Kept as is: closed enums, numbers, versions, operation IDs, code locations.
+    Structural,
+    /// The app-local daemon UUID, swapped for `daemon:#n` by lookup (#40 D5).
+    Daemon,
+}
+
+/// Every App log field name with its class (#69). Sorted by name. A test checks it covers every
+/// field in [`crate::log_event::app::CATALOGUE`] and [`crate::log_event::COMMON_FIELDS`], and
+/// nothing else.
+pub const APP_FIELD_CLASSES: &[(&str, AppFieldClass)] = &[
+    ("app_version", AppFieldClass::Structural),
+    ("arch", AppFieldClass::Structural),
+    ("class", AppFieldClass::Structural),
+    ("code", AppFieldClass::Structural),
+    ("command", AppFieldClass::Structural),
+    ("count", AppFieldClass::Structural),
+    ("daemon", AppFieldClass::Daemon),
+    ("deadline_ms", AppFieldClass::Structural),
+    ("duration_ms", AppFieldClass::Structural),
+    ("elapsed_ms", AppFieldClass::Structural),
+    // Display chains; paths are rendered with `~` and reqwest errors drop their URL (#40 D3).
+    // The app's verify pass is the backstop.
+    ("err", AppFieldClass::Structural),
+    ("event", AppFieldClass::Structural),
+    ("exit_code", AppFieldClass::Structural),
+    ("family", AppFieldClass::Structural),
+    ("frames", AppFieldClass::Structural),
+    ("from", AppFieldClass::Structural),
+    ("kind", AppFieldClass::Structural),
+    ("level", AppFieldClass::Structural),
+    // `file:line:col` in the app's own code; release builds remap build paths (#69).
+    ("location", AppFieldClass::Structural),
+    ("message", AppFieldClass::Structural),
+    ("message_bytes", AppFieldClass::Structural),
+    // In `ui.*`, a JS error's name, e.g. `TypeError`.
+    ("name", AppFieldClass::Structural),
+    ("op", AppFieldClass::Structural),
+    ("os", AppFieldClass::Structural),
+    ("outcome", AppFieldClass::Structural),
+    ("payload_bytes", AppFieldClass::Structural),
+    ("req_bytes", AppFieldClass::Structural),
+    ("resp_bytes", AppFieldClass::Structural),
+    ("screen", AppFieldClass::Structural),
+    ("seq", AppFieldClass::Structural),
+    ("status", AppFieldClass::Structural),
+    ("stderr_bytes", AppFieldClass::Structural),
+    ("target", AppFieldClass::Structural),
+    ("timestamp", AppFieldClass::Structural),
+    ("to", AppFieldClass::Structural),
+    ("webview_version", AppFieldClass::Structural),
+];
+
+/// The class of an App log field; `None` for a field nobody declared, which a test forbids.
+pub fn app_field_class(name: &str) -> Option<AppFieldClass> {
+    APP_FIELD_CLASSES
+        .binary_search_by(|(field, _)| (*field).cmp(name))
+        .ok()
+        .map(|i| APP_FIELD_CLASSES[i].1)
+}
 
 /// The class of a field name; [`FreeText`], the safe side, when it isn't in [`FIELD_CLASSES`].
 pub fn field_class(name: &str) -> FieldClass {
@@ -437,6 +534,14 @@ mod tests {
                 "daemon_log"
             ])
         );
+    }
+
+    #[test]
+    fn app_field_classes_are_sorted_and_unique() {
+        assert!(APP_FIELD_CLASSES.windows(2).all(|w| w[0].0 < w[1].0));
+        assert_eq!(app_field_class("daemon"), Some(AppFieldClass::Daemon));
+        assert_eq!(app_field_class("name"), Some(AppFieldClass::Structural));
+        assert_eq!(app_field_class("prompt"), None);
     }
 
     #[test]
