@@ -222,6 +222,20 @@ pub async fn build_run_path(
     exe: &Path,
     previous: Option<&RunPath>,
 ) -> RunPathBuild {
+    build_run_path_with(settings, inherited, previous, || {
+        LoginShellProbe::for_current_user(exe)
+    })
+    .await
+}
+
+/// [`build_run_path`] with the login-shell probe supplied by `login_shell`, which is called
+/// only when the source is the login shell.
+async fn build_run_path_with(
+    settings: &RunPathSettings,
+    inherited: Option<&OsStr>,
+    previous: Option<&RunPath>,
+    login_shell: impl FnOnce() -> Option<LoginShellProbe>,
+) -> RunPathBuild {
     let started = Instant::now();
     let captured_at = DateTime::<Utc>::from(std::time::SystemTime::now());
     let (mut source_used, source_invalid) = settings.source.effective();
@@ -229,7 +243,7 @@ pub async fn build_run_path(
     let mut error = None;
     let mut no_login_shell = false;
     let source_path: Option<OsString> = match source_used {
-        RunPathSource::LoginShell => match LoginShellProbe::for_current_user(exe) {
+        RunPathSource::LoginShell => match login_shell() {
             Some(probe) => {
                 shell = Some(probe.shell_name());
                 match probe.capture().await {
@@ -503,6 +517,131 @@ mod tests {
         assert!(!gate.try_acquire(t0 + Duration::from_secs(59)));
         assert!(gate.try_acquire(t0 + Duration::from_secs(60)));
         assert!(!gate.try_acquire(t0 + Duration::from_secs(61)));
+    }
+
+    /// The login-shell source, driven through `build_run_path_with` (Unix only).
+    #[cfg(unix)]
+    mod login_shell {
+        use super::*;
+
+        /// A minimal subscriber that keeps every event's fields, to check the catalogue events.
+        #[derive(Clone, Default)]
+        struct Events(std::sync::Arc<std::sync::Mutex<Vec<EventFields>>>);
+
+        /// One event's fields, as `(name, value)` pairs.
+        type EventFields = Vec<(String, String)>;
+
+        impl Events {
+            fn named(&self, name: &str) -> Vec<EventFields> {
+                let all = self.0.lock().unwrap();
+                all.iter()
+                    .filter(|fields| fields.iter().any(|(k, v)| k == "event" && v == name))
+                    .cloned()
+                    .collect()
+            }
+        }
+
+        struct Fields(Vec<(String, String)>);
+
+        impl tracing::field::Visit for Fields {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.0.push((field.name().to_owned(), value.to_owned()));
+            }
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push((field.name().to_owned(), format!("{value:?}")));
+            }
+        }
+
+        impl tracing::Subscriber for Events {
+            fn register_callsite(
+                &self,
+                _: &'static tracing::Metadata<'static>,
+            ) -> tracing::subscriber::Interest {
+                tracing::subscriber::Interest::always()
+            }
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                let mut fields = Fields(Vec::new());
+                event.record(&mut fields);
+                self.0.lock().unwrap().push(fields.0);
+            }
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+        }
+
+        #[tokio::test]
+        async fn a_failed_capture_falls_back_to_prepend_and_inherited() {
+            use std::os::unix::fs::PermissionsExt;
+
+            // A login shell whose rc file takes over (`exec tmux`) and never runs the probe.
+            let dir = tempfile::tempdir().unwrap();
+            let shell = dir.path().join("tmuxsh");
+            std::fs::write(&shell, "#!/bin/sh\necho 'exec tmux'\n").unwrap();
+            std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let probe = LoginShellProbe {
+                shell,
+                exe: dir.path().join("claudeclaw"),
+                home: dir.path().to_path_buf(),
+                nonce: crate::env::fresh_nonce(),
+                timeout: Duration::from_secs(10),
+            };
+
+            let events = Events::default();
+            let _guard = tracing::subscriber::set_default(events.clone());
+            let settings = RunPathSettings {
+                source: RunPathSource::LoginShell,
+                prepend: vec![PathBuf::from("/p")],
+            };
+            let previous = RunPath {
+                dirs: vec!["/p".into(), "/gone".into()],
+            };
+            let built =
+                build_run_path_with(&settings, Some(&os("/i1:/p:/i2")), Some(&previous), || {
+                    Some(probe)
+                })
+                .await;
+
+            let want: Vec<PathBuf> = ["/p", "/i1", "/i2"].iter().map(PathBuf::from).collect();
+            assert_eq!(built.path.dirs(), want.as_slice());
+            assert_eq!(built.report.error, Some(CaptureErrorKind::NoMarker));
+            assert_eq!(built.report.source_requested, RunPathSource::LoginShell);
+            assert_eq!(built.report.source_used, RunPathSource::LoginShell);
+            assert_eq!(built.report.shell.as_deref(), Some("tmuxsh"));
+            assert!(!built.report.no_login_shell);
+
+            let failed = events.named("run_path.capture_failed");
+            assert_eq!(failed.len(), 1);
+            assert!(
+                failed[0].contains(&("kind".to_owned(), "no_marker".to_owned())),
+                "{failed:?}"
+            );
+            assert!(events.named("run_path.captured").is_empty());
+            let changed = events.named("run_path.changed");
+            assert_eq!(changed.len(), 1);
+            assert!(changed[0].contains(&("added".to_owned(), "2".to_owned())));
+            assert!(changed[0].contains(&("removed".to_owned(), "1".to_owned())));
+        }
+
+        #[tokio::test]
+        async fn no_login_shell_falls_back_to_inherit() {
+            let settings = RunPathSettings {
+                source: RunPathSource::Auto,
+                prepend: vec![],
+            };
+            let inherited = std::env::temp_dir().into_os_string();
+            let built = build_run_path_with(&settings, Some(&inherited), None, || None).await;
+            assert_eq!(built.path.dirs(), &[std::env::temp_dir()]);
+            assert!(built.report.no_login_shell);
+            assert_eq!(built.report.source_used, RunPathSource::Inherit);
+            assert_eq!(built.report.error, None);
+        }
     }
 
     #[tokio::test]

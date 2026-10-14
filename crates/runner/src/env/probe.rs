@@ -92,16 +92,37 @@ pub fn encode_probe_output(nonce: &str, path: Option<&OsStr>) -> String {
 }
 
 /// Reads the PATH out of a login shell's stdout (see the module docs).
+///
+/// The nonce is also part of the shell's `-c` string, so an rc hook that echoes the command
+/// (a terminal-title `DEBUG` trap, bash-preexec) can print it outside the probe's own markers.
+/// Each pair of consecutive nonce occurrences is therefore tried in turn, and the first whose
+/// body is the expected JSON wins. Fewer than two occurrences is `no_marker`; no good pair is
+/// `bad_output`.
 pub fn parse_probe_output(stdout: &[u8], nonce: &str) -> Result<OsString, CaptureError> {
     let marker = nonce.as_bytes();
-    let start = find(stdout, marker, 0).ok_or(CaptureError::NoMarker)? + marker.len();
-    let end = find(stdout, marker, start).ok_or(CaptureError::NoMarker)?;
-    let body = std::str::from_utf8(&stdout[start..end]).map_err(|_| CaptureError::BadOutput)?;
-    let value: serde_json::Value =
-        serde_json::from_str(body.trim()).map_err(|_| CaptureError::BadOutput)?;
+    let mut open = find(stdout, marker, 0).ok_or(CaptureError::NoMarker)?;
+    let mut paired = false;
+    while let Some(close) = find(stdout, marker, open + marker.len()) {
+        paired = true;
+        if let Some(path) = parse_probe_body(&stdout[open + marker.len()..close]) {
+            return Ok(path);
+        }
+        open = close;
+    }
+    Err(if paired {
+        CaptureError::BadOutput
+    } else {
+        CaptureError::NoMarker
+    })
+}
+
+/// The PATH from the JSON between two markers, if that is what the body is.
+fn parse_probe_body(body: &[u8]) -> Option<OsString> {
+    let body = std::str::from_utf8(body).ok()?;
+    let value: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
     match value.get("PATH") {
-        Some(serde_json::Value::String(path)) => Ok(OsString::from(path)),
-        _ => Err(CaptureError::BadOutput),
+        Some(serde_json::Value::String(path)) => Some(OsString::from(path)),
+        _ => None,
     }
 }
 
@@ -366,6 +387,35 @@ mod tests {
             encode_probe_output("N", None),
             "N\n{\"PATH\":null}\nN\n".to_owned()
         );
+    }
+
+    #[test]
+    fn rc_hooks_that_echo_the_command_are_skipped() {
+        let nonce = "claudeclaw-env-probe-1a-2b";
+        let probe = encode_probe_output(nonce, Some(OsStr::new("/x:/y")));
+        // bash `trap 'printf "\033]0;%s\007" "$BASH_COMMAND"' DEBUG` (or a bash-preexec title
+        // hook) prints the `-c` command, nonce included, as a terminal title before running it.
+        let title = format!("\x1b]0;'/opt/bin/claudeclaw' __env-probe {nonce}\x07");
+        let parse = |out: String| parse_probe_output(out.as_bytes(), nonce).map_err(|e| e.kind());
+        let want = Ok(OsString::from("/x:/y"));
+        assert_eq!(parse(format!("{title}{probe}")), want, "echo before");
+        assert_eq!(parse(format!("{probe}{title}")), want, "echo after");
+        assert_eq!(
+            parse(format!("{title}{probe}{title}")),
+            want,
+            "echo both sides"
+        );
+        assert_eq!(
+            parse(format!("{title}rc noise\n{title}{probe}")),
+            want,
+            "echoed twice before"
+        );
+        // Echoes alone are still no probe output.
+        assert_eq!(
+            parse(format!("{title}{title}")),
+            Err(CaptureErrorKind::BadOutput)
+        );
+        assert_eq!(parse(title.clone()), Err(CaptureErrorKind::NoMarker));
     }
 
     #[test]
