@@ -374,6 +374,12 @@ impl Layout {
     pub fn pipe_name(&self) -> String {
         format!(r"\\.\pipe\claudeclaw-{}", self.dir_hash())
     }
+
+    /// `logs/<agent>/` (S): the Run logs of the agent's jobs, named `<agent>/<label>` (#14
+    /// rule 5, #17 §4).
+    pub fn agent_run_logs_dir(&self, agent: &str) -> PathBuf {
+        self.run_logs_dir().join(agent)
+    }
 }
 
 /// Where the local Management API listens (§9.3).
