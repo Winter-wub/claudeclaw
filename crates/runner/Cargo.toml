@@ -7,3 +7,33 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+
+[dependencies]
+chrono.workspace = true
+futures-util.workspace = true
+process-wrap = { workspace = true, features = ["tokio1", "process-group", "process-session", "kill-on-drop", "job-object"] }
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "time", "sync", "rt", "macros", "fs"] }
+tokio-util = { workspace = true, features = ["codec", "rt"] }
+tracing.workspace = true
+which.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+nix = { workspace = true, features = ["signal", "process", "user"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Registry",
+    "Win32_System_Environment",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }

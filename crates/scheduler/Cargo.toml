@@ -11,3 +11,12 @@ publish.workspace = true
 [dependencies]
 claudeclaw-jobs.workspace = true
 claudeclaw-store.workspace = true
+chrono.workspace = true
+croner.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "sync", "rt", "macros"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
