@@ -11,12 +11,15 @@
 //!   (§7, #14 rules 1–2 and 4, #23);
 //! - [`claude_settings`]: the single-key `statusLine` patch of `.claude/settings.json` (#24);
 //! - [`lock`] and [`pid`]: `daemon.lock`, its holder record and probe, and `daemon.pid`
-//!   (#9, #14 rule 10, #20, #22, #45).
+//!   (#9, #14 rule 10, #20, #22, #45);
+//! - [`sessions`]: the (Scope, Launcher) store in `daemon/state/sessions.json` and the TS session
+//!   files, fallback sessions and backups (#8, #12 §6, #32, #33, #39, #44);
+//! - [`run_registry`]: the Run registry `daemon/state/runs.json` (#22, #29, #37);
+//! - [`rollback::session_mirror`]: rule 7's TS mirror of each Scope's session (§8, #14).
 //!
 //! Still to come, each as its own module beside these (§4): `scan` (the Change scan, #46),
-//! `sessions` (the (Scope, Launcher) store and the TS mirror), `job_state` (#9, #46),
-//! `run_log` and `run_index` (#23, #44), `run_registry` (#29), `audit` (#13), `logs` (#20),
-//! `export` (#28) and `rollback` (§8).
+//! `job_state` (#9, #46), `run_log` and `run_index` (#23, #44), `audit` (#13), `logs` (#20),
+//! `export` (#28) and the rest of `rollback` (§8).
 
 pub mod atomic;
 pub mod claude_settings;
@@ -24,6 +27,10 @@ mod error;
 pub mod layout;
 pub mod lock;
 pub mod pid;
+mod preserve;
+pub mod rollback;
+pub mod run_registry;
+pub mod sessions;
 pub mod settings;
 
 pub use atomic::{DirMode, FileMode, write_atomic};
@@ -31,4 +38,7 @@ pub use error::StoreError;
 pub use layout::{ApiEndpoint, Layout, RuntimeEnv};
 pub use lock::{DaemonLock, Holder, HolderRole, LockError, LockProbe, LockWait};
 pub use pid::{PidCheck, PidError};
+pub use rollback::session_mirror::{Adoption, SessionMirror};
+pub use run_registry::{RunRegistryError, RunRegistryFile};
+pub use sessions::{SessionEntry, SessionStore, SessionsError, TsKey, TsSession};
 pub use settings::{Secrets, SettingsFile, SettingsRead};
