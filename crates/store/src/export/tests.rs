@@ -959,6 +959,8 @@ fn the_summary_stays_under_two_kib() {
 fn a_home_path_with_spaces_is_scrubbed_whole_and_project_paths_are_kept() {
     let f = fixture();
     let home = f._dir.path().to_string_lossy().into_owned();
+    // The project dir as the OS spells it (`<home>\proj` on Windows).
+    let project = f.layout.project_dir().to_string_lossy().into_owned();
     append_worker(
         &f,
         &[log_line(
@@ -968,7 +970,7 @@ fn a_home_path_with_spaces_is_scrubbed_whole_and_project_paths_are_kept() {
             "job.invalid",
             &format!(
                 "open {home}/Mobile Documents/AcmeCorp/plan.md was denied; \
-                 see {home}/proj/agents/zed/jobs/y.md"
+                 see {project}/agents/zed/jobs/y.md"
             ),
             json!({}),
         )],
