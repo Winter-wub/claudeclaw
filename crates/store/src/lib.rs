@@ -12,6 +12,12 @@
 //! - [`claude_settings`]: the single-key `statusLine` patch of `.claude/settings.json` (#24);
 //! - [`lock`] and [`pid`]: `daemon.lock`, its holder record and probe, and `daemon.pid`
 //!   (#9, #14 rule 10, #20, #22, #45).
+//! - [`run_log`] and [`run_index`]: Run logs in the TS pattern and the Run index, with its
+//!   Back-fill and month compaction (#14 rule 5, #23, #44);
+//! - [`job_state`]: `daemon/state/jobs.json` (#9, #46), merged with TS Run logs on every start
+//!   by [`rollback::job_state_merge`] (#14 rule 6, #17);
+//! - [`audit`]: the append-only audit log (#13);
+//! - [`rollback`]: the cutover-only rules (§8).
 //!
 //! Still to come, each as its own module beside these (§4): `scan` (the Change scan, #46),
 //! `sessions` (the (Scope, Launcher) store and the TS mirror), `job_state` (#9, #46),
@@ -19,16 +25,30 @@
 //! `export` (#28) and `rollback` (§8).
 
 pub mod atomic;
+pub mod audit;
 pub mod claude_settings;
 mod error;
+pub mod job_state;
+mod jsonl;
 pub mod layout;
 pub mod lock;
 pub mod pid;
+pub mod rollback;
+pub mod run_index;
+pub mod run_log;
 pub mod settings;
 
 pub use atomic::{DirMode, FileMode, write_atomic};
+pub use audit::{AuditError, AuditLog, AuditLogPage, PruneReport};
 pub use error::StoreError;
+pub use job_state::{JobRecord, JobResult, JobState, JobStateError};
 pub use layout::{ApiEndpoint, Layout, RuntimeEnv};
 pub use lock::{DaemonLock, Holder, HolderRole, LockError, LockProbe, LockWait};
 pub use pid::{PidCheck, PidError};
+pub use rollback::job_state_merge::MergeReport;
+pub use run_index::{BackfillReport, CompactReport, RunIndex, RunIndexError, RunIndexPage};
+pub use run_log::{
+    KnownSecret, RunLog, RunLogBody, RunLogError, RunLogFile, RunLogHeader, RunLogListing,
+    RunSection,
+};
 pub use settings::{Secrets, SettingsFile, SettingsRead};
