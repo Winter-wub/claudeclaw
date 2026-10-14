@@ -7,3 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+
+[dependencies]
+chrono.workspace = true
+croner.workspace = true
+serde.workspace = true
+serde-saphyr.workspace = true
+thiserror.workspace = true
