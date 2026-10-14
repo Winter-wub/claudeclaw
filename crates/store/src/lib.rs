@@ -22,18 +22,20 @@
 //! - [`sessions`]: the (Scope, Launcher) store in `daemon/state/sessions.json` and the TS session
 //!   files, fallback sessions and backups (#8, #12 §6, #32, #33, #39, #44);
 //! - [`run_registry`]: the Run registry `daemon/state/runs.json` (#22, #29, #37);
-//! - [`rollback::session_mirror`]: rule 7's TS mirror of each Scope's session (§8, #14).
-//!
-//! Still to come, each as its own module beside these (§4): `logs` (#20) and `export` (#28).
+//! - [`rollback::session_mirror`]: rule 7's TS mirror of each Scope's session (§8, #14);
+//! - [`logs`]: reading the Daemon log back as `api::LogEntry`, for `logs --offline` (#20, #23);
+//! - [`export`]: the Bug-report export, scrubbed with Pseudonyms and failing closed (#28, #69).
 
 pub mod atomic;
 pub mod audit;
 pub mod claude_settings;
 mod error;
+pub mod export;
 pub mod job_state;
 mod jsonl;
 pub mod layout;
 pub mod lock;
+pub mod logs;
 pub mod pid;
 mod preserve;
 pub mod rollback;

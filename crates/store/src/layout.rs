@@ -405,6 +405,13 @@ impl Layout {
         self.fallback_sessions_dir()
             .join(format!("{encoded_key}.json"))
     }
+
+    /// `daemon/logs/<process>.<YYYY-MM-DD>.jsonl`: one day of the `worker` or `watchdog` Daemon
+    /// log (#23 D2).
+    pub fn daemon_log(&self, process: &str, date: &str) -> PathBuf {
+        self.daemon_logs_dir()
+            .join(format!("{process}.{date}.jsonl"))
+    }
 }
 
 /// Where the local Management API listens (§9.3).
