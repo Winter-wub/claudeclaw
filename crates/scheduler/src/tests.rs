@@ -57,11 +57,17 @@ struct Run {
 
 impl Run {
     fn finish(self, ok: bool) {
+        self.finish_restoring(ok, None);
+    }
+
+    /// Ends the run as `core` does after its frontmatter guard restored the file (#46 D6).
+    fn finish_restoring(self, ok: bool, restored: Option<JobChange>) {
         let result = result(if ok { "ok" } else { "failed" });
         let _ = self.end.send(JobRunEnd::Finished {
             started_at: self.started_at,
             result,
             ok,
+            restored,
         });
     }
 }
@@ -84,7 +90,10 @@ impl Dispatch for FakeDispatch {
             end,
         });
         // A run the test drops was killed by a shutdown.
-        rx.await.unwrap_or(JobRunEnd::Interrupted { started_at })
+        rx.await.unwrap_or(JobRunEnd::Interrupted {
+            started_at,
+            restored: None,
+        })
     }
 
     async fn heartbeat(&self) {
@@ -267,6 +276,14 @@ impl Harness {
             .unwrap()
     }
 
+    /// The next One-shot finish `core` was asked for, failing instead of waiting forever.
+    async fn next_finish(&mut self) -> String {
+        timeout(Duration::from_secs(3600), self.finishes.recv())
+            .await
+            .expect("no one-shot finish")
+            .unwrap()
+    }
+
     async fn no_run_for(&mut self, d: Duration) {
         if let Ok(run) = timeout(d, self.runs.recv()).await {
             panic!("unexpected run {:?}", run.map(|r| r.fire));
@@ -284,24 +301,25 @@ impl Harness {
         (JobState::load(&self.layout).unwrap(), self._dir)
     }
 
-    fn saved(&self) -> JobState {
-        JobState::load(&self.layout).unwrap()
+    /// The scheduler's job state, as it saves it. Read through the scheduler, never from
+    /// `jobs.json` while it may be renamed over: Windows refuses that rename. Persistence itself
+    /// is checked by [`Harness::stop`], which reads the file once the task has ended.
+    async fn saved(&self) -> JobState {
+        self.handle.snapshot().await
     }
 
-    /// `jobs.json` once it satisfies `done`: saves run on the blocking pool, outside paused
-    /// time.
+    /// The job state once it satisfies `done`; runs end on other tasks.
     async fn saved_until(&self, done: impl Fn(&JobState) -> bool) -> JobState {
         for _ in 0..1000 {
-            let state = self.saved();
+            let state = self.saved().await;
             if done(&state) {
                 return state;
             }
             tokio::task::yield_now().await;
-            std::thread::sleep(Duration::from_millis(1));
         }
         panic!(
-            "jobs.json never reached the expected state: {:?}",
-            self.saved()
+            "job state never reached the expected state: {:?}",
+            self.saved().await
         );
     }
 }
@@ -326,7 +344,7 @@ async fn fires_at_the_next_slot_and_again_a_day_later() {
     assert_eq!(run.fire.name, "daily");
     assert_eq!(run.fire.scheduled_for, at(9, 0));
     assert_eq!(run.fire.trigger, Trigger::Scheduled);
-    let state = h.saved();
+    let state = h.saved().await;
     assert_eq!(state.jobs["daily"].in_flight_since, Some(at(9, 0)));
     run.finish(true);
 
@@ -423,7 +441,7 @@ async fn one_shot_grace_runs_a_just_missed_slot() {
     assert_eq!(run.fire.scheduled_for, at(9, 55));
     assert_eq!(h.now(), at(10, 0));
     run.finish(true);
-    assert_eq!(h.finishes.recv().await.unwrap(), "soon");
+    assert_eq!(h.next_finish().await, "soon");
     // "too-late" passed 15 min before it took effect: next year's slot is the first.
     h.no_run_for(Duration::from_secs(48 * 3600)).await;
 }
@@ -579,7 +597,7 @@ async fn one_shot_finishes_once_no_retry_is_pending() {
     assert_eq!(retry.fire.trigger, Trigger::Retry);
     assert!(h.finishes.try_recv().is_err());
     retry.finish(false);
-    assert_eq!(h.finishes.recv().await.unwrap(), "once");
+    assert_eq!(h.next_finish().await, "once");
 
     // The finish's own write (`enabled: false`) arrives like any change.
     let done = job_text(
@@ -603,7 +621,7 @@ async fn run_now_is_never_the_one_shot_finish() {
     let run = h.next_run().await;
     assert_eq!(run.fire.scheduled_for, at(9, 0));
     run.finish(true);
-    assert_eq!(h.finishes.recv().await.unwrap(), "once");
+    assert_eq!(h.next_finish().await, "once");
 }
 
 // --- Interrupted runs ------------------------------------------------------------------------
@@ -821,4 +839,211 @@ fn scan_changes_convert() {
     assert_eq!(name, "daily");
     assert!(file.is_valid());
     assert_eq!(revision.as_ref().map(String::len), Some(16));
+}
+
+// --- Review of PR #91: regressions -----------------------------------------------------------
+
+/// Review 1, #46 D6: the guard's restore and the end of the run are one step. A `* * * * *` edit
+/// made mid-run and reverted by the guard never fires, even if `core` also sends the restore
+/// through `apply` after the run ends.
+#[tokio::test(start_paused = true)]
+async fn the_guard_restore_is_applied_with_the_release() {
+    let mut h = Start::at(at(8, 59)).spawn();
+    h.apply(vec![updated("daily", &daily(""), at(0, 0))]).await;
+    let run = h.next_run().await;
+    assert_eq!(run.fire.scheduled_for, at(9, 0));
+
+    tokio::time::sleep(Duration::from_secs(120)).await;
+    let every_minute = job_text("* * * * *", "recurring: true\n");
+    h.apply(vec![updated("daily", &every_minute, at(9, 2))])
+        .await;
+    tokio::time::sleep(Duration::from_secs(150)).await;
+    assert_eq!(h.now(), at(9, 4) + chrono::Duration::seconds(30));
+
+    let restore = updated("daily", &daily(""), h.now());
+    run.finish_restoring(true, Some(restore.clone()));
+    // The run's end is handled before `core`'s own `apply` of the restore arrives.
+    settle().await;
+    h.apply(vec![restore]).await;
+    h.no_run_for(Duration::from_secs(3600)).await;
+    let run = h.next_run().await;
+    assert_eq!(run.fire.scheduled_for, at(9, 0) + days(1));
+}
+
+/// Review 2, #12 §3: a Run now's retry doesn't finish a One-shot job; its scheduled slot does.
+#[tokio::test(start_paused = true)]
+async fn a_run_now_retry_never_finishes_a_one_shot() {
+    let mut h = Start::at(at(8, 0)).spawn();
+    let text = job_text("0 9 2 3 *", "recurring: false\nretry: 1\nretry_delay: 60\n");
+    h.apply(vec![updated("once", &text, at(0, 0))]).await;
+    assert_eq!(h.handle.run_now("once").await, RunNow::Started);
+    h.next_run().await.finish(false);
+    let retry = h.next_run().await;
+    assert_eq!(retry.fire.trigger, Trigger::Retry);
+    assert_eq!(h.now(), at(8, 1));
+    retry.finish(false);
+    h.saved_until(|s| {
+        s.jobs["once"].in_flight_since.is_none() && s.jobs["once"].retry_at.is_none()
+    })
+    .await;
+    settle().await;
+    assert!(
+        h.finishes.try_recv().is_err(),
+        "a Run now chain never finishes"
+    );
+
+    let run = h.next_run().await;
+    assert_eq!(run.fire.trigger, Trigger::Scheduled);
+    run.finish(true);
+    assert_eq!(h.next_finish().await, "once");
+}
+
+/// Review 2, #12 §3: an interrupted Run now, re-run by the next Worker, doesn't finish a
+/// One-shot job either; the chain's origin is persisted.
+#[tokio::test(start_paused = true)]
+async fn an_interrupted_run_now_re_run_never_finishes_a_one_shot() {
+    let mut h = Start::at(at(8, 0)).spawn();
+    let text = job_text("0 9 2 3 *", "recurring: false\n");
+    h.apply(vec![updated("once", &text, at(0, 0))]).await;
+    assert_eq!(h.handle.run_now("once").await, RunNow::Started);
+    let run = h.next_run().await;
+    h.cancel.cancel();
+    settle().await;
+    drop(run); // core's shutdown killed it
+    let (state, dir) = h.stop().await;
+    assert!(state.jobs["once"].run_now);
+    assert_eq!(state.jobs["once"].interrupted_at, Some(at(8, 0)));
+
+    let mut start = Start::at(at(8, 5));
+    start.state = state;
+    start.dir = dir;
+    let mut h = start.spawn();
+    h.apply(vec![updated("once", &text, at(0, 0))]).await;
+    let rerun = h.next_run().await;
+    assert_eq!(rerun.fire.trigger, Trigger::Interrupted);
+    rerun.finish(true);
+    h.saved_until(|s| s.jobs["once"].in_flight_since.is_none())
+        .await;
+    settle().await;
+    assert!(h.finishes.try_recv().is_err());
+
+    let run = h.next_run().await;
+    assert_eq!(run.fire.scheduled_for, at(9, 0));
+    run.finish(true);
+    assert_eq!(h.next_finish().await, "once");
+}
+
+/// Review 3, #9: a slot skipped in flight is never replayed by catch-up after a restart.
+#[tokio::test(start_paused = true)]
+async fn a_skipped_slot_is_not_replayed_after_a_restart() {
+    let mut h = Start::at(at(8, 59)).spawn();
+    let half_hourly = job_text("0,30 * * * *", "recurring: true\n");
+    // Created at 08:45, so 08:30 is not caught up (#50).
+    h.apply(vec![updated("half", &half_hourly, at(8, 45))])
+        .await;
+    let run = h.next_run().await;
+    assert_eq!(run.fire.scheduled_for, at(9, 0));
+    // The run lasts 45 min: 09:30 is skipped in flight.
+    h.no_run_for(Duration::from_secs(45 * 60)).await;
+    run.finish(true);
+    let state = h
+        .saved_until(|s| s.jobs["half"].in_flight_since.is_none())
+        .await;
+    assert_eq!(state.jobs["half"].slot_handled_through, Some(at(9, 30)));
+    let (state, dir) = h.stop().await;
+    assert_eq!(state.jobs["half"].slot_handled_through, Some(at(9, 30)));
+
+    let mut start = Start::at(at(9, 50));
+    start.state = state;
+    start.dir = dir;
+    let mut h = start.spawn();
+    h.apply(vec![updated("half", &half_hourly, at(0, 0))]).await;
+    let run = h.next_run().await;
+    assert_eq!(run.fire.scheduled_for, at(10, 0), "09:30 is not caught up");
+    assert_eq!(run.fire.trigger, Trigger::Scheduled);
+}
+
+/// Review 4, #50: a body edit or `touch` while the Daemon was down keeps the recorded
+/// took-effect time, so the slot missed while down is still caught up.
+#[tokio::test(start_paused = true)]
+async fn a_touch_while_down_keeps_catch_up() {
+    let text = daily("");
+    let key = crate::scheduler::schedule_key(&JobFile::parse(text.as_bytes()));
+    let mut start = Start::at(at(11, 0));
+    let rec = start.state.entry("daily");
+    rec.last_started_at = Some(at(9, 0) - days(1));
+    rec.schedule_key = Some(key);
+    rec.schedule_took_effect = Some(at(0, 0) - days(7));
+    let mut h = start.spawn();
+    // The startup pass reports the file's mtime: touched at 10:30 while the Daemon was down.
+    let touched = text.replace("Do the thing.", "Do the thing, edited.");
+    h.apply(vec![updated("daily", &touched, at(10, 30))]).await;
+    let run = h.next_run().await;
+    assert_eq!(run.fire.scheduled_for, at(9, 0));
+    assert_eq!(run.fire.trigger, Trigger::CatchUp);
+    let state = h.saved().await;
+    assert_eq!(
+        state.jobs["daily"].schedule_took_effect,
+        Some(at(0, 0) - days(7))
+    );
+}
+
+/// Review 4, #50: a schedule edit while the Daemon was down still takes effect at the mtime.
+#[tokio::test(start_paused = true)]
+async fn a_schedule_edit_while_down_moves_the_cut_off() {
+    let old = job_text("0 8 * * *", "recurring: true\n");
+    let key = crate::scheduler::schedule_key(&JobFile::parse(old.as_bytes()));
+    let mut start = Start::at(at(11, 0));
+    let rec = start.state.entry("daily");
+    rec.last_started_at = Some(at(8, 0) - days(1));
+    rec.schedule_key = Some(key);
+    rec.schedule_took_effect = Some(at(0, 0) - days(7));
+    let mut h = start.spawn();
+    h.apply(vec![updated("daily", &daily(""), at(10, 30))])
+        .await;
+    let run = h.next_run().await;
+    assert_eq!(run.fire.scheduled_for, at(9, 0) + days(1));
+    assert_eq!(
+        h.saved().await.jobs["daily"].schedule_took_effect,
+        Some(at(10, 30))
+    );
+}
+
+/// Review 5, #12 §3: a One-shot job whose pending retry or re-run is dropped as older than 6 h
+/// has ended with nothing pending, so it is finished; a Run now chain is not.
+#[tokio::test(start_paused = true)]
+async fn a_one_shot_whose_retry_or_re_run_is_dropped_is_finished() {
+    let text = job_text("0 9 2 3 *", "recurring: false\nretry: 1\n");
+    let late = at(15, 10);
+    let mut start = Start::at(late);
+    let retry = start.state.entry("retry");
+    retry.last_started_at = Some(at(9, 0));
+    retry.retry_at = Some(at(9, 5));
+    retry.fail_count = 1;
+    let rerun = start.state.entry("rerun");
+    rerun.last_started_at = Some(at(9, 0));
+    rerun.interrupted_at = Some(at(9, 0));
+    let manual = start.state.entry("manual");
+    manual.last_started_at = Some(at(9, 0));
+    manual.retry_at = Some(at(9, 5));
+    manual.fail_count = 1;
+    manual.run_now = true;
+    let mut h = start.spawn();
+    h.apply(vec![
+        updated("retry", &text, at(0, 0)),
+        updated("rerun", &text, at(0, 0)),
+        updated("manual", &text, at(0, 0)),
+    ])
+    .await;
+    let mut finished = vec![h.next_finish().await, h.next_finish().await];
+    finished.sort();
+    assert_eq!(finished, ["rerun", "retry"]);
+    h.no_run_for(Duration::from_secs(3600)).await;
+    assert!(
+        h.finishes.try_recv().is_err(),
+        "a Run now chain is not finished"
+    );
+    let state = h.saved().await;
+    assert_eq!(state.jobs["retry"].retry_at, None);
+    assert_eq!(state.jobs["rerun"].interrupted_at, None);
 }

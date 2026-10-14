@@ -342,6 +342,32 @@ mod tests {
         );
     }
 
+    /// The scheduler's fields (PR #91) survive a merge, also when a TS log wins.
+    #[test]
+    fn a_merge_keeps_the_scheduler_fields() {
+        let (_dir, layout) = layout();
+        ts_log(&layout, "daily", "2026-10-13T09:00:00Z", "Exit code: 0\n");
+        let listing = RunLogListing::scan(&layout).unwrap();
+        let mut state = JobState::default();
+        let daily = state.entry("daily");
+        daily.last_started_at = Some(at("2026-10-12T09:00:00Z"));
+        daily.slot_handled_through = Some(at("2026-10-12T09:30:00Z"));
+        daily.run_now = true;
+        daily.schedule_key = Some("key".into());
+        daily.schedule_took_effect = Some(at("2026-10-01T00:00:00Z"));
+        let before = daily.clone();
+        let report = state
+            .merge_logs(&listing, ["daily"], at("2026-10-14T00:00:00Z"))
+            .unwrap();
+        assert_eq!(report.from_logs, ["daily"]);
+        let daily = state.get("daily").unwrap();
+        assert_eq!(daily.last_started_at, Some(at("2026-10-13T09:00:00Z")));
+        assert_eq!(daily.slot_handled_through, before.slot_handled_through);
+        assert_eq!(daily.run_now, before.run_now);
+        assert_eq!(daily.schedule_key, before.schedule_key);
+        assert_eq!(daily.schedule_took_effect, before.schedule_took_effect);
+    }
+
     #[test]
     fn a_log_from_the_future_is_ignored_and_reported() {
         let (_dir, layout) = layout();

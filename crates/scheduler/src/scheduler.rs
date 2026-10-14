@@ -71,6 +71,10 @@ enum Command {
     Apply(Vec<JobChange>),
     Forget(String),
     RunNow(String, oneshot::Sender<RunNow>),
+    /// The job state as the scheduler holds it, for tests that must not read `jobs.json` while
+    /// it is being renamed over (Windows refuses the rename).
+    #[cfg(test)]
+    Snapshot(oneshot::Sender<JobState>),
 }
 
 impl SchedulerHandle {
@@ -109,6 +113,13 @@ impl SchedulerHandle {
         }
         rx.await.unwrap_or(RunNow::Stopping)
     }
+
+    #[cfg(test)]
+    pub(crate) async fn snapshot(&self) -> JobState {
+        let (reply, rx) = oneshot::channel();
+        let _ = self.tx.send(Command::Snapshot(reply)).await;
+        rx.await.expect("the scheduler is running")
+    }
 }
 
 /// A loaded job.
@@ -118,13 +129,14 @@ struct JobEntry {
     took_effect: DateTime<Utc>,
 }
 
-/// What decides whether a change re-sets `took_effect`: a body-only edit doesn't.
-type Identity<'a> = (Option<&'a str>, Option<bool>, bool, bool);
-
-fn identity(file: &JobFile) -> Identity<'_> {
+/// The frontmatter that decides timing: an edit that changes it re-sets the took-effect time
+/// (#50), a body-only edit or a `touch` doesn't. Persisted as `JobRecord::schedule_key`, so this
+/// also holds across a Daemon restart.
+pub(crate) fn schedule_key(file: &JobFile) -> String {
     let f = file.fields();
-    (
-        f.schedule.as_ref().map(|s| s.as_str()),
+    format!(
+        "{}|{:?}|{}|{}",
+        f.schedule.as_ref().map_or("", |s| s.as_str()),
         f.recurring,
         f.is_enabled(),
         file.is_valid(),
@@ -151,7 +163,6 @@ struct InFlight {
     /// The settings the run started with: retries and the finish follow them (TS
     /// `src/commands/start.ts:916-970` captures `job` at fire time).
     fields: JobFields,
-    trigger: Trigger,
     finishing: bool,
     /// The latest change that arrived meanwhile (#46 D6).
     held: Option<Held>,
@@ -165,7 +176,7 @@ enum Held {
 enum Done {
     Run {
         name: String,
-        end: JobRunEnd,
+        end: Box<JobRunEnd>,
     },
     Finish {
         name: String,
@@ -199,8 +210,6 @@ pub struct Scheduler<D: Dispatch> {
     done_tx: mpsc::UnboundedSender<Done>,
     done_rx: mpsc::UnboundedReceiver<Done>,
     jobs: BTreeMap<String, JobEntry>,
-    /// The latest slot this Worker fired or skipped, per job.
-    handled: BTreeMap<String, DateTime<Utc>>,
     in_flight: BTreeMap<String, InFlight>,
     next_heartbeat: Option<DateTime<Utc>>,
     tracker: TaskTracker,
@@ -248,7 +257,6 @@ impl<D: Dispatch> Scheduler<D> {
             done_tx,
             done_rx,
             jobs: BTreeMap::new(),
-            handled: BTreeMap::new(),
             in_flight: BTreeMap::new(),
             next_heartbeat: None,
             tracker: TaskTracker::new(),
@@ -408,7 +416,7 @@ impl<D: Dispatch> Scheduler<D> {
         let rec = self.state.get(name);
         let covered = rec
             .and_then(|r| r.last_started_at)
-            .max(self.handled.get(name).copied());
+            .max(rec.and_then(|r| r.slot_handled_through));
         let slot = entry
             .rule(covered)
             .and_then(|rule| rule.due(now, self.settings.offset));
@@ -420,7 +428,8 @@ impl<D: Dispatch> Scheduler<D> {
             if let Some(slot) = slot {
                 let _span = job_span(name).entered();
                 tracing::info!(event = "job.skip", reason = "in_flight", "slot skipped");
-                self.handled.insert(name.to_owned(), slot);
+                drop(_span);
+                self.consume(name, Some(slot));
             }
             return;
         }
@@ -430,12 +439,15 @@ impl<D: Dispatch> Scheduler<D> {
             if now - at > window {
                 tracing::info!(job = %name, "a pending retry is older than 6 h; dropped");
                 self.clear_retry(name);
+                if self.ends_one_shot(name) {
+                    return;
+                }
             } else if !enabled {
                 let _span = job_span(name).entered();
                 tracing::info!(event = "job.skip", reason = "disabled", "retry skipped");
                 self.clear_retry(name);
             } else if !limited {
-                self.consume(name, slot);
+                self.cover(name, slot);
                 self.fire(name, Trigger::Retry, at, now);
                 return;
             }
@@ -447,13 +459,16 @@ impl<D: Dispatch> Scheduler<D> {
                 tracing::info!(job = %name, "an interrupted run is older than 6 h; not re-run");
                 self.state.entry(name).interrupted_at = None;
                 self.dirty = true;
+                if self.ends_one_shot(name) {
+                    return;
+                }
             } else if !enabled {
                 let _span = job_span(name).entered();
                 tracing::info!(event = "job.skip", reason = "disabled", "re-run skipped");
                 self.state.entry(name).interrupted_at = None;
                 self.dirty = true;
             } else if !limited {
-                self.consume(name, slot);
+                self.cover(name, slot);
                 self.fire(name, Trigger::Interrupted, at, now);
                 return;
             }
@@ -480,10 +495,59 @@ impl<D: Dispatch> Scheduler<D> {
         }
     }
 
+    /// Records `slot` as decided (fired or skipped) in job state, so catch-up never replays it,
+    /// not even after a restart (#9).
     fn consume(&mut self, name: &str, slot: Option<DateTime<Utc>>) {
         if let Some(slot) = slot {
-            self.handled.insert(name.to_owned(), slot);
+            let rec = self.state.entry(name);
+            rec.slot_handled_through = rec.slot_handled_through.max(Some(slot));
+            self.dirty = true;
         }
+    }
+
+    /// A retry or re-run that also covers a due slot becomes that slot's run, so it no longer
+    /// continues a Run now (#12 §3).
+    fn cover(&mut self, name: &str, slot: Option<DateTime<Utc>>) {
+        if slot.is_some() {
+            self.state.entry(name).run_now = false;
+        }
+        self.consume(name, slot);
+    }
+
+    /// When a One-shot job's pending retry or re-run is dropped, its chain has ended with nothing
+    /// pending, so it is finished like a run that ended (#12 §3). Not for a Run now chain, nor
+    /// while another retry or re-run is still pending. Returns whether the finish started.
+    fn ends_one_shot(&mut self, name: &str) -> bool {
+        let Some(entry) = self.jobs.get(name) else {
+            return false;
+        };
+        let fields = entry.file.fields().clone();
+        let rec = self.state.entry(name);
+        let pending = rec.retry_at.is_some() || rec.interrupted_at.is_some();
+        if !fields.is_one_shot() || !fields.is_enabled() || rec.run_now || pending {
+            return false;
+        }
+        self.in_flight.insert(
+            name.to_owned(),
+            InFlight {
+                fields,
+                finishing: true,
+                held: None,
+            },
+        );
+        self.start_finish(name);
+        true
+    }
+
+    /// Hands the One-shot finish to `core`; the job stays in flight until it returns.
+    fn start_finish(&mut self, name: &str) {
+        let dispatch = self.dispatch.clone();
+        let done = self.done_tx.clone();
+        let name = name.to_owned();
+        self.tracker.spawn(async move {
+            let outcome = dispatch.finish_one_shot(name.clone()).await;
+            let _ = done.send(Done::Finish { name, outcome });
+        });
     }
 
     fn clear_retry(&mut self, name: &str) {
@@ -509,10 +573,17 @@ impl<D: Dispatch> Scheduler<D> {
         let rec = self.state.entry(name);
         rec.in_flight_since = Some(now);
         rec.last_started_at = Some(now);
+        // #12 §3: only a scheduled slot's chain (its run, retries and re-run) finishes a
+        // One-shot job. A Run now while that chain has a retry or re-run pending continues it.
         match trigger {
             Trigger::Retry => rec.retry_at = None,
             Trigger::Interrupted => rec.interrupted_at = None,
-            _ => {}
+            Trigger::Scheduled | Trigger::CatchUp => rec.run_now = false,
+            Trigger::RunNow => {
+                if rec.retry_at.is_none() && rec.interrupted_at.is_none() {
+                    rec.run_now = true;
+                }
+            }
         }
         self.dirty = true;
         {
@@ -530,7 +601,6 @@ impl<D: Dispatch> Scheduler<D> {
             name.to_owned(),
             InFlight {
                 fields: file.fields().clone(),
-                trigger,
                 finishing: false,
                 held: None,
             },
@@ -551,14 +621,17 @@ impl<D: Dispatch> Scheduler<D> {
             self.tracker.spawn(async move {
                 let name = fire.name.clone();
                 let end = dispatch.run_job(fire).await;
-                let _ = done.send(Done::Run { name, end });
+                let _ = done.send(Done::Run {
+                    name,
+                    end: Box::new(end),
+                });
             });
         }
     }
 
     fn on_done(&mut self, done: Done) {
         match done {
-            Done::Run { name, end } => self.on_run_end(&name, end),
+            Done::Run { name, end } => self.on_run_end(&name, *end),
             Done::Finish { name, outcome } => {
                 let _span = job_span(&name).entered();
                 match outcome {
@@ -584,19 +657,24 @@ impl<D: Dispatch> Scheduler<D> {
         let rec = self.state.entry(name);
         rec.in_flight_since = None;
         self.dirty = true;
-        match end {
-            JobRunEnd::Interrupted { started_at } => {
+        let _span = job_span(name).entered();
+        let (finished, restored) = match end {
+            JobRunEnd::Interrupted {
+                started_at,
+                restored,
+            } => {
                 rec.last_started_at = Some(started_at);
                 rec.interrupted_at = Some(started_at);
+                (false, restored)
             }
             JobRunEnd::Finished {
                 started_at,
                 result,
                 ok,
+                restored,
             } => {
                 rec.last_started_at = Some(started_at);
                 rec.last_result = Some(result);
-                let _span = job_span(name).entered();
                 // TS `runJob` (`src/commands/start.ts:940-957`), with the state persisted (#9).
                 if ok {
                     rec.fail_count = 0;
@@ -620,25 +698,24 @@ impl<D: Dispatch> Scheduler<D> {
                         );
                     }
                 }
-                // #12 §3: a One-shot job ends with no retry pending, so it is finished. TS
-                // `src/commands/start.ts:962-971`.
-                let finish = flight.fields.is_one_shot()
-                    && rec.retry_at.is_none()
-                    && flight.trigger != Trigger::RunNow;
-                if finish {
-                    flight.finishing = true;
-                    let dispatch = self.dispatch.clone();
-                    let done = self.done_tx.clone();
-                    let name = name.to_owned();
-                    self.tracker.spawn(async move {
-                        let outcome = dispatch.finish_one_shot(name.clone()).await;
-                        let _ = done.send(Done::Finish { name, outcome });
-                    });
-                    return;
-                }
+                (true, restored)
             }
+        };
+        // #46 D6: the guard's restore is the job's one change, applied with the release.
+        if let Some(restored) = restored {
+            flight.held = Some(Held::Change(restored));
         }
-        self.release(name);
+        // #12 §3: a One-shot job whose scheduled chain ends with no retry pending is finished.
+        // TS `src/commands/start.ts:962-971`.
+        let finish =
+            finished && flight.fields.is_one_shot() && rec.retry_at.is_none() && !rec.run_now;
+        drop(_span);
+        if finish {
+            flight.finishing = true;
+            self.start_finish(name);
+        } else {
+            self.release(name);
+        }
     }
 
     /// The run is over: apply what was held back (#46 D6).
@@ -664,6 +741,10 @@ impl<D: Dispatch> Scheduler<D> {
             },
             Command::RunNow(name, reply) => {
                 let _ = reply.send(self.run_now(&name, now));
+            }
+            #[cfg(test)]
+            Command::Snapshot(reply) => {
+                let _ = reply.send(self.state.clone());
             }
         }
     }
@@ -727,6 +808,14 @@ impl<D: Dispatch> Scheduler<D> {
             }
             dst.last_started_at = src.last_started_at;
             dst.last_result = src.last_result;
+            dst.slot_handled_through = src.slot_handled_through;
+            dst.schedule_key = src.schedule_key;
+            dst.schedule_took_effect = src.schedule_took_effect;
+            if let Some(entry) = self.jobs.get_mut(&to)
+                && let Some(took) = dst.schedule_took_effect
+            {
+                entry.took_effect = took;
+            }
             self.dirty = true;
             tracing::info!(event = "job.state_carried", from = %from, to = %to, "job renamed");
         }
@@ -752,16 +841,20 @@ impl<D: Dispatch> Scheduler<D> {
                 {
                     rec.revision = Some(rev);
                 }
-                self.dirty = true;
-                let took_effect = match self.jobs.get(&name) {
-                    Some(old) if identity(&old.file) == identity(&file) => old.took_effect,
+                // #50: the schedule took effect when its timing frontmatter last changed, as
+                // recorded in job state, so neither a body edit nor a restart moves it.
+                let key = schedule_key(&file);
+                let took_effect = match rec.schedule_took_effect {
+                    Some(took) if rec.schedule_key.as_deref() == Some(key.as_str()) => took,
                     _ => took_effect,
                 };
+                rec.schedule_key = Some(key);
+                rec.schedule_took_effect = Some(took_effect);
+                self.dirty = true;
                 self.jobs.insert(name, JobEntry { file, took_effect });
             }
             JobChange::Removed { name } => {
                 self.jobs.remove(&name);
-                self.handled.remove(&name);
                 // #46 D4: an Orphaned job keeps its state, minus retries and re-runs.
                 if let Some(rec) = self.state.jobs.get_mut(&name) {
                     rec.orphaned_since.get_or_insert(now);
@@ -776,7 +869,6 @@ impl<D: Dispatch> Scheduler<D> {
 
     fn forget(&mut self, name: &str) {
         self.jobs.remove(name);
-        self.handled.remove(name);
         if self.state.remove(name).is_some() {
             self.dirty = true;
         }

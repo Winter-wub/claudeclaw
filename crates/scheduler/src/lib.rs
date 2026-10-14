@@ -11,14 +11,19 @@
 //!   offset, on the wall clock ([`WallClock`]).
 //! - **Catch-up** of the latest missed slot within [`CATCH_UP_WINDOW`] (6 h), only for slots
 //!   after the job's current schedule took effect, less [`ONE_SHOT_GRACE`] for a One-shot job
-//!   (#50). Slots missed while the Daemon was down are caught up the same way: at Worker start
-//!   the Change scan's startup pass reports each file with its mtime as the took-effect time.
+//!   (#50). The took-effect time is kept in job state with the timing frontmatter it belongs to,
+//!   so a body edit or a `touch`, even while the Daemon is down, doesn't move it; slots missed
+//!   while the Daemon was down are caught up. Every slot fired or skipped is recorded
+//!   (`slot_handled_through`), so catch-up never replays a slot already decided.
 //! - **The in-flight guard**: one run per job; a slot that comes due meanwhile is skipped
 //!   (`job.skip {reason: in_flight}`), and changes to the job wait until its run and the
-//!   frontmatter guard are done (#46 D6).
+//!   frontmatter guard are done (#46 D6). The guard's restore comes back in [`JobRunEnd`] and is
+//!   applied in the same step that ends the run.
 //! - **Retries**: `retry` and `retry_delay` as TS ran them, persisted in `jobs.json`.
 //! - **The One-shot finish** (#12 §3), written by `core` through
-//!   [`Dispatch::finish_one_shot`].
+//!   [`Dispatch::finish_one_shot`], once a scheduled slot's chain (its run, retries and re-run)
+//!   ends with nothing pending, including when a pending retry or re-run is dropped as older than
+//!   6 h. A Run now and its retries never finish a One-shot job.
 //! - **Interrupted re-runs**: a run a shutdown interrupted, or that a Reap proved dead
 //!   ([`SchedulerInputs::proven_dead`], #29 D6), re-runs within 6 h.
 //! - **The heartbeat timer**, with exclude windows ([`HeartbeatConfig`]) and the rate-limit

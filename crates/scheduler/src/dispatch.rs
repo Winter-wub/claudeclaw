@@ -9,13 +9,16 @@ use chrono::{DateTime, Utc};
 use claudeclaw_jobs::JobFile;
 use claudeclaw_store::JobResult;
 
+use crate::change::JobChange;
+
 /// What the scheduler calls (architecture §4 `scheduler`, §2 "Async traits": native `async fn`
 /// in traits, static dispatch). `core` implements it over `core::conversations`; an
 /// implementation may write each method as `async fn`.
 pub trait Dispatch: Send + Sync + 'static {
     /// Runs one job and returns once its run has ended **and** the frontmatter guard has run
-    /// (#46 D6): frontmatter changes the scheduler held back for the job are applied right
-    /// after. A Refused run is a [`JobRunEnd::Finished`] with a failed result (#26). During a
+    /// (#46 D6). If the guard restored the frontmatter, its write comes back in the result's
+    /// `restored` and is applied in the same step that ends the run, replacing any change held
+    /// back meanwhile; otherwise the latest held change is applied. A Refused run is a [`JobRunEnd::Finished`] with a failed result (#26). During a
     /// Worker shutdown the run is killed and this returns [`JobRunEnd::Interrupted`] (#9,
     /// architecture §5 "Shutdown" step 4); the scheduler waits for every run it started before
     /// [`Scheduler::run`](crate::Scheduler::run) returns.
@@ -52,7 +55,8 @@ pub enum Trigger {
     Retry,
     /// A re-run of a run that a shutdown interrupted or a Reap proved dead (#9, #29).
     Interrupted,
-    /// Run now, from the Management API or the CLI (#50).
+    /// Run now, from the Management API or the CLI (#50). Its retries and re-run continue it,
+    /// so none of them finishes a One-shot job (#12 §3).
     RunNow,
 }
 
@@ -82,7 +86,12 @@ impl fmt::Debug for JobFire {
 }
 
 /// How a job run ended, as [`Dispatch::run_job`] reports it.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `restored` is the frontmatter guard's restore (#46 D6) when it wrote one: the scheduler
+/// applies it as the job's one change when the run ends, so the edit it reverted is never
+/// scheduled, not even for one check. Sending the same write through
+/// [`SchedulerHandle::apply`](crate::SchedulerHandle::apply) as well is harmless.
+#[derive(Debug, Clone)]
 pub enum JobRunEnd {
     /// The run ended on its own (or was refused).
     Finished {
@@ -93,12 +102,16 @@ pub enum JobRunEnd {
         result: JobResult,
         /// Whether the run succeeded. A failure counts toward the job's `retry`.
         ok: bool,
+        /// The frontmatter guard's restore, if it wrote one.
+        restored: Option<JobChange>,
     },
     /// A Worker shutdown killed the run: it is recorded as interrupted, and catch-up re-runs
     /// it within 6 h (#9).
     Interrupted {
         /// The run's start, as for [`JobRunEnd::Finished`].
         started_at: DateTime<Utc>,
+        /// The frontmatter guard's restore, if it wrote one.
+        restored: Option<JobChange>,
     },
 }
 
