@@ -375,6 +375,24 @@ impl Layout {
         format!(r"\\.\pipe\claudeclaw-{}", self.dir_hash())
     }
 
+    /// `logs/<agent>/` (S): the Run logs of the agent's jobs, named `<agent>/<label>` (#14
+    /// rule 5, #17 §4).
+    pub fn agent_run_logs_dir(&self, agent: &str) -> PathBuf {
+        self.run_logs_dir().join(agent)
+    }
+
+    /// The flat jobs dir for a `jobsDir` setting (#46 D2), as TS resolves it
+    /// (`src/config.ts:22-23`, `:456`): the trimmed value, under the project dir unless it is
+    /// absolute (Node's `path.isAbsolute`, so a rooted `/abs` counts on Windows too). Unset or
+    /// blank gives [`Layout::jobs_dir`].
+    pub fn jobs_dir_for(&self, jobs_dir: Option<&str>) -> PathBuf {
+        match jobs_dir.map(str::trim).filter(|dir| !dir.is_empty()) {
+            Some(dir) if Path::new(dir).is_absolute() || Path::new(dir).has_root() => dir.into(),
+            Some(dir) => self.project.join(dir),
+            None => self.jobs_dir(),
+        }
+    }
+
     /// `daemon/logs/<process>.<YYYY-MM-DD>.jsonl`: one day of the `worker` or `watchdog` Daemon
     /// log (#23 D2).
     pub fn daemon_log(&self, process: &str, date: &str) -> PathBuf {

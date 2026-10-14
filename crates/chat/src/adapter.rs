@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use futures_util::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
-use crate::{AdapterError, ChatHost, NotifyError, Transport};
+use crate::{AdapterError, ChatHost, MessageRef, NotifyError, Transport};
 
 /// A Chat adapter: one transport's connection to the Daemon (architecture §6). The Worker
 /// registers its [`Notifier`] and [`AdapterControl`] with `core`, then runs it as one task.
@@ -36,6 +36,13 @@ pub trait Adapter: Send + 'static {
 pub trait Notifier: Send + Sync {
     /// Sends `msg` to the transport's owners, such as Discord's allowed users by DM.
     fn notify_owners(&self, msg: OwnerNotice) -> BoxFuture<'_, Result<(), NotifyError>>;
+
+    /// Tells the author of `origin` that their Turn was interrupted ("interrupted, please
+    /// resend", #9), as a reply to that message, and removes the adapter's own progress
+    /// reactions from it (#29, #79). `core` calls it at shutdown for queued and running chat
+    /// Turns, and after a crash once the Reap proved the run dead, with the Run registry's
+    /// `origin`. A message that no longer exists is not an error.
+    fn interrupted(&self, origin: MessageRef) -> BoxFuture<'_, Result<(), NotifyError>>;
 }
 
 /// The transport calls behind the Management API's Discord routes (architecture §6, #21,
@@ -180,6 +187,10 @@ mod tests {
         fn notify_owners(&self, _msg: OwnerNotice) -> BoxFuture<'_, Result<(), NotifyError>> {
             Box::pin(async { Err(NotifyError::NoOwners) })
         }
+
+        fn interrupted(&self, _origin: MessageRef) -> BoxFuture<'_, Result<(), NotifyError>> {
+            Box::pin(async { Ok(()) })
+        }
     }
 
     impl AdapterControl for FakeSide {
@@ -242,6 +253,10 @@ mod tests {
             let _ = host.converse(Turn {
                 scope: ChatScope::Direct {
                     transport: Self::TRANSPORT,
+                },
+                origin: MessageRef {
+                    channel: "1".into(),
+                    message: "2".into(),
                 },
                 author: crate::Author {
                     display_name: "a".into(),
