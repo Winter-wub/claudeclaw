@@ -393,6 +393,19 @@ impl Layout {
         }
     }
 
+    /// `agents/<agent>/session_fallback.json` (S): the agent's fallback session
+    /// (`src/sessions.ts:136`).
+    pub fn agent_session_fallback(&self, agent: &str) -> PathBuf {
+        self.agent_dir(agent).join("session_fallback.json")
+    }
+
+    /// `fallback-sessions/<encoded key>.json` (S): one thread's fallback session. The caller
+    /// passes the TS key already `encodeURIComponent`-encoded (`src/sessions.ts:135`).
+    pub fn fallback_session(&self, encoded_key: &str) -> PathBuf {
+        self.fallback_sessions_dir()
+            .join(format!("{encoded_key}.json"))
+    }
+
     /// `daemon/logs/<process>.<YYYY-MM-DD>.jsonl`: one day of the `worker` or `watchdog` Daemon
     /// log (#23 D2).
     pub fn daemon_log(&self, process: &str, date: &str) -> PathBuf {

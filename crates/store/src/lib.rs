@@ -18,12 +18,13 @@
 //! - [`job_state`]: `daemon/state/jobs.json` (#9, #46), merged with TS Run logs on every start
 //!   by [`rollback::job_state_merge`] (#14 rule 6, #17);
 //! - [`audit`]: the append-only audit log (#13);
+//! - [`rollback`]: the cutover-only rules (§8);
+//! - [`sessions`]: the (Scope, Launcher) store in `daemon/state/sessions.json` and the TS session
+//!   files, fallback sessions and backups (#8, #12 §6, #32, #33, #39, #44);
+//! - [`run_registry`]: the Run registry `daemon/state/runs.json` (#22, #29, #37);
+//! - [`rollback::session_mirror`]: rule 7's TS mirror of each Scope's session (§8, #14);
 //! - [`logs`]: reading the Daemon log back as `api::LogEntry`, for `logs --offline` (#20, #23);
-//! - [`export`]: the Bug-report export, scrubbed with Pseudonyms and failing closed (#28, #69);
-//! - [`rollback`]: the cutover-only rules (§8).
-//!
-//! Still to come, each as its own module beside these (§4): `sessions` (the (Scope, Launcher)
-//! store and the TS mirror) and `run_registry` (#29).
+//! - [`export`]: the Bug-report export, scrubbed with Pseudonyms and failing closed (#28, #69).
 
 pub mod atomic;
 pub mod audit;
@@ -36,10 +37,13 @@ pub mod layout;
 pub mod lock;
 pub mod logs;
 pub mod pid;
+mod preserve;
 pub mod rollback;
 pub mod run_index;
 pub mod run_log;
+pub mod run_registry;
 pub mod scan;
+pub mod sessions;
 pub mod settings;
 
 pub use atomic::{DirMode, FileMode, write_atomic};
@@ -50,10 +54,13 @@ pub use layout::{ApiEndpoint, Layout, RuntimeEnv};
 pub use lock::{DaemonLock, Holder, HolderRole, LockError, LockProbe, LockWait};
 pub use pid::{PidCheck, PidError};
 pub use rollback::job_state_merge::MergeReport;
+pub use rollback::session_mirror::{Adoption, SessionMirror};
 pub use run_index::{BackfillReport, CompactReport, RunIndex, RunIndexError, RunIndexPage};
 pub use run_log::{
     KnownSecret, RunLog, RunLogBody, RunLogError, RunLogFile, RunLogHeader, RunLogListing,
     RunSection,
 };
+pub use run_registry::{RunRegistryError, RunRegistryFile};
 pub use scan::{FsView, ScanChange, ScanError, ScanTargets, Scanner, StdFs};
+pub use sessions::{SessionEntry, SessionStore, SessionsError, TsKey, TsSession};
 pub use settings::{Secrets, SettingsFile, SettingsRead};
