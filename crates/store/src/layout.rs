@@ -374,6 +374,13 @@ impl Layout {
     pub fn pipe_name(&self) -> String {
         format!(r"\\.\pipe\claudeclaw-{}", self.dir_hash())
     }
+
+    /// `daemon/logs/<process>.<YYYY-MM-DD>.jsonl`: one day of the `worker` or `watchdog` Daemon
+    /// log (#23 D2).
+    pub fn daemon_log(&self, process: &str, date: &str) -> PathBuf {
+        self.daemon_logs_dir()
+            .join(format!("{process}.{date}.jsonl"))
+    }
 }
 
 /// Where the local Management API listens (§9.3).

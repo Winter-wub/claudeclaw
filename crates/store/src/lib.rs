@@ -11,7 +11,9 @@
 //!   (§7, #14 rules 1–2 and 4, #23);
 //! - [`claude_settings`]: the single-key `statusLine` patch of `.claude/settings.json` (#24);
 //! - [`lock`] and [`pid`]: `daemon.lock`, its holder record and probe, and `daemon.pid`
-//!   (#9, #14 rule 10, #20, #22, #45).
+//!   (#9, #14 rule 10, #20, #22, #45);
+//! - [`logs`]: reading the Daemon log back as `api::LogEntry`, for `logs --offline` (#20, #23);
+//! - [`export`]: the Bug-report export, scrubbed with Pseudonyms and failing closed (#28, #69).
 //!
 //! Still to come, each as its own module beside these (§4): `scan` (the Change scan, #46),
 //! `sessions` (the (Scope, Launcher) store and the TS mirror), `job_state` (#9, #46),
@@ -21,8 +23,10 @@
 pub mod atomic;
 pub mod claude_settings;
 mod error;
+pub mod export;
 pub mod layout;
 pub mod lock;
+pub mod logs;
 pub mod pid;
 pub mod settings;
 
