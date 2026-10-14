@@ -674,20 +674,33 @@ Owner key:
 
 **Logs** (#23). Three logs. **Daemon logs** are content-free tracing JSONL with fixed level meanings, stable `event` names and span correlation; a binary-owned log sink stamps `seq`, reports dropped lines as `log.dropped` (the Worker channel is lossy at 128k lines), and mirrors WARN+ to the Worker's stderr so crash tails show the lead-up (#20). **Run logs** keep the TS layout and may hold content but never secrets. The **audit log** is the third.
 
-Daemon-log event names are stable. Each event is declared with its fields in `log_event::daemon`, and each field needs a `FIELD_CLASSES` entry (§4 `api`, #69). Later tickets added:
-- #27: `worker.stalled` (ERROR), `watchdog.hang_kill_disabled` (WARN);
-- #29: `reap.start`, `run.reaped`, `reap.done`, `reap.orphan_worker`;
-- #32, #33: `session.breaker_open` (WARN), `session.breaker_closed` (INFO), `run.recovery_skipped` (INFO, with its reason), `settings.legacy_key` (WARN); `run.start` / `run.finish` gain `purpose`;
+Daemon-log event names are stable. Each event is declared with its fields in `log_event::daemon`, and each field needs a `FIELD_CLASSES` entry (§4 `api`, #69). Naming rules (#74):
+- Durations are `*_ms`, never seconds.
+- One event name means one thing, written by one process.
+- A name may appear in both the Daemon and the App log only with the same meaning and fields (`log.capped`, `update.available`). The App's local process duties are `local.*` and its pairing events `device_pairing.*`.
+- The sink writes a tracing span's own name as `span.span_name`. `name` is a job name at any depth (`FIELD_CLASSES`). `attempt` is a span field only.
+- A raw stderr line is `text`; `line` is always a line number.
+- An owner notice is named for what the owner sees, and its event for the component that writes it (`launcher_root_moved` vs `session.root_moved`).
+
+Later tickets added:
+- #24: `compat.statusline_migrated`, `compat.state_json_removed`, `compat.statusline_unreadable` (WARN, #74);
+- #25: `run.stdin_write_failed`;
+- #26: `run_path.captured {source, shell, dirs, duration_ms}`, `run_path.changed {added, removed}`, `run_path.capture_failed {kind}`;
+- #27: `worker.stalled {beacon, quiet_ms}` (ERROR), the Watchdog's `watchdog.stall_report {report_seq, waited_ms, workers, alive_tasks, global_queue}` (WARN, #74), `worker.ping_late`, `worker.hung {silence_ms}`, `worker.shutdown_overrun`, `watchdog.hang_kill_disabled` (WARN);
+- #29: `reap.start`, `run.reaped` (`already_gone` and `not_ours` at INFO, #74), `reap.done` with the `ReapCounts` fields, `reap.orphan_worker {waited_ms, killed}`, `reap.leftover_after_stop {count}` (WARN, #74), `reap.registry_unreadable {cause}` (ERROR, #74);
+- #32, #33: `session.breaker_open {limit, consecutive_timeouts, failing_ms}` (WARN), `session.breaker_closed` (INFO), `run.recovery_skipped` (INFO, with its reason and `spent_ms_ago`), `settings.legacy_key {key, replacement}` (WARN, besides the owner notice); `run.start` / `run.finish` gain `purpose`;
 - #36: `logs.prune_incomplete {kept, expected}` (WARN), and a content-free `console` field on `daemon.start`;
 - #37: `run.settle`;
 - #38: `system.resumed`; `run.finish` gains `awake_ms`, `suspended_ms` and `wake_grace`;
 - #39: `transcript.not_found` (INFO), `session.root_moved` (WARN), `usage.baseline_reset` (WARN);
 - #40: `api.client_gone`, and the App log's `log_event::app::*` catalogue;
-- #42: `run.finish` gains `claude_code_version`;
-- #43: `run_locale.chosen` (INFO), `run_locale.not_utf8` (WARN), `run_locale.unavailable` (WARN);
-- #44: `runindex.backfill_start`, `runindex.backfill_done`, `runindex.backfill_failed`, `runindex.unparsed`, `runindex.torn`, `inbox.pruned`, `inbox.over_cap`, `disk.low`, `disk.ok`, `housekeeping.done`, `log.capped{hard}`;
+- #42: `run.finish` gains `claude_code_version`; `runner.cc_version_unparsed`, `runner.claude_code_outdated`;
+- #43: `run_locale.chosen {source, lc_ctype, charmap, verified}` (INFO), `run_locale.not_utf8` (WARN), `run_locale.unavailable` (WARN);
+- #44: `runindex.backfill_start`, `runindex.backfill_done`, `runindex.backfill_failed`, `runindex.unparsed`, `runindex.torn`, `inbox.pruned`, `inbox.over_cap`, `disk.low`, `disk.ok`, `housekeeping.done`, `log.capped{hard}` (`hard` always present, #74);
 - #45: `watchdog.start_held`, `watchdog.give_up_cleared`, `watchdog.exit`, `watchdog.supervisor_unreadable` (WARN);
-- #47: `run.lingered`.
+- #46: `job.file_changed {job, change, source, revision}`, `job.file_unstable {job, unstable_ms}`, `job.frontmatter_restored {job, keys}`, `job.state_carried {from, to}`, `scan.slow {pass_ms, interval_ms}`, `scan.dir_unavailable {dir_kind, errno}`;
+- #47: `run.lingered`;
+- #74: `worker.panic {location}` (ERROR, from the panic hook); `run.refused {reason}`, `discord.disconnected {close_code}`, `api.request` gains `route` (the route template), and `worker.stderr`'s raw line is `text`.
 
 **Retention** (#23, #44). The Daemon deletes only files it wrote, under a rule listed here or in §4 `core::housekeeping`.
 - **Run logs** are kept forever by default (TS parity; the catch-up seed reads them); `logging.runLogKeepDays` is opt-in, and Housekeeping then keeps the newest Run log per name.
@@ -918,3 +931,4 @@ One line per closed ticket on the wayfinder map [#2](https://github.com/Winter-w
 - [#50](https://github.com/Winter-wub/claudeclaw/issues/50) Decide whether a new or rescheduled job catches up a slot that passed before it existed — §4 `scheduler`
 - [#69](https://github.com/Winter-wub/claudeclaw/issues/69) Decide how FIELD_CLASSES covers the App log's fields _(maintainer decision)_ — §4 `claudeclaw-api` (Field class tables, catalogues, CI checks), §9 Logs, §14 Packaging traps
 - [#70](https://github.com/Winter-wub/claudeclaw/issues/70) Decide the one spelling of the clear-give-up value _(maintainer decision)_ — §4 Watchdog status file (`stop.by`, `give_ups[]`); [`management-api.md`](management-api.md) §1.1
+- [#74](https://github.com/Winter-wub/claudeclaw/issues/74) Settle the Daemon log catalogue's unnamed fields and clashes _(maintainer decision)_ — §9.1 Logs

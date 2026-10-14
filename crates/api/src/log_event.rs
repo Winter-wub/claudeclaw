@@ -40,6 +40,8 @@ pub mod app {
     pub const APP_EXIT: &str = "app.exit";
     /// `location`, `payload_bytes`; then the default panic hook runs (#40 D1).
     pub const APP_PANIC: &str = "app.panic";
+    /// `hard`, always `false`: the App log has only the soft cap. The same name and fields as
+    /// the Daemon log's (#74).
     pub const LOG_CAPPED: &str = "log.capped";
 
     // Updater.
@@ -57,11 +59,12 @@ pub mod app {
     /// `daemon`, `from`, `to` (`DaemonReachability`), `class: refused|timeout|dns|tls_pin|revoked`.
     pub const DAEMON_REACHABILITY: &str = "daemon.reachability";
 
-    // Local process duties: `daemon`, `exit_code`, `code`, `duration_ms`.
-    pub const DAEMON_START: &str = "daemon.start";
-    pub const DAEMON_STOP: &str = "daemon.stop";
-    pub const DAEMON_ATTACH: &str = "daemon.attach";
-    pub const DAEMON_RESTART_ANYWAY: &str = "daemon.restart_anyway";
+    // Local process duties: `daemon`, `exit_code`, `code`, `duration_ms`. Named `local.*` so no
+    // name is shared with the Daemon log's `daemon.start` (#74).
+    pub const LOCAL_START: &str = "local.start";
+    pub const LOCAL_STOP: &str = "local.stop";
+    pub const LOCAL_ATTACH: &str = "local.attach";
+    pub const LOCAL_RESTART_ANYWAY: &str = "local.restart_anyway";
 
     // Offline commands.
     /// `command: logs|export|import_dry_run|start|stop`, `exit_code`, `duration_ms`,
@@ -85,11 +88,12 @@ pub mod app {
     /// `daemon`, `family`.
     pub const SSE_CLOSED: &str = "sse.closed";
 
-    // Pairing and keys.
-    pub const PAIRING_STARTED: &str = "pairing.started";
-    pub const PAIRING_COMPLETED: &str = "pairing.completed";
+    // Pairing and keys: `device_pairing.*`, so no name is shared with the Daemon log's
+    // `pairing.*` (#74).
+    pub const DEVICE_PAIRING_STARTED: &str = "device_pairing.started";
+    pub const DEVICE_PAIRING_COMPLETED: &str = "device_pairing.completed";
     /// `kind`.
-    pub const PAIRING_FAILED: &str = "pairing.failed";
+    pub const DEVICE_PAIRING_FAILED: &str = "device_pairing.failed";
     /// `op`, `kind`.
     pub const KEYCHAIN_FAILED: &str = "keychain.failed";
 
@@ -125,7 +129,7 @@ pub mod app {
         },
         EventFields {
             event: LOG_CAPPED,
-            fields: &[],
+            fields: &["hard"],
         },
         EventFields {
             event: UPDATE_CHECKED,
@@ -156,19 +160,19 @@ pub mod app {
             fields: &["daemon", "from", "to", "class"],
         },
         EventFields {
-            event: DAEMON_START,
+            event: LOCAL_START,
             fields: &["daemon", "exit_code", "code", "duration_ms"],
         },
         EventFields {
-            event: DAEMON_STOP,
+            event: LOCAL_STOP,
             fields: &["daemon", "exit_code", "code", "duration_ms"],
         },
         EventFields {
-            event: DAEMON_ATTACH,
+            event: LOCAL_ATTACH,
             fields: &["daemon", "exit_code", "code", "duration_ms"],
         },
         EventFields {
-            event: DAEMON_RESTART_ANYWAY,
+            event: LOCAL_RESTART_ANYWAY,
             fields: &["daemon", "exit_code", "code", "duration_ms"],
         },
         EventFields {
@@ -219,15 +223,15 @@ pub mod app {
             fields: &["daemon", "family"],
         },
         EventFields {
-            event: PAIRING_STARTED,
+            event: DEVICE_PAIRING_STARTED,
             fields: &[],
         },
         EventFields {
-            event: PAIRING_COMPLETED,
+            event: DEVICE_PAIRING_COMPLETED,
             fields: &[],
         },
         EventFields {
-            event: PAIRING_FAILED,
+            event: DEVICE_PAIRING_FAILED,
             fields: &["kind"],
         },
         EventFields {
@@ -257,22 +261,28 @@ pub mod app {
     ];
 }
 
-/// The Daemon log catalogue (#23 D2 and later tickets, #69). Field names are exactly as the
-/// tickets give them; where a ticket only describes a field, it is left out until named (#74).
+/// The Daemon log catalogue (#23 D2 and later tickets, #69, #74).
+///
+/// Naming rules (#74): durations are `*_ms`; an event name means one thing, written by one
+/// process; a name may appear in both logs only with the same meaning and fields (`log.capped`,
+/// `update.available`); an owner notice is named for what the owner sees and its event for the
+/// component that writes it (`launcher_root_moved` vs `session.root_moved`).
 pub mod daemon {
     use super::EventFields;
 
     /// Span correlation fields (#23 D2), carried inside `span` on every line within a span.
+    /// The log sink writes the tracing span's own name as `span_name`, never `name`, which is a
+    /// job name at any depth. `attempt` is only ever a span field (#74).
     pub const SPAN_FIELDS: &[&str] = &[
         "agent",
         "attempt",
         "job",
         "launcher",
-        "name",
         "origin",
         "principal",
         "run_id",
         "scope",
+        "span_name",
         "turn_id",
     ];
 
@@ -286,7 +296,7 @@ pub mod daemon {
     pub const SETTINGS_RELOADED: &str = "settings.reloaded";
     /// #23.
     pub const SETTINGS_INVALID: &str = "settings.invalid";
-    /// #32.
+    /// WARN, besides the owner notice of the same name (#32, #74).
     pub const SETTINGS_LEGACY_KEY: &str = "settings.legacy_key";
     /// #23.
     pub const JOBS_LOADED: &str = "jobs.loaded";
@@ -392,8 +402,13 @@ pub mod daemon {
     pub const WORKER_STDERR: &str = "worker.stderr";
     /// #27.
     pub const WORKER_PING_LATE: &str = "worker.ping_late";
-    /// #27.
+    /// The Worker's ERROR when a beacon goes quiet (#27). The Watchdog's stall report is
+    /// [`WATCHDOG_STALL_REPORT`] (#74).
     pub const WORKER_STALLED: &str = "worker.stalled";
+    /// WARN: the stall report the Watchdog logs (#27, #74).
+    pub const WATCHDOG_STALL_REPORT: &str = "watchdog.stall_report";
+    /// ERROR, from the Worker's panic hook before the default hook prints to stderr (#23, #74).
+    pub const WORKER_PANIC: &str = "worker.panic";
     /// #27.
     pub const WORKER_HUNG: &str = "worker.hung";
     /// #27.
@@ -418,6 +433,10 @@ pub mod daemon {
     pub const REAP_DONE: &str = "reap.done";
     /// #29.
     pub const REAP_ORPHAN_WORKER: &str = "reap.orphan_worker";
+    /// WARN: the Run registry was not empty after a graceful stop, a Worker bug (#29 D4, #74).
+    pub const REAP_LEFTOVER_AFTER_STOP: &str = "reap.leftover_after_stop";
+    /// ERROR: `runs.json` could not be read at a Reap (#29 D4, #74).
+    pub const REAP_REGISTRY_UNREADABLE: &str = "reap.registry_unreadable";
     /// #32.
     pub const SESSION_BREAKER_OPEN: &str = "session.breaker_open";
     /// #32.
@@ -470,6 +489,8 @@ pub mod daemon {
     pub const COMPAT_STATUSLINE_MIGRATED: &str = "compat.statusline_migrated";
     /// #24.
     pub const COMPAT_STATE_JSON_REMOVED: &str = "compat.state_json_removed";
+    /// WARN: `.claude/settings.json` is unparseable, so `statusLine` is left alone (#24 D3, #74).
+    pub const COMPAT_STATUSLINE_UNREADABLE: &str = "compat.statusline_unreadable";
 
     /// Every Daemon log event with its fields (#69).
     pub const CATALOGUE: &[EventFields] = &[
@@ -495,7 +516,7 @@ pub mod daemon {
         },
         EventFields {
             event: SETTINGS_LEGACY_KEY,
-            fields: &[],
+            fields: &["key", "replacement"],
         },
         EventFields {
             event: JOBS_LOADED,
@@ -545,7 +566,7 @@ pub mod daemon {
         },
         EventFields {
             event: RUN_REFUSED,
-            fields: &[],
+            fields: &["reason"],
         },
         EventFields {
             event: RUN_RECOVERY,
@@ -553,7 +574,7 @@ pub mod daemon {
         },
         EventFields {
             event: RUN_RECOVERY_SKIPPED,
-            fields: &["kind", "reason", "spent_secs_ago"],
+            fields: &["kind", "reason", "spent_ms_ago"],
         },
         EventFields {
             event: RUN_SETTLE,
@@ -597,7 +618,7 @@ pub mod daemon {
         },
         EventFields {
             event: JOB_FILE_UNSTABLE,
-            fields: &["job", "secs"],
+            fields: &["job", "unstable_ms"],
         },
         EventFields {
             event: JOB_FRONTMATTER_RESTORED,
@@ -629,7 +650,7 @@ pub mod daemon {
         },
         EventFields {
             event: DISCORD_DISCONNECTED,
-            fields: &[],
+            fields: &["close_code"],
         },
         EventFields {
             event: DISCORD_RESUMED,
@@ -649,7 +670,7 @@ pub mod daemon {
         },
         EventFields {
             event: API_REQUEST,
-            fields: &["method", "status", "duration_ms"],
+            fields: &["method", "route", "status", "duration_ms"],
         },
         EventFields {
             event: API_AUTH_FAILED,
@@ -717,7 +738,7 @@ pub mod daemon {
         },
         EventFields {
             event: WORKER_STDERR,
-            fields: &["line"],
+            fields: &["text"],
         },
         EventFields {
             event: WORKER_PING_LATE,
@@ -725,14 +746,21 @@ pub mod daemon {
         },
         EventFields {
             event: WORKER_STALLED,
+            fields: &["beacon", "quiet_ms"],
+        },
+        EventFields {
+            event: WATCHDOG_STALL_REPORT,
             fields: &[
-                "beacon",
-                "quiet_s",
+                "report_seq",
                 "waited_ms",
                 "workers",
                 "alive_tasks",
                 "global_queue",
             ],
+        },
+        EventFields {
+            event: WORKER_PANIC,
+            fields: &["location"],
         },
         EventFields {
             event: WORKER_HUNG,
@@ -776,15 +804,36 @@ pub mod daemon {
         },
         EventFields {
             event: REAP_DONE,
-            fields: &[],
+            fields: &[
+                "killed",
+                "already_gone",
+                "not_ours",
+                "unverified",
+                "unknown_pid",
+                "survived",
+            ],
         },
         EventFields {
             event: REAP_ORPHAN_WORKER,
-            fields: &[],
+            fields: &["waited_ms", "killed"],
+        },
+        EventFields {
+            event: REAP_LEFTOVER_AFTER_STOP,
+            fields: &["count"],
+        },
+        EventFields {
+            event: REAP_REGISTRY_UNREADABLE,
+            fields: &["cause"],
         },
         EventFields {
             event: SESSION_BREAKER_OPEN,
-            fields: &["scope", "launcher", "consecutive_timeouts", "failing_secs"],
+            fields: &[
+                "scope",
+                "launcher",
+                "limit",
+                "consecutive_timeouts",
+                "failing_ms",
+            ],
         },
         EventFields {
             event: SESSION_BREAKER_CLOSED,
@@ -816,7 +865,7 @@ pub mod daemon {
         },
         EventFields {
             event: RUN_LOCALE_CHOSEN,
-            fields: &[],
+            fields: &["source", "lc_ctype", "charmap", "verified"],
         },
         EventFields {
             event: RUN_LOCALE_NOT_UTF8,
@@ -828,11 +877,11 @@ pub mod daemon {
         },
         EventFields {
             event: RUN_PATH_CAPTURED,
-            fields: &[],
+            fields: &["source", "shell", "dirs", "duration_ms"],
         },
         EventFields {
             event: RUN_PATH_CHANGED,
-            fields: &[],
+            fields: &["added", "removed"],
         },
         EventFields {
             event: RUN_PATH_CAPTURE_FAILED,
@@ -884,6 +933,10 @@ pub mod daemon {
         },
         EventFields {
             event: COMPAT_STATE_JSON_REMOVED,
+            fields: &[],
+        },
+        EventFields {
+            event: COMPAT_STATUSLINE_UNREADABLE,
             fields: &[],
         },
     ];
