@@ -170,7 +170,7 @@ fn as_count(value: &Value) -> Option<u64> {
 pub fn read(layout: &Layout, key: &TsKey) -> Result<Option<TsSession>, SessionsError> {
     match key {
         TsKey::Global => read_record(&layout.session()),
-        TsKey::Agent(agent) => read_record(&layout.agent_session(agent)),
+        TsKey::Agent(agent) => read_record(&layout.agent_session(agent_name(agent)?)),
         TsKey::Thread(thread) => Ok(read_threads(layout)?
             .get("threads")
             .and_then(|t| t.get(thread))
@@ -184,7 +184,10 @@ pub fn read(layout: &Layout, key: &TsKey) -> Result<Option<TsSession>, SessionsE
 pub fn write(layout: &Layout, key: &TsKey, session: &TsSession) -> Result<(), SessionsError> {
     match key {
         TsKey::Global => write_json(&layout.session(), &session.to_value()),
-        TsKey::Agent(agent) => write_json(&layout.agent_session(agent), &session.to_value()),
+        TsKey::Agent(agent) => write_json(
+            &layout.agent_session(agent_name(agent)?),
+            &session.to_value(),
+        ),
         TsKey::Thread(thread) => {
             let mut record = session.clone();
             record.thread_id = Some(thread.clone());
@@ -200,7 +203,7 @@ pub fn write(layout: &Layout, key: &TsKey, session: &TsSession) -> Result<(), Se
 pub fn remove(layout: &Layout, key: &TsKey) -> Result<bool, SessionsError> {
     match key {
         TsKey::Global => remove_file(&layout.session()),
-        TsKey::Agent(agent) => remove_file(&layout.agent_session(agent)),
+        TsKey::Agent(agent) => remove_file(&layout.agent_session(agent_name(agent)?)),
         TsKey::Thread(thread) => {
             let mut file = read_threads(layout)?;
             if threads_mut(&mut file).remove(thread).is_none() {
@@ -252,18 +255,28 @@ fn threads_mut(file: &mut Map<String, Value>) -> &mut Map<String, Value> {
 
 // ---- Fallback sessions -----------------------------------------------------------------------
 
-/// The fallback session's file for `key` (`src/sessions.ts:134-138`).
-pub fn fallback_path(layout: &Layout, key: &TsKey) -> PathBuf {
-    match key {
+/// The fallback session's file for `key` (`src/sessions.ts:134-138`). An agent name that would
+/// leave `agents/` is refused ([`SessionsError::InvalidAgentName`]).
+pub fn fallback_path(layout: &Layout, key: &TsKey) -> Result<PathBuf, SessionsError> {
+    Ok(match key {
         TsKey::Global => layout.session_fallback(),
-        TsKey::Agent(agent) => layout.agent_session_fallback(agent),
+        TsKey::Agent(agent) => layout.agent_session_fallback(agent_name(agent)?),
         TsKey::Thread(thread) => layout.fallback_session(&encode_uri_component(thread)),
+    })
+}
+
+/// `agent`, if it names one dir directly under `agents/`. The API's Scope parser accepts
+/// `agent:..`, which would otherwise resolve `agents/../session.json` in the project dir.
+fn agent_name(agent: &str) -> Result<&str, SessionsError> {
+    if agent.is_empty() || agent == "." || agent == ".." || agent.contains(['/', '\\']) {
+        return Err(SessionsError::InvalidAgentName);
     }
+    Ok(agent)
 }
 
 /// Reads the fallback session for `key` (`src/sessions.ts:140-147`).
 pub fn read_fallback(layout: &Layout, key: &TsKey) -> Result<Option<TsSession>, SessionsError> {
-    read_record(&fallback_path(layout, key))
+    read_record(&fallback_path(layout, key)?)
 }
 
 /// Writes the fallback session for `key`, creating its dir as TS does (`src/sessions.ts:149-153`).
@@ -272,13 +285,13 @@ pub fn write_fallback(
     key: &TsKey,
     session: &TsSession,
 ) -> Result<(), SessionsError> {
-    write_json(&fallback_path(layout, key), &session.to_value())
+    write_json(&fallback_path(layout, key)?, &session.to_value())
 }
 
 /// Removes the fallback session for `key` (`src/sessions.ts:188-194`). Returns whether there
 /// was one.
 pub fn remove_fallback(layout: &Layout, key: &TsKey) -> Result<bool, SessionsError> {
-    remove_file(&fallback_path(layout, key))
+    remove_file(&fallback_path(layout, key)?)
 }
 
 /// JavaScript's `encodeURIComponent`: everything but `A-Z a-z 0-9 - _ . ! ~ * ' ( )` becomes
@@ -594,6 +607,32 @@ mod tests {
     }
 
     #[test]
+    fn agent_names_that_leave_agents_dir_are_refused() {
+        let (dir, layout) = layout();
+        fs::write(dir.path().join("session.json"), r#"{"sessionId":"root"}"#).unwrap();
+        let session = TsSession::new("a-1", at(8));
+        for name in ["", ".", "..", "a/b", "../x", "a\\b"] {
+            let key = TsKey::Agent(name.into());
+            let refused = |r: Result<(), SessionsError>| {
+                assert!(
+                    matches!(r, Err(SessionsError::InvalidAgentName)),
+                    "{name:?}"
+                )
+            };
+            refused(read(&layout, &key).map(drop));
+            refused(write(&layout, &key, &session));
+            refused(remove(&layout, &key).map(drop));
+            refused(read_fallback(&layout, &key).map(drop));
+            refused(write_fallback(&layout, &key, &session));
+            refused(remove_fallback(&layout, &key).map(drop));
+        }
+        // The project dir's own file was never touched.
+        assert!(dir.path().join("session.json").is_file());
+        // A dotted name that stays inside `agents/` is fine.
+        write(&layout, &TsKey::Agent("ops.v2".into()), &session).unwrap();
+    }
+
+    #[test]
     fn fallback_paths_follow_fallback_session_path_for() {
         // src/sessions.ts:134-138; a thread wins over an agent, and its key is URI-encoded.
         let layout = Layout::new("/p");
@@ -618,7 +657,11 @@ mod tests {
             ),
         ];
         for (key, path) in cases {
-            assert_eq!(fallback_path(&layout, &key), PathBuf::from(path), "{key:?}");
+            assert_eq!(
+                fallback_path(&layout, &key).unwrap(),
+                PathBuf::from(path),
+                "{key:?}"
+            );
         }
     }
 

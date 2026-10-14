@@ -32,6 +32,10 @@ pub enum SessionsError {
         found: u64,
         supported: u32,
     },
+    /// An agent name that is empty, `.`, `..` or holds a path separator, so it would not name
+    /// a dir directly under `agents/`. The name is left out of the message.
+    #[error("invalid agent name")]
+    InvalidAgentName,
     /// The next `session_<N>.backup` number doesn't fit in a `u32`.
     #[error("no session backup number is left after {last}")]
     BackupNumberExhausted { last: u64 },

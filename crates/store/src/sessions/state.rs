@@ -27,7 +27,7 @@ use super::SessionsError;
 use crate::atomic::{self, DirMode, FileMode};
 use crate::error::StoreError;
 use crate::layout::Layout;
-use crate::preserve::merge_unknown;
+use crate::preserve::{Shape, merge_unknown};
 
 /// The `schema` this build reads and writes. A file with a higher one is refused rather than
 /// misread.
@@ -288,7 +288,15 @@ impl SessionStore {
         sessions.extend(self.unreadable.iter().cloned());
         let mut value = json!({"schema": SCHEMA, "sessions": sessions});
         if let Some(loaded) = &self.loaded {
-            merge_unknown(&mut value, loaded, &entry_id);
+            merge_unknown(
+                &mut value,
+                loaded,
+                &Shape {
+                    id: &entry_id,
+                    // `cost_state.by_model` is keyed by model name (#39 D8).
+                    maps: &["by_model"],
+                },
+            );
         }
         let mut bytes = serde_json::to_vec_pretty(&value).expect("a Value serialises");
         bytes.push(b'\n');
@@ -571,6 +579,40 @@ mod tests {
             json!(3)
         );
         assert_eq!(saved_entry["timeout_breaker"]["added_later"], json!(true));
+    }
+
+    #[test]
+    fn a_replaced_cost_baseline_keeps_no_old_model() {
+        // `by_model` is keyed by model name: a model gone from the baseline must stay gone, or
+        // the next run's cost difference is taken against a stale figure (#39 D8).
+        let (_dir, layout) = layout();
+        let mut store = SessionStore::new();
+        store.upsert(full_entry());
+        store.save(&layout).unwrap();
+
+        let mut store = SessionStore::load(&layout).unwrap();
+        let cost = store
+            .get_mut(&thread(), "direct")
+            .unwrap()
+            .cost_state
+            .as_mut()
+            .unwrap();
+        let m1 = cost.by_model.remove("m-1").unwrap();
+        cost.by_model.insert("m-2".into(), m1);
+        store.save(&layout).unwrap();
+
+        let reloaded = SessionStore::load(&layout).unwrap();
+        let models: Vec<_> = reloaded
+            .get(&thread(), "direct")
+            .unwrap()
+            .cost_state
+            .as_ref()
+            .unwrap()
+            .by_model
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(models, ["m-2"]);
     }
 
     #[test]

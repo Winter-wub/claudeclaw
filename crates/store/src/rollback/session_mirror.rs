@@ -15,8 +15,10 @@
 //! | `agent:<name>` | `agents/<name>/session.json` (`src/sessions.ts:25`) |
 //!
 //! TS runs every job of one agent under the one key `agent:<agent>`, so those Scopes share a
-//! mirror entry: the last write wins, and adoption can hand one TS session to several of them,
-//! as TS itself shares it.
+//! mirror entry and the last write wins, as in TS. Removing and adopting are guarded so one job
+//! can't take another's session: [`SessionMirror::remove`] leaves a shared entry that holds
+//! another job's session, and [`SessionMirror::adopt`] doesn't hand a job a session one of its
+//! agent's other jobs already has.
 
 use chrono::{DateTime, Utc};
 use claudeclaw_api::scope::Scope;
@@ -41,6 +43,9 @@ pub enum Adoption {
     /// TS held another session, now the current Launcher's. `replaced` is the store's previous
     /// session for that pair, if there was one.
     Adopted { replaced: Option<Box<SessionEntry>> },
+    /// The TS entry is one several Scopes share (`agent:<agent>`), and its session is already
+    /// `scope`'s, another job of the same agent; the store is unchanged.
+    HeldByOtherScope { scope: Scope },
 }
 
 impl<'a> SessionMirror<'a> {
@@ -87,10 +92,28 @@ impl<'a> SessionMirror<'a> {
         ts::read(self.layout, &Self::ts_key(scope))
     }
 
+    /// The agent whose jobs share `scope`'s TS key, when `scope` is an agent job
+    /// (`src/commands/start.ts:927`).
+    fn shared_by_agent(scope: &Scope) -> Option<&str> {
+        match scope {
+            Scope::Job(name) => name.split_once('/').map(|(agent, _)| agent),
+            _ => None,
+        }
+    }
+
     /// Removes the mirror entry of `scope` (a reset, a deleted job, a pruned thread; #12 §6,
-    /// #44). Returns whether there was one.
-    pub fn remove(&self, scope: &Scope) -> Result<bool, SessionsError> {
-        ts::remove(self.layout, &Self::ts_key(scope))
+    /// #44), whose Rust session was `session_id`. A key several Scopes share is removed only
+    /// while it still holds `session_id`, so another job's session is left alone. Returns
+    /// whether an entry was removed.
+    pub fn remove(&self, scope: &Scope, session_id: Option<&str>) -> Result<bool, SessionsError> {
+        let key = Self::ts_key(scope);
+        if Self::shared_by_agent(scope).is_some() {
+            let held = ts::read(self.layout, &key)?;
+            if held.is_none() || held.map(|r| r.session_id).as_deref() != session_id {
+                return Ok(false);
+            }
+        }
+        ts::remove(self.layout, &key)
     }
 
     /// Roll-forward (#14 rule 7): when TS holds a session for `scope` other than the store's
@@ -99,6 +122,10 @@ impl<'a> SessionMirror<'a> {
     /// dates and turn count (`now` where TS has none) and no Rust state yet: no Transcript,
     /// context, Cost baseline, breaker or budget. The store is changed in memory only; the
     /// caller saves it.
+    ///
+    /// For an agent job, whose TS key the agent's other jobs share, a TS session that one of
+    /// those jobs already has (under any Launcher) is not adopted:
+    /// [`Adoption::HeldByOtherScope`].
     pub fn adopt(
         &self,
         store: &mut SessionStore,
@@ -114,6 +141,18 @@ impl<'a> SessionMirror<'a> {
             .is_some_and(|e| e.session_id == record.session_id)
         {
             return Ok(Adoption::Same);
+        }
+        if let Some(agent) = Self::shared_by_agent(scope) {
+            let holder = store.iter().find(|e| {
+                e.scope != *scope
+                    && Self::shared_by_agent(&e.scope) == Some(agent)
+                    && e.session_id == record.session_id
+            });
+            if let Some(holder) = holder {
+                return Ok(Adoption::HeldByOtherScope {
+                    scope: holder.scope.clone(),
+                });
+            }
         }
         let mut entry = SessionEntry::new(scope.clone(), launcher, record.session_id, now);
         entry.created_at = record.created_at.unwrap_or(now);
@@ -344,8 +383,76 @@ mod tests {
             )
             .unwrap();
         assert!(mirror.read(&job).unwrap().is_some());
-        assert!(mirror.remove(&job).unwrap());
+        // An unshared key goes whatever session it holds.
+        assert!(mirror.remove(&job, None).unwrap());
         assert_eq!(mirror.read(&job).unwrap(), None);
-        assert!(!mirror.remove(&job).unwrap());
+        assert!(!mirror.remove(&job, None).unwrap());
+    }
+
+    #[test]
+    fn removing_one_agent_job_leaves_the_shared_entry_another_job_holds() {
+        // job:ops/digest and job:ops/backup share threads["agent:ops"] (start.ts:927).
+        let (_dir, layout) = layout();
+        let mirror = SessionMirror::new(&layout);
+        let (digest, backup) = (scope("job:ops/digest"), scope("job:ops/backup"));
+        let d = SessionEntry::new(digest.clone(), "direct", "d-1", at(8));
+        let b = SessionEntry::new(backup.clone(), "direct", "b-1", at(9));
+        mirror.write(&digest, &d).unwrap();
+        mirror.write(&backup, &b).unwrap();
+
+        // digest is deleted: the entry holds backup's session, so it stays.
+        assert!(!mirror.remove(&digest, Some("d-1")).unwrap());
+        assert!(!mirror.remove(&digest, None).unwrap());
+        assert_eq!(mirror.read(&backup).unwrap().unwrap().session_id, "b-1");
+
+        // backup is reset: the entry holds its session, so it goes.
+        assert!(mirror.remove(&backup, Some("b-1")).unwrap());
+        assert_eq!(mirror.read(&backup).unwrap(), None);
+    }
+
+    #[test]
+    fn a_shared_entry_is_not_adopted_into_a_job_whose_sibling_has_it() {
+        let (_dir, layout) = layout();
+        let mirror = SessionMirror::new(&layout);
+        let (digest, backup) = (scope("job:ops/digest"), scope("job:ops/backup"));
+        let mut store = SessionStore::new();
+        let d = SessionEntry::new(digest.clone(), "direct", "d-1", at(8));
+        let b = SessionEntry::new(backup.clone(), "/opt/ccs.sh", "b-1", at(9));
+        store.upsert(d.clone());
+        store.upsert(b.clone());
+        mirror.write(&digest, &d).unwrap();
+        mirror.write(&backup, &b).unwrap();
+
+        // TS holds backup's session; digest keeps its own.
+        assert_eq!(
+            mirror.adopt(&mut store, &digest, "direct", at(10)).unwrap(),
+            Adoption::HeldByOtherScope {
+                scope: backup.clone()
+            }
+        );
+        assert_eq!(store.get(&digest, "direct").unwrap().session_id, "d-1");
+        assert_eq!(
+            mirror
+                .adopt(&mut store, &backup, "/opt/ccs.sh", at(10))
+                .unwrap(),
+            Adoption::Same
+        );
+
+        // A job of another agent with the same session id is no sibling.
+        let other = scope("job:research/digest");
+        store.upsert(SessionEntry::new(other, "direct", "t-1", at(8)));
+
+        // TS started a session no Rust job has (a rollback ran the job): digest adopts it.
+        ts::write(
+            &layout,
+            &TsKey::Thread("agent:ops".into()),
+            &TsSession::new("t-1", at(11)),
+        )
+        .unwrap();
+        assert!(matches!(
+            mirror.adopt(&mut store, &digest, "direct", at(12)).unwrap(),
+            Adoption::Adopted { .. }
+        ));
+        assert_eq!(store.get(&digest, "direct").unwrap().session_id, "t-1");
     }
 }

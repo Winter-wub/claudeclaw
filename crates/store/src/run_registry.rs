@@ -23,7 +23,7 @@ use serde_json::Value;
 use crate::atomic::{self, DirMode, FileMode};
 use crate::error::StoreError;
 use crate::layout::Layout;
-use crate::preserve::merge_unknown;
+use crate::preserve::{Shape, merge_unknown};
 
 /// A failed Run registry operation. Messages carry run ids and states, never contents.
 #[derive(Debug, thiserror::Error)]
@@ -113,7 +113,14 @@ impl RunRegistryFile {
     pub fn save(&self, layout: &Layout) -> Result<(), RunRegistryError> {
         let mut value = serde_json::to_value(&self.registry).expect("a registry serialises");
         if let Some(loaded) = &self.loaded {
-            merge_unknown(&mut value, loaded, &run_id);
+            merge_unknown(
+                &mut value,
+                loaded,
+                &Shape {
+                    id: &run_id,
+                    maps: &[],
+                },
+            );
         }
         let mut bytes = serde_json::to_vec_pretty(&value).expect("a Value serialises");
         bytes.push(b'\n');
