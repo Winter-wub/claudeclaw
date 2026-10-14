@@ -838,8 +838,8 @@ fn next_path(text: &str, pos: usize, ctx: Ctx) -> Option<(usize, usize)> {
             i += 1;
             continue;
         }
-        let opens = !(i == 0 && ctx.after_project_dir)
-            && !char_before(text, i, ctx.before).is_some_and(is_path_char);
+        let continues = i == 0 && ctx.after_project_dir;
+        let opens = !(continues || char_before(text, i, ctx.before).is_some_and(is_path_char));
         if !opens {
             i += 1;
             continue;
