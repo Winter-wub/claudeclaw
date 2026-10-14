@@ -53,7 +53,8 @@ impl JobState {
     }
 
     /// The merge itself (#14 rule 6). Per job, when its newest log started after the recorded
-    /// `last_started_at` (or there is none), that log wins: `last_started_at` becomes its name
+    /// `last_started_at` (or there is none), compared at the log name's millisecond precision,
+    /// that log wins: `last_started_at` becomes its name
     /// time and `last_result` its `Exit code:`. The pending retry and an `interrupted_at` older
     /// than the log are cleared, so a run TS already made doesn't re-fire (#17 §4).
     pub fn merge_logs<S: AsRef<str>>(
@@ -74,10 +75,13 @@ impl JobState {
                 report.future_logs.push(name.to_owned());
             }
             let Some(log) = newest else { continue };
+            // At the name's millisecond precision: a Rust run's own log carries its
+            // `last_started_at` truncated, and must not count as newer.
+            let log_ms = log.started_at.timestamp_millis();
             if self
                 .get(name)
                 .and_then(|r| r.last_started_at)
-                .is_some_and(|t| t >= log.started_at)
+                .is_some_and(|t| t.timestamp_millis() >= log_ms)
             {
                 continue;
             }
@@ -89,14 +93,17 @@ impl JobState {
             };
             let record = self.entry(name);
             record.last_started_at = Some(log.started_at);
-            record.last_result = Some(JobResult {
-                outcome: run_log::exit_outcome(header.exit_code),
-                exit_code: header.exit_code,
-            });
+            record.last_result = Some(JobResult::new(
+                run_log::exit_outcome(header.exit_code),
+                header.exit_code,
+            ));
             // The retry belonged to the older run the log supersedes.
             record.retry_at = None;
             record.fail_count = 0;
-            if record.interrupted_at.is_some_and(|t| t < log.started_at) {
+            if record
+                .interrupted_at
+                .is_some_and(|t| t.timestamp_millis() < log_ms)
+            {
                 record.interrupted_at = None;
             }
             report.from_logs.push(name.to_owned());
@@ -159,7 +166,7 @@ mod tests {
     }
 
     fn result(outcome: RunOutcome, exit_code: Option<i32>) -> Option<JobResult> {
-        Some(JobResult { outcome, exit_code })
+        Some(JobResult::new(outcome, exit_code))
     }
 
     #[test]
@@ -191,7 +198,7 @@ mod tests {
         assert!(report.changed());
         let got = |n: &str| {
             let r = state.get(n).unwrap();
-            (r.last_started_at.unwrap(), r.last_result)
+            (r.last_started_at.unwrap(), r.last_result.clone())
         };
         assert_eq!(
             got("daily"),
@@ -277,6 +284,46 @@ mod tests {
             JobState::load_merged(&layout, &listing, ["ts-newer"], at("2026-10-14T00:00:00Z"))
                 .unwrap();
         assert_eq!(again, MergeReport::default());
+    }
+
+    #[test]
+    fn the_jobs_own_log_is_compared_at_millisecond_precision() {
+        let (_dir, layout) = layout();
+        // `RunLog::create` names the log by the start instant cut to the millisecond.
+        ts_log(&layout, "own", "2026-10-13T09:00:00.123Z", "Exit code: 1\n");
+        ts_log(
+            &layout,
+            "late",
+            "2026-10-13T09:00:00.123Z",
+            "Exit code: 1\n",
+        );
+        let listing = RunLogListing::scan(&layout).unwrap();
+        let mut state = JobState::default();
+        let retry = Some(at("2026-10-13T09:05:00Z"));
+        // `last_started_at` is the `RunLog::start()` the log was named by, sub-ms included.
+        let own = state.entry("own");
+        own.last_started_at = Some(at("2026-10-13T09:00:00.123900Z"));
+        own.retry_at = retry;
+        // A separate `Utc::now()` 1 ms earlier breaks the contract: the log reads as newer and
+        // wins, which is why `last_started_at` must be `RunLog::start()`.
+        let late = state.entry("late");
+        late.last_started_at = Some(at("2026-10-13T09:00:00.122900Z"));
+        late.retry_at = retry;
+
+        let report = state
+            .merge_logs(&listing, ["own", "late"], at("2026-10-14T00:00:00Z"))
+            .unwrap();
+        assert_eq!(report.from_logs, ["late"]);
+        let own = state.get("own").unwrap();
+        assert_eq!(
+            (own.last_started_at, own.retry_at),
+            (Some(at("2026-10-13T09:00:00.123900Z")), retry)
+        );
+        let late = state.get("late").unwrap();
+        assert_eq!(
+            (late.last_started_at, late.retry_at),
+            (Some(at("2026-10-13T09:00:00.123Z")), None)
+        );
     }
 
     #[test]

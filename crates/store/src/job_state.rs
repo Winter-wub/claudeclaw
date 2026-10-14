@@ -47,7 +47,10 @@ pub struct JobState {
 /// One job's state (#9, #46 D4).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct JobRecord {
-    /// When the job's last run started: what catch-up compares with the previous due slot.
+    /// When the job's last run started: what catch-up compares with the previous due slot. Set
+    /// it to that run's [`RunLog::start`](crate::run_log::RunLog::start), the instant its Run
+    /// log is named by, so the per-start merge (#14 rule 6) sees the job's own log as the same
+    /// run; the merge compares at the log name's millisecond precision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_started_at: Option<DateTime<Utc>>,
     /// How that run ended.
@@ -81,14 +84,70 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
-/// How a job's last run ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// How a job's last run ended. Keys this build doesn't know are kept, and so is an `outcome`
+/// value it doesn't know: that reads as [`RunOutcome::Unknown`] but is written back as it was
+/// on disk while `outcome` stays `Unknown`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "RawJobResult", into = "RawJobResult")]
 pub struct JobResult {
     /// `unknown` when seeded from a TS log with no `Exit code:` line (#17 §4).
     pub outcome: RunOutcome,
     /// `None` when there was no exit code (Refused, killed, or unknown).
-    #[serde(default)]
     pub exit_code: Option<i32>,
+    /// The on-disk `outcome` when it parsed as `Unknown` from another value.
+    unknown_outcome: Option<Value>,
+    /// Keys this build doesn't know.
+    extra: Map<String, Value>,
+}
+
+impl JobResult {
+    /// A result with no unknown keys.
+    pub fn new(outcome: RunOutcome, exit_code: Option<i32>) -> Self {
+        JobResult {
+            outcome,
+            exit_code,
+            unknown_outcome: None,
+            extra: Map::new(),
+        }
+    }
+}
+
+/// [`JobResult`] as it is on disk.
+#[derive(Serialize, Deserialize)]
+struct RawJobResult {
+    outcome: Value,
+    #[serde(default)]
+    exit_code: Option<i32>,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+impl From<RawJobResult> for JobResult {
+    fn from(raw: RawJobResult) -> Self {
+        let outcome = serde_json::from_value(raw.outcome.clone()).unwrap_or(RunOutcome::Unknown);
+        let unknown_outcome =
+            (outcome == RunOutcome::Unknown && raw.outcome != "unknown").then_some(raw.outcome);
+        JobResult {
+            outcome,
+            exit_code: raw.exit_code,
+            unknown_outcome,
+            extra: raw.extra,
+        }
+    }
+}
+
+impl From<JobResult> for RawJobResult {
+    fn from(result: JobResult) -> Self {
+        let outcome = match result.unknown_outcome {
+            Some(raw) if result.outcome == RunOutcome::Unknown => raw,
+            _ => serde_json::to_value(result.outcome).unwrap_or(Value::Null),
+        };
+        RawJobResult {
+            outcome,
+            exit_code: result.exit_code,
+            extra: result.extra,
+        }
+    }
 }
 
 impl JobState {
@@ -181,10 +240,7 @@ mod tests {
         assert_eq!(digest.last_started_at, Some(at("2026-10-13T08:30:27.512Z")));
         assert_eq!(
             digest.last_result,
-            Some(JobResult {
-                outcome: RunOutcome::Timeout,
-                exit_code: Some(124)
-            })
+            Some(JobResult::new(RunOutcome::Timeout, Some(124)))
         );
         assert_eq!(digest.fail_count, 1);
         assert_eq!(digest.revision.unwrap().to_string(), "00d74baf14ea415c");
@@ -205,6 +261,44 @@ mod tests {
 
         assert!(state.remove("daily").is_some());
         assert!(state.get("daily").is_none());
+    }
+
+    #[test]
+    fn a_result_keeps_unknown_keys_and_an_unknown_outcome() {
+        let (_dir, layout) = layout();
+        std::fs::create_dir_all(layout.state_dir()).unwrap();
+        // As a newer build might write it.
+        let newer = json!({"outcome": "cancelled", "exit_code": null, "signal": "SIGTERM"});
+        let seeded = json!({"outcome": "unknown", "exit_code": null});
+        let text = json!({"jobs": {
+            "newer": {"last_result": newer},
+            "seeded": {"last_result": seeded},
+            "changed": {"last_result": {"outcome": "cancelled", "detail": 1}},
+        }});
+        std::fs::write(layout.job_state(), text.to_string()).unwrap();
+
+        let mut state = JobState::load(&layout).unwrap();
+        let result = state.get("newer").unwrap().last_result.as_ref().unwrap();
+        assert_eq!(result.outcome, RunOutcome::Unknown);
+        assert_eq!(result.exit_code, None);
+        // A result this build sets replaces the unknown value but keeps unknown keys.
+        let changed = state.entry("changed").last_result.as_mut().unwrap();
+        changed.outcome = RunOutcome::Ok;
+        changed.exit_code = Some(0);
+        state.save(&layout).unwrap();
+
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(layout.job_state()).unwrap()).unwrap();
+        assert_eq!(saved["jobs"]["newer"]["last_result"], newer);
+        assert_eq!(saved["jobs"]["seeded"]["last_result"], seeded);
+        assert_eq!(
+            saved["jobs"]["changed"]["last_result"],
+            json!({"outcome": "ok", "exit_code": 0, "detail": 1})
+        );
+        assert_eq!(
+            serde_json::to_value(JobResult::new(RunOutcome::Failed, Some(1))).unwrap(),
+            json!({"outcome": "failed", "exit_code": 1})
+        );
     }
 
     #[test]
