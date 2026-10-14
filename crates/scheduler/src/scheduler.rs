@@ -702,7 +702,10 @@ impl<D: Dispatch> Scheduler<D> {
             }
         };
         // #46 D6: the guard's restore is the job's one change, applied with the release.
-        if let Some(restored) = restored {
+        // An API delete or orphan prune held back meanwhile wins over the restore (#12 §6).
+        if let Some(restored) = restored
+            && !matches!(flight.held, Some(Held::Forget))
+        {
             flight.held = Some(Held::Change(restored));
         }
         // #12 §3: a One-shot job whose scheduled chain ends with no retry pending is finished.
@@ -795,13 +798,15 @@ impl<D: Dispatch> Scheduler<D> {
                 carries.push((removed.swap_remove(pos).0, name.clone()));
             }
         }
+        // The sources' records as they were: removal clears their took-effect time.
+        let sources: Vec<_> = carries
+            .into_iter()
+            .filter_map(|(from, to)| Some((self.state.get(&from).cloned()?, from, to)))
+            .collect();
         for change in changes {
             self.apply_one(change, now);
         }
-        for (from, to) in carries {
-            let Some(src) = self.state.get(&from).cloned() else {
-                continue;
-            };
+        for (src, from, to) in sources {
             let dst = self.state.entry(&to);
             if dst.last_started_at.is_some() || src.last_started_at.is_none() {
                 continue;
@@ -855,12 +860,16 @@ impl<D: Dispatch> Scheduler<D> {
             }
             JobChange::Removed { name } => {
                 self.jobs.remove(&name);
-                // #46 D4: an Orphaned job keeps its state, minus retries and re-runs.
+                // #46 D4: an Orphaned job keeps its state, minus retries and re-runs. Its
+                // took-effect time goes too: a job that reappears takes effect then (#50), unless
+                // a rename carries it over in the same pass.
                 if let Some(rec) = self.state.jobs.get_mut(&name) {
                     rec.orphaned_since.get_or_insert(now);
                     rec.retry_at = None;
                     rec.fail_count = 0;
                     rec.interrupted_at = None;
+                    rec.schedule_key = None;
+                    rec.schedule_took_effect = None;
                     self.dirty = true;
                 }
             }

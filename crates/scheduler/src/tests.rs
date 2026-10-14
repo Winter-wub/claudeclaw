@@ -780,6 +780,10 @@ async fn a_rename_carries_the_last_run() {
         .await;
     assert_eq!(state.jobs["new"].last_started_at, Some(at(9, 0)));
     assert_eq!(state.jobs["old"].orphaned_since, Some(at(10, 0)));
+    // The took-effect time moves with the rename; the orphan keeps none (#50).
+    assert_eq!(state.jobs["new"].schedule_took_effect, Some(old));
+    assert_eq!(state.jobs["old"].schedule_took_effect, None);
+    assert_eq!(state.jobs["old"].schedule_key, None);
 }
 
 /// #46 D4: a removed job is unscheduled and its retries dropped; `forget` drops its state.
@@ -1046,4 +1050,42 @@ async fn a_one_shot_whose_retry_or_re_run_is_dropped_is_finished() {
     let state = h.saved().await;
     assert_eq!(state.jobs["retry"].retry_at, None);
     assert_eq!(state.jobs["rerun"].interrupted_at, None);
+}
+
+// --- Re-review of PR #91: regressions --------------------------------------------------------
+
+/// #50: a job removed on Monday and restored on Tuesday (a git checkout) with the same timing
+/// frontmatter takes effect when it reappears, so Tuesday's passed 09:00 slot is not caught up.
+#[tokio::test(start_paused = true)]
+async fn a_job_that_reappears_takes_effect_then() {
+    let mut h = Start::at(at(8, 0)).spawn();
+    h.apply(vec![updated("daily", &daily(""), at(0, 0) - days(7))])
+        .await;
+    h.next_run().await.finish(true);
+    tokio::time::sleep(Duration::from_secs(3600)).await;
+    assert_eq!(h.now(), at(10, 0));
+    h.apply(vec![JobChange::Removed {
+        name: "daily".into(),
+    }])
+    .await;
+    h.no_run_for(Duration::from_secs(24 * 3600)).await;
+    assert_eq!(h.now(), at(10, 0) + days(1));
+
+    h.apply(vec![updated("daily", &daily(""), h.now())]).await;
+    let run = h.next_run().await;
+    assert_eq!(run.fire.scheduled_for, at(9, 0) + days(2));
+    assert_eq!(run.fire.trigger, Trigger::Scheduled);
+}
+
+/// #12 §6: an API delete held back while the job ran wins over the frontmatter guard's restore.
+#[tokio::test(start_paused = true)]
+async fn a_held_delete_wins_over_the_guard_restore() {
+    let mut h = Start::at(at(8, 59)).spawn();
+    h.apply(vec![updated("daily", &daily(""), at(0, 0))]).await;
+    let run = h.next_run().await;
+    h.handle.forget("daily").await.unwrap();
+    run.finish_restoring(true, Some(updated("daily", &daily(""), at(9, 1))));
+    h.saved_until(|s| !s.jobs.contains_key("daily")).await;
+    assert_eq!(h.handle.run_now("daily").await, RunNow::Unknown);
+    h.no_run_for(Duration::from_secs(48 * 3600)).await;
 }
