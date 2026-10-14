@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
 
-use claudeclaw_api::export::{FieldClass, PseudonymKind, field_class};
+use claudeclaw_api::export::{FIELD_CLASSES, FieldClass, PseudonymKind, field_class};
 use claudeclaw_api::logs::LogEntry;
 use claudeclaw_api::scope::Scope;
 use serde_json::{Map, Value};
@@ -52,15 +52,61 @@ fn priority(kind: PseudonymKind) -> usize {
         .unwrap_or(AMBIGUITY_ORDER.len())
 }
 
-/// Whether a kind's values are high-entropy enough for the verify pass (#28 D5.4). Job, agent,
-/// Launcher and MCP names are short and collide with code-given words, so field classes and the
-/// free-text pass cover them instead.
+/// Whether a kind's values are high-entropy enough for the verify pass's text scan (#28 D5.4).
+/// Job, agent, Launcher and MCP names are short and collide with code-given words, so field
+/// classes and the free-text pass cover them, and verify checks them only in data keys.
 pub(crate) fn verified(kind: PseudonymKind) -> bool {
-    !matches!(
+    !short_name(kind)
+}
+
+fn short_name(kind: PseudonymKind) -> bool {
+    matches!(
         kind,
         PseudonymKind::Job | PseudonymKind::Agent | PseudonymKind::Launcher | PseudonymKind::Mcp
     )
 }
+
+/// What may sit around a known value for it to count, in the scrub and the verify pass.
+///
+/// Random-looking identifiers match anywhere (`resume_<session>` still hides the session);
+/// only short, word-like names need word boundaries, so `claude-opus-4` doesn't match a job
+/// called `opus` (#28 D5.3.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Boundary {
+    /// Not next to `[A-Za-z0-9_-]`: names (jobs, agents, Launchers, MCP tools, labels, token
+    /// names, the OS user and the hostname).
+    Word,
+    /// Not next to another digit, so a known snowflake or IP doesn't match inside a longer
+    /// number.
+    Digit,
+    /// Anywhere: Session, Device and token IDs, paths, secrets and the project and home dirs.
+    Anywhere,
+}
+
+impl Boundary {
+    pub(crate) fn of(kind: PseudonymKind) -> Self {
+        match kind {
+            PseudonymKind::Session
+            | PseudonymKind::Device
+            | PseudonymKind::Token
+            | PseudonymKind::Path
+            | PseudonymKind::Daemon => Boundary::Anywhere,
+            PseudonymKind::Discord | PseudonymKind::Ip => Boundary::Digit,
+            _ => Boundary::Word,
+        }
+    }
+
+    pub(crate) fn holds(self, before: Option<char>, after: Option<char>) -> bool {
+        match self {
+            Boundary::Word => !is_word(before) && !is_word(after),
+            Boundary::Digit => !is_digit(before) && !is_digit(after),
+            Boundary::Anywhere => true,
+        }
+    }
+}
+
+/// A value the verify pass looks for: lowercased, what it is, and how it must sit.
+pub(crate) type Target = (String, &'static str, Boundary);
 
 /// What the export knows before it scrubs anything (#28 D5.2): every identifier it collected,
 /// the secrets, and the fixed replacements.
@@ -107,25 +153,44 @@ impl Known {
         self.values.get(value).copied()
     }
 
-    /// Every value the verify pass looks for, with what it is: high-entropy identifiers, the
-    /// project and home dirs, and the secrets (#28 D5.4).
-    pub(crate) fn verify_targets(&self) -> Vec<(String, &'static str)> {
-        let mut out: Vec<(String, &'static str)> = self
+    /// Every value the verify pass scans the text for (#28 D5.4): high-entropy identifiers,
+    /// the project and home dirs, and the secrets.
+    pub(crate) fn verify_targets(&self) -> Vec<Target> {
+        let mut out: Vec<Target> = self
             .values
             .iter()
             .filter(|(_, kind)| verified(**kind))
-            .map(|(v, kind)| (v.clone(), kind.as_str()))
+            .map(|(v, kind)| (v.to_ascii_lowercase(), kind.as_str(), Boundary::of(*kind)))
             .collect();
-        out.extend(self.project_dir.iter().map(|d| (d.clone(), "project-dir")));
-        out.extend(self.home_dir.iter().map(|d| (d.clone(), "home-dir")));
-        out.extend(self.secrets.iter().map(|(s, _)| (s.clone(), "secret")));
+        let anywhere = |v: &String, what| (v.to_ascii_lowercase(), what, Boundary::Anywhere);
+        out.extend(self.project_dir.iter().map(|d| anywhere(d, "project-dir")));
+        out.extend(self.home_dir.iter().map(|d| anywhere(d, "home-dir")));
+        out.extend(self.secrets.iter().map(|(s, _)| anywhere(s, "secret")));
+        out.retain(|(v, _, _)| !v.is_empty());
         out
     }
 
-    /// The known values, longest first, for the free-text pass.
-    fn by_length(&self) -> Vec<(String, PseudonymKind)> {
-        let mut out: Vec<_> = self.values.iter().map(|(v, k)| (v.clone(), *k)).collect();
-        out.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
+    /// The short names the verify pass checks data keys for: a key holds no field class, so a
+    /// name there is a leak, not a word from code.
+    pub(crate) fn key_targets(&self) -> Vec<Target> {
+        self.values
+            .iter()
+            .filter(|(_, kind)| short_name(**kind))
+            .map(|(v, kind)| (v.to_ascii_lowercase(), kind.as_str(), Boundary::Word))
+            .collect()
+    }
+
+    /// The known values by lowercased first byte, longest first, for the free-text pass.
+    fn by_first_byte(&self) -> HashMap<u8, Vec<(String, PseudonymKind)>> {
+        let mut out: HashMap<u8, Vec<(String, PseudonymKind)>> = HashMap::new();
+        for (value, kind) in &self.values {
+            out.entry(value.as_bytes()[0].to_ascii_lowercase())
+                .or_default()
+                .push((value.clone(), *kind));
+        }
+        for list in out.values_mut() {
+            list.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
+        }
         out
     }
 }
@@ -153,12 +218,21 @@ fn kept_literal(kind: PseudonymKind, value: &str) -> bool {
     }
 }
 
+/// Whether `name` is a field name with a Field class, so a code-given key (#28 D5.1). Any
+/// other object key may be data, and goes through the free-text pass.
+pub(crate) fn classified(name: &str) -> bool {
+    FIELD_CLASSES
+        .binary_search_by(|(field, _)| (*field).cmp(name))
+        .is_ok()
+}
+
 /// One export's map from real values to `<kind>:#n` (#28 D4): numbered on first appearance,
 /// per kind from 1, with no hash and no salt, so the same input gives the same file and two
 /// exports of different input number differently.
+#[derive(Clone)]
 pub(crate) struct Scrubber {
     known: Known,
-    by_length: Vec<(String, PseudonymKind)>,
+    by_first_byte: HashMap<u8, Vec<(String, PseudonymKind)>>,
     ids: HashMap<(PseudonymKind, String), u32>,
     counts: BTreeMap<&'static str, u32>,
     reverse: BTreeMap<String, String>,
@@ -167,10 +241,10 @@ pub(crate) struct Scrubber {
 impl Scrubber {
     pub(crate) fn new(mut known: Known) -> Self {
         known.secrets.sort_by_key(|s| std::cmp::Reverse(s.0.len()));
-        let by_length = known.by_length();
+        let by_first_byte = known.by_first_byte();
         Scrubber {
             known,
-            by_length,
+            by_first_byte,
             ids: HashMap::new(),
             counts: BTreeMap::new(),
             reverse: BTreeMap::new(),
@@ -209,21 +283,13 @@ impl Scrubber {
         format!("{}:#{n}", kind.as_str())
     }
 
-    /// A `settings.json` key: pseudonymised only when it is itself a known identifier or a
-    /// bare snowflake (a channel-keyed map). Keys are otherwise code-given, so the free-text
-    /// pass would only over-scrub them.
+    /// A `settings.json` key: a bare number is a snowflake (a channel-keyed map); anything
+    /// else goes through the free-text pass, since a key can be data (#28 D1.4).
     pub(crate) fn key(&mut self, key: &str) -> String {
-        let normalised = key.to_ascii_lowercase();
-        let kind = self
-            .known
-            .kind_of(key)
-            .or_else(|| self.known.kind_of(&normalised));
-        match kind {
-            Some(kind) => self.pseudonym(kind, key),
-            None if !key.is_empty() && key.bytes().all(|b| b.is_ascii_digit()) => {
-                self.pseudonym(PseudonymKind::Discord, key)
-            }
-            None => key.to_owned(),
+        if !key.is_empty() && key.bytes().all(|b| b.is_ascii_digit()) {
+            self.pseudonym(PseudonymKind::Discord, key)
+        } else {
+            self.free_text(key)
         }
     }
 
@@ -240,10 +306,19 @@ impl Scrubber {
         }
     }
 
-    /// Every field of an object, in order.
+    /// Every field of an object, in order. A key with a Field class is code-given and kept;
+    /// any other key goes through the free-text pass, so `{"per_job": {"<name>": 2}}` hides
+    /// the name.
     pub(crate) fn object(&mut self, map: &Map<String, Value>) -> Map<String, Value> {
         map.iter()
-            .map(|(k, v)| (k.clone(), self.field(k, v)))
+            .map(|(k, v)| {
+                let key = if classified(k) {
+                    k.clone()
+                } else {
+                    self.free_text(k)
+                };
+                (key, self.field(k, v))
+            })
             .collect()
     }
 
@@ -395,49 +470,102 @@ impl Scrubber {
     /// Secrets, then the project dir, paths, known values, snowflakes and IP literals, each on
     /// what the earlier steps left. Replaced text is never scanned again.
     pub(crate) fn free_text(&mut self, text: &str) -> String {
+        self.segments(text)
+            .into_iter()
+            .map(Seg::into_string)
+            .collect()
+    }
+
+    /// [`Scrubber::free_text`] cut to at most about `max_bytes` bytes, then ` […]`.
+    ///
+    /// The cut is chosen on the scrubbed text, so it never falls inside an identifier (a raw
+    /// prefix would escape every scanner) or inside a Pseudonym. Only the kept part of the
+    /// original is then scrubbed for real, so a value in the cut-off tail takes no number.
+    pub(crate) fn free_text_capped(&mut self, text: &str, max_bytes: usize) -> String {
+        let trial = self.clone().segments(text);
+        let mut size = 0;
+        let mut kept = 0;
+        let mut cut = false;
+        for seg in &trial {
+            match seg {
+                Seg::Text(t) => {
+                    if size + t.len() <= max_bytes {
+                        size += t.len();
+                        kept += t.len();
+                        continue;
+                    }
+                    let mut room = max_bytes - size;
+                    while !t.is_char_boundary(room) {
+                        room -= 1;
+                    }
+                    kept += room;
+                    cut = true;
+                    break;
+                }
+                Seg::Done(replacement, original) => {
+                    if size + replacement.len() > max_bytes {
+                        cut = true;
+                        break;
+                    }
+                    size += replacement.len();
+                    kept += original;
+                }
+            }
+        }
+        if !cut {
+            return self.free_text(text);
+        }
+        format!("{} […]", self.free_text(&text[..kept]).trim_end())
+    }
+
+    fn segments(&mut self, text: &str) -> Vec<Seg> {
         if text.is_empty() {
-            return String::new();
+            return Vec::new();
         }
         let mut segs = vec![Seg::Text(text.to_owned())];
         for (secret, label) in &self.known.secrets {
             segs = replace_exact(segs, secret, &format!("<redacted:{label}>"));
         }
         if let Some(dir) = self.known.project_dir.clone() {
-            segs = replace_exact(segs, &dir, "<project-dir>");
+            segs = replace_exact(segs, &dir, PROJECT_DIR);
         }
         segs = self.pass(segs, Self::scan_path);
         segs = self.pass(segs, Self::scan_known);
         segs = self.pass(segs, Self::scan_snowflake);
-        segs = self.pass(segs, Self::scan_ip);
-        segs.into_iter().map(Seg::into_string).collect()
+        self.pass(segs, Self::scan_ip)
     }
 
-    /// Runs one scanner over every text segment. A scanner looks at `text` (with the
-    /// characters around it, for boundaries) and returns the first match at or after a
-    /// position as `(start, end, replacement)`.
+    /// Runs one scanner over every text segment. A scanner looks at `text` (with the context
+    /// around it, for boundaries) and returns the first match at or after a position as
+    /// `(start, end, replacement)`.
     fn pass(&mut self, segs: Vec<Seg>, scan: Scanner) -> Vec<Seg> {
         let mut out = Vec::with_capacity(segs.len());
         let mut before: Option<char> = None;
+        let mut after_project_dir = false;
         let count = segs.len();
         let mut iter = segs.into_iter().peekable();
         for _ in 0..count {
             let seg = iter.next().expect("counted");
             let after = iter.peek().and_then(Seg::first_char);
             match seg {
-                Seg::Done(s) => {
+                Seg::Done(s, original) => {
                     before = s.chars().last().or(before);
-                    out.push(Seg::Done(s));
+                    after_project_dir = s == PROJECT_DIR;
+                    out.push(Seg::Done(s, original));
                 }
                 Seg::Text(text) => {
+                    let ctx = Ctx {
+                        before,
+                        after,
+                        after_project_dir,
+                    };
                     let mut from = 0;
                     let mut pos = 0;
-                    while let Some((start, end, replacement)) =
-                        scan(self, &text, pos, before, after)
-                    {
+                    while let Some((start, end, replacement)) = scan(self, &text, pos, ctx) {
                         if start > from {
                             out.push(Seg::Text(text[from..start].to_owned()));
                         }
-                        out.push(Seg::Done(replacement));
+                        out.push(Seg::Done(replacement, end - start));
                         from = end;
                         pos = end;
                     }
@@ -445,30 +573,31 @@ impl Scrubber {
                         out.push(Seg::Text(text[from..].to_owned()));
                     }
                     before = text.chars().last().or(before);
+                    after_project_dir = false;
                 }
             }
         }
         out
     }
 
-    /// Known values, longest first, between non-`[A-Za-z0-9_-]` characters (#28 D5.3.2).
-    fn scan_known(
-        &mut self,
-        text: &str,
-        pos: usize,
-        before: Option<char>,
-        after: Option<char>,
-    ) -> Option<(usize, usize, String)> {
+    /// Known values, longest first, each with its kind's [`Boundary`] (#28 D5.3.2), ASCII
+    /// case-insensitive: Session IDs are normalised to lowercase, and over-scrubbing a
+    /// differently cased name is safe.
+    fn scan_known(&mut self, text: &str, pos: usize, ctx: Ctx) -> Option<(usize, usize, String)> {
+        let bytes = text.as_bytes();
         for (start, _) in text[pos..].char_indices().map(|(i, c)| (i + pos, c)) {
-            if is_word(char_before(text, start, before)) {
+            let Some(candidates) = self.by_first_byte.get(&bytes[start].to_ascii_lowercase())
+            else {
                 continue;
-            }
-            // ASCII case-insensitive: Session IDs are normalised to lowercase, and over-scrubbing
-            // a differently cased name is safe.
-            let found = self.by_length.iter().find(|(value, _)| {
-                text.get(start..start + value.len())
+            };
+            let found = candidates.iter().find(|(value, kind)| {
+                let end = start + value.len();
+                text.get(start..end)
                     .is_some_and(|t| t.eq_ignore_ascii_case(value))
-                    && !is_word(char_after(text, start + value.len(), after))
+                    && Boundary::of(*kind).holds(
+                        char_before(text, start, ctx.before),
+                        char_after(text, end, ctx.after),
+                    )
             });
             if let Some((value, kind)) = found.cloned() {
                 let p = self.pseudonym(kind, &value);
@@ -478,30 +607,24 @@ impl Scrubber {
         None
     }
 
-    /// Runs of 17–20 digits inside a string, not next to a `.` (#28 D5.3.3).
+    /// Runs of 17–20 digits inside a string, except the parts of a decimal number (#28
+    /// D5.3.3).
     fn scan_snowflake(
         &mut self,
         text: &str,
         pos: usize,
-        before: Option<char>,
-        after: Option<char>,
+        ctx: Ctx,
     ) -> Option<(usize, usize, String)> {
-        let (start, end) = digit_runs(text, pos, before, after).next()?;
+        let (start, end) = digit_runs(text, pos, ctx.before, ctx.after).next()?;
         let p = self.pseudonym(PseudonymKind::Discord, &text[start..end]);
         Some((start, end, p))
     }
 
-    /// Absolute or `~/…` paths outside the project dir and the system prefixes (#28 D3); the
-    /// home dir alone becomes `~`.
-    fn scan_path(
-        &mut self,
-        text: &str,
-        pos: usize,
-        before: Option<char>,
-        _after: Option<char>,
-    ) -> Option<(usize, usize, String)> {
+    /// Absolute, `~/…` and drive paths outside the project dir and the system prefixes, the
+    /// whole path as one `path:#n` (#28 D3); the home dir alone becomes `~`.
+    fn scan_path(&mut self, text: &str, pos: usize, ctx: Ctx) -> Option<(usize, usize, String)> {
         let mut search = pos;
-        while let Some((start, end)) = next_path(text, search, before) {
+        while let Some((start, end)) = next_path(text, search, ctx) {
             let path = &text[start..end];
             search = end;
             if KEPT_PATH_PREFIXES.iter().any(|p| path.starts_with(p)) {
@@ -519,13 +642,7 @@ impl Scrubber {
 
     /// Tokens that parse as an IP address (with an optional port), except loopback and
     /// unspecified (#28 D5.3.5).
-    fn scan_ip(
-        &mut self,
-        text: &str,
-        pos: usize,
-        before: Option<char>,
-        after: Option<char>,
-    ) -> Option<(usize, usize, String)> {
+    fn scan_ip(&mut self, text: &str, pos: usize, ctx: Ctx) -> Option<(usize, usize, String)> {
         let bytes = text.as_bytes();
         let mut i = pos;
         while i < bytes.len() {
@@ -542,8 +659,9 @@ impl Scrubber {
                 end -= 1;
             }
             let token = &text[start..end];
-            let bounded = !char_before(text, start, before).is_some_and(|c| c.is_alphanumeric())
-                && !char_after(text, i, after).is_some_and(|c| c.is_alphanumeric());
+            let bounded = !char_before(text, start, ctx.before)
+                .is_some_and(|c| c.is_alphanumeric())
+                && !char_after(text, i, ctx.after).is_some_and(|c| c.is_alphanumeric());
             if !bounded || !(token.contains('.') || token.contains(':')) {
                 continue;
             }
@@ -567,25 +685,38 @@ impl Scrubber {
     }
 }
 
-type Scanner =
-    fn(&mut Scrubber, &str, usize, Option<char>, Option<char>) -> Option<(usize, usize, String)>;
+const PROJECT_DIR: &str = "<project-dir>";
 
-/// A piece of a free-text value: still to scan, or already replaced.
+/// What a scanner sees around a text segment.
+#[derive(Clone, Copy)]
+struct Ctx {
+    /// The character before the segment, if any.
+    before: Option<char>,
+    /// The character after it.
+    after: Option<char>,
+    /// The segment follows `<project-dir>`, so a leading `/…` is project-relative.
+    after_project_dir: bool,
+}
+
+type Scanner = fn(&mut Scrubber, &str, usize, Ctx) -> Option<(usize, usize, String)>;
+
+/// A piece of a free-text value: still to scan, or already replaced (with the length of the
+/// original text it replaced).
 enum Seg {
     Text(String),
-    Done(String),
+    Done(String, usize),
 }
 
 impl Seg {
     fn first_char(&self) -> Option<char> {
         match self {
-            Seg::Text(s) | Seg::Done(s) => s.chars().next(),
+            Seg::Text(s) | Seg::Done(s, _) => s.chars().next(),
         }
     }
 
     fn into_string(self) -> String {
         match self {
-            Seg::Text(s) | Seg::Done(s) => s,
+            Seg::Text(s) | Seg::Done(s, _) => s,
         }
     }
 }
@@ -600,7 +731,7 @@ fn replace_exact(segs: Vec<Seg>, needle: &str, replacement: &str) -> Vec<Seg> {
                     if i > 0 {
                         out.push(Seg::Text(rest[..i].to_owned()));
                     }
-                    out.push(Seg::Done(replacement.to_owned()));
+                    out.push(Seg::Done(replacement.to_owned(), needle.len()));
                     rest = &rest[i + needle.len()..];
                 }
                 if !rest.is_empty() {
@@ -613,16 +744,20 @@ fn replace_exact(segs: Vec<Seg>, needle: &str, replacement: &str) -> Vec<Seg> {
     out
 }
 
-/// `[A-Za-z0-9_-]`: the characters a known value must not touch (#28 D5.3.2).
-fn is_word(c: Option<char>) -> bool {
+/// `[A-Za-z0-9_-]`: the characters a word-bounded value must not touch (#28 D5.3.2).
+pub(crate) fn is_word(c: Option<char>) -> bool {
     c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn is_digit(c: Option<char>) -> bool {
+    c.is_some_and(|c| c.is_ascii_digit())
 }
 
 fn is_ip_char(b: u8) -> bool {
     b.is_ascii_hexdigit() || b == b'.' || b == b':'
 }
 
-fn char_before(text: &str, i: usize, outside: Option<char>) -> Option<char> {
+pub(crate) fn char_before(text: &str, i: usize, outside: Option<char>) -> Option<char> {
     if i == 0 {
         outside
     } else {
@@ -630,7 +765,7 @@ fn char_before(text: &str, i: usize, outside: Option<char>) -> Option<char> {
     }
 }
 
-fn char_after(text: &str, i: usize, outside: Option<char>) -> Option<char> {
+pub(crate) fn char_after(text: &str, i: usize, outside: Option<char>) -> Option<char> {
     if i >= text.len() {
         outside
     } else {
@@ -638,7 +773,9 @@ fn char_after(text: &str, i: usize, outside: Option<char>) -> Option<char> {
     }
 }
 
-/// Maximal runs of 17–20 ASCII digits in `text` from `pos`, not touching a `.`.
+/// Maximal runs of 17–20 ASCII digits in `text` from `pos`. A run is skipped only when it is
+/// part of a decimal number (`0.300…04`, `…04.5`): a full stop after an ID is not a decimal
+/// point, so `user <id>.` still counts (#28 D5.3.3, D5.4).
 pub(crate) fn digit_runs<'a>(
     text: &'a str,
     pos: usize,
@@ -662,11 +799,15 @@ pub(crate) fn digit_runs<'a>(
                 i += 1;
             }
             let len = i - start;
-            let dot_before = char_before(text, start, before) == Some('.');
-            let dot_after = char_after(text, i, after) == Some('.');
-            let digit_edge = (start == 0 && before.is_some_and(|c| c.is_ascii_digit()))
-                || (i == bytes.len() && after.is_some_and(|c| c.is_ascii_digit()));
-            if (17..=20).contains(&len) && !dot_before && !dot_after && !digit_edge {
+            // Digit, dot, then this run: a fraction.
+            let fraction =
+                start >= 2 && bytes[start - 1] == b'.' && bytes[start - 2].is_ascii_digit();
+            // This run, dot, then a digit: an integer part.
+            let integer =
+                bytes.get(i) == Some(&b'.') && bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
+            let digit_edge =
+                (start == 0 && is_digit(before)) || (i == bytes.len() && is_digit(after));
+            if (17..=20).contains(&len) && !fraction && !integer && !digit_edge {
                 return Some((start, i));
             }
         }
@@ -674,32 +815,57 @@ pub(crate) fn digit_runs<'a>(
     })
 }
 
-/// The next path in `text` from `pos`: `/…`, `~/…` or `X:\…`, starting after a separator
-/// character and ending at whitespace, a quote or closing punctuation, with a trailing `.`
-/// or `:` left out.
-fn next_path(text: &str, pos: usize, before: Option<char>) -> Option<(usize, usize)> {
+/// Characters that continue a path or a relative path's name, so a `/` after one doesn't
+/// start an absolute path (`a/b`, `./x`, `~/x` is handled on its own).
+fn is_path_char(c: char) -> bool {
+    c.is_alphanumeric()
+        || matches!(
+            c,
+            '.' | '_' | '-' | '~' | '/' | '\\' | '@' | '+' | '%' | '$'
+        )
+}
+
+/// The next absolute path in `text` from `pos`: `/…`, `~/…`, `X:\…` or `X:/…`, starting
+/// after any character that can't be part of a path (whitespace, quotes, `:`, `=`, `(`, …),
+/// and ending at whitespace, a quote or closing punctuation, with a trailing `.` or `:` left
+/// out. In a `file:///…` URL the path starts at the last slash; `//host` (a URL authority) is
+/// not a path.
+fn next_path(text: &str, pos: usize, ctx: Ctx) -> Option<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut i = pos;
     while i < bytes.len() {
-        let starts = match bytes[i] {
-            b'/' => bytes
-                .get(i + 1)
-                .is_some_and(|b| *b != b'/' && !is_path_end(*b)),
-            b'~' => bytes.get(i + 1) == Some(&b'/'),
-            b if b.is_ascii_alphabetic() => {
-                bytes.get(i + 1) == Some(&b':') && bytes.get(i + 2) == Some(&b'\\')
-            }
-            _ => false,
-        };
-        let opens = match char_before(text, i, before) {
-            None => true,
-            Some(c) => c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '(' | '[' | '=' | ','),
-        };
-        if !(starts && opens) {
+        if !text.is_char_boundary(i) {
             i += 1;
             continue;
         }
-        let start = i;
+        let opens = !(i == 0 && ctx.after_project_dir)
+            && !char_before(text, i, ctx.before).is_some_and(is_path_char);
+        if !opens {
+            i += 1;
+            continue;
+        }
+        let start = match bytes[i] {
+            b'/' => {
+                let run = bytes[i..].iter().take_while(|b| **b == b'/').count();
+                let last = i + run - 1;
+                match run {
+                    2 => None,
+                    _ if run > 2 && is_drive(bytes, last + 1) => Some(last + 1),
+                    _ => bytes
+                        .get(last + 1)
+                        .is_some_and(|b| !is_path_end(*b))
+                        .then_some(last),
+                }
+            }
+            b'~' => (bytes.get(i + 1) == Some(&b'/')).then_some(i),
+            _ if is_drive(bytes, i) => Some(i),
+            _ => None,
+        };
+        let Some(start) = start else {
+            i += 1;
+            continue;
+        };
+        i = start;
         while i < bytes.len() && !is_path_end(bytes[i]) {
             i += 1;
         }
@@ -710,6 +876,13 @@ fn next_path(text: &str, pos: usize, before: Option<char>) -> Option<(usize, usi
         return Some((start, end));
     }
     None
+}
+
+/// `X:\` or `X:/` at `i`.
+fn is_drive(bytes: &[u8], i: usize) -> bool {
+    bytes.get(i).is_some_and(u8::is_ascii_alphabetic)
+        && bytes.get(i + 1) == Some(&b':')
+        && matches!(bytes.get(i + 2), Some(b'\\' | b'/'))
 }
 
 fn is_path_end(b: u8) -> bool {
@@ -915,5 +1088,90 @@ mod tests {
         );
         let raw = crate::logs::parse_line("panic in daily", Some("c".into()));
         assert_eq!(s.log_entry(&raw), json!({"raw": "panic in job:#1"}));
+    }
+
+    #[test]
+    fn a_snowflake_before_a_full_stop_is_caught_but_decimals_are_not() {
+        let id = flake('3', 18);
+        let mut s = scrubber(|_| ());
+        assert_eq!(
+            s.free_text(&format!("Unknown user {id}.")),
+            "Unknown user discord:#1."
+        );
+        assert_eq!(s.free_text(&format!("x.{id} end")), "x.discord:#1 end");
+        let decimals = format!("0.{id} and {id}.5");
+        assert_eq!(s.free_text(&decimals), decimals);
+    }
+
+    #[test]
+    fn random_looking_ids_match_anywhere_and_names_need_word_boundaries() {
+        let id = flake('6', 18);
+        let mut s = scrubber(|k| {
+            k.add(PseudonymKind::Session, "5E55-AB12");
+            k.add(PseudonymKind::Device, "dev7f3a");
+            k.add(PseudonymKind::Discord, &id);
+            k.add(PseudonymKind::Job, "opus");
+        });
+        assert_eq!(
+            s.free_text("resume_5e55-ab12 failed on xdev7f3ay"),
+            "resume_session:#1 failed on xdevice:#1y"
+        );
+        assert_eq!(s.free_text(&format!("chan_{id}_x")), "chan_discord:#1_x");
+        // 21 digits: neither a snowflake run nor the known one.
+        let longer = format!("111{id}");
+        assert_eq!(s.free_text(&longer), longer, "not inside a longer number");
+        assert_eq!(s.free_text("claude-opus-4 opus"), "claude-opus-4 job:#1");
+    }
+
+    #[test]
+    fn unclassified_object_keys_are_free_text() {
+        let mut s = scrubber(|k| {
+            k.add(PseudonymKind::Job, "payroll-sync");
+            k.add(PseudonymKind::Job, "job");
+        });
+        let value = json!({"per_job": {"payroll-sync": 2}, "job": "job"});
+        assert_eq!(
+            Value::Object(s.object(value.as_object().unwrap())),
+            json!({"per_job": {"job:#1": 2}, "job": "job:#2"}),
+            "a key with a Field class (`job`) is code-given and kept"
+        );
+        assert_eq!(s.key("payroll-sync"), "job:#1");
+        assert_eq!(s.key("model"), "model");
+    }
+
+    #[test]
+    fn a_capped_text_is_cut_after_scrubbing_and_never_inside_a_pseudonym() {
+        let id = flake('8', 18);
+        let mut s = scrubber(|k| k.add(PseudonymKind::Job, "tail-job"));
+        // A raw cut at 20 chars would leave half the snowflake.
+        let text = format!("lost channel {id} then tail-job");
+        let capped = s.free_text_capped(&text, 20);
+        assert_eq!(capped, "lost channel […]");
+        assert!(s.reverse().is_empty(), "nothing cut off takes a number");
+        let capped = s.free_text_capped(&text, 30);
+        assert_eq!(capped, "lost channel discord:#1 then […]");
+        assert_eq!(s.counts().get("job"), None);
+        assert_eq!(s.free_text_capped("short", 30), "short");
+    }
+
+    #[test]
+    fn paths_after_any_non_path_character_and_in_urls() {
+        let mut s = scrubber(|k| k.add(PseudonymKind::OsUser, "claw"));
+        assert_eq!(
+            s.free_text("see file:///home/claw/clients/acme-corp/plan.md now"),
+            "see file://path:#1 now"
+        );
+        assert_eq!(
+            s.free_text("path:/home/claw/clients/acme-corp/plan.md"),
+            "path:path:#1"
+        );
+        assert_eq!(
+            s.free_text(r"file:///C:/home/claw/plan.md and drive=C:\Users\claw\x"),
+            "file:///path:#2 and drive=path:#3"
+        );
+        assert_eq!(
+            s.free_text("https://discord.com/api/x and a/b"),
+            "https://discord.com/api/x and a/b"
+        );
     }
 }

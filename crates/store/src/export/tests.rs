@@ -734,3 +734,223 @@ fn an_empty_project_dir_still_exports() {
     assert_eq!((out.manifest.lines, out.manifest.runs), (0, 0));
     assert_eq!(out.manifest.trimmed.oldest_included, None);
 }
+
+/// Appends Daemon log lines to the fixture's Worker file.
+fn append_worker(f: &Fixture, lines: &[String]) {
+    let path = f.layout.daemon_log("worker", "2026-10-13");
+    let mut text = fs::read_to_string(&path).unwrap();
+    for line in lines {
+        text.push('\n');
+        text.push_str(line);
+    }
+    fs::write(&path, text).unwrap();
+}
+
+/// Every pseudonym in `map` appears in `text`, and each kind is numbered 1..=n with no gap.
+fn assert_map_matches_text(out: &LogExport) {
+    let map = out.map.as_ref().unwrap();
+    for pseudonym in map.keys() {
+        assert!(
+            out.text.contains(pseudonym.as_str()),
+            "{pseudonym} not in the file"
+        );
+    }
+    for (kind, n) in &out.manifest.pseudonyms {
+        for i in 1..=*n {
+            assert!(
+                map.contains_key(&format!("{kind}:#{i}")),
+                "{kind}:#{i} missing"
+            );
+        }
+    }
+    let total: u32 = out.manifest.pseudonyms.values().sum();
+    assert_eq!(total as usize, map.len());
+}
+
+#[test]
+fn trimmed_lines_take_no_pseudonym_numbers() {
+    let f = fixture();
+    // The oldest line, and a TRACE one, so it is the first to be trimmed. It is the only place
+    // these two identifiers appear.
+    let path = f.layout.daemon_log("watchdog", "2026-10-13");
+    let mut text = log_line(
+        0,
+        "2026-10-13T00:00:01Z",
+        "TRACE",
+        "gateway.event",
+        "early",
+        json!({"session_id": "trimmed-only-session", "job": "early-job"}),
+    );
+    text.push('\n');
+    text.push_str(&fs::read_to_string(&path).unwrap());
+    fs::write(&path, text).unwrap();
+    let request = |max: Option<u64>| ExportRequest {
+        max_bytes: max,
+        map: true,
+        ..ExportRequest::default()
+    };
+    let full = run(&f, &request(None));
+    assert!(
+        full.map
+            .as_ref()
+            .unwrap()
+            .values()
+            .any(|v| v == "early-job")
+    );
+    let trimmed = run(&f, &request(Some(full.text.len() as u64 - 50)));
+    assert_eq!(trimmed.manifest.trimmed.trace, 1);
+    let map = trimmed.map.as_ref().unwrap();
+    assert!(
+        !map.values()
+            .any(|v| v == "early-job" || v == "trimmed-only-session"),
+        "{map:?}"
+    );
+    assert_map_matches_text(&trimmed);
+    assert_map_matches_text(&full);
+}
+
+#[test]
+fn a_long_fatal_is_scrubbed_before_it_is_cut() {
+    let f = fixture();
+    let id = flake('4');
+    let mut status: Value =
+        serde_json::from_str(&fs::read_to_string(f.layout.supervisor()).unwrap()).unwrap();
+    // A raw cut at 300 bytes would fall inside the snowflake and keep its first digits.
+    let fatal = format!("{} {id} after-tail-job", "x".repeat(290));
+    status["crashes"][0]["fatal"] = json!(fatal);
+    fs::write(f.layout.supervisor(), status.to_string()).unwrap();
+    let out = run(
+        &f,
+        &ExportRequest {
+            map: true,
+            ..ExportRequest::default()
+        },
+    );
+    let summary = &out.text[..out.text.find("## Status").unwrap()];
+    let crash_line = summary
+        .lines()
+        .find(|l| l.starts_with("- Newest crash:"))
+        .unwrap();
+    assert!(crash_line.ends_with("x […]"), "{crash_line}");
+    assert!(!summary.contains("4444"), "{summary}");
+    // The snowflake is numbered where it first shows: the Crash record, after discord:#1-#2.
+    assert_map_matches_text(&out);
+}
+
+#[test]
+fn identifiers_in_keys_glued_ids_and_full_stops_are_scrubbed() {
+    let f = fixture();
+    let unknown = flake('5');
+    append_worker(
+        &f,
+        &[log_line(
+            8,
+            "2026-10-13T08:36:00Z",
+            "WARN",
+            "discord.send_failed",
+            &format!(
+                "Unknown user {unknown}. resume_{} failed",
+                SESSION.to_ascii_lowercase()
+            ),
+            json!({"per_job": {"daily-report": 2, "researcher/digest": 1}}),
+        )],
+    );
+    let out = run(&f, &ExportRequest::default());
+    for leaked in [
+        unknown.as_str(),
+        "daily-report",
+        "researcher",
+        &SESSION.to_ascii_lowercase(),
+    ] {
+        assert!(!out.text.contains(leaked), "{leaked} leaked");
+    }
+    let log = section_lines(&out.text, "Daemon log");
+    let line = log.iter().find(|l| l["seq"] == 8).unwrap();
+    assert_eq!(
+        line["message"],
+        "Unknown user discord:#3. resume_session:#1 failed"
+    );
+    let keys: Vec<&String> = line["fields"]["per_job"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(keys, ["job:#1", "job:#2"]);
+}
+
+#[test]
+fn planted_glued_or_dotted_ids_fail_closed() {
+    for (field, value, kind) in [
+        ("boot_id", format!("resume_{SESSION}"), "session"),
+        ("version", format!("v{}.", flake('9')), "discord"),
+    ] {
+        let f = fixture();
+        append_worker(
+            &f,
+            &[log_line(
+                8,
+                "2026-10-13T08:40:00Z",
+                "INFO",
+                "daemon.start",
+                "started",
+                json!({ field: value }),
+            )],
+        );
+        let err = export(&f.layout, &f.input, &ExportRequest::default()).unwrap_err();
+        assert!(
+            matches!(&err, ExportError::Leak { field: f, kind: k, .. } if f == field && *k == kind),
+            "{field}: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_job_name_as_a_key_inside_a_structural_field_is_scrubbed() {
+    // `deleted` is Structural, so its value is kept as is; its keys still get the free-text
+    // pass, and the verify pass checks them for short names (see `verify::tests`).
+    let f = fixture();
+    append_worker(
+        &f,
+        &[log_line(
+            8,
+            "2026-10-13T08:40:00Z",
+            "INFO",
+            "housekeeping.done",
+            "done",
+            json!({"deleted": {"daily-report": 1, "inbox": 2}}),
+        )],
+    );
+    let out = run(&f, &ExportRequest::default());
+    assert!(
+        out.text.contains("\"deleted\":{\"job:#1\":1,\"inbox\":2}"),
+        "{}",
+        out.text
+    );
+}
+
+#[test]
+fn the_summary_stays_under_two_kib() {
+    let mut f = fixture();
+    let long = "v".repeat(500);
+    f.input.versions.claudeclaw = long.clone();
+    f.input.versions.commit = long.clone();
+    f.input.versions.target = long.clone();
+    f.input.versions.daemon = Some(long.clone());
+    f.input.versions.app = Some(long.clone());
+    f.input.install_method = Some(long.clone());
+    f.input.os.version = Some(long.clone());
+    f.input.claude_code = (0..10)
+        .map(|i| ClaudeCodeRow {
+            launcher: format!("/opt/l{i}.sh"),
+            seen: serde_json::from_value(json!({
+                "version": long, "seen_at": "2026-10-13T00:00:00Z", "outdated": false,
+            }))
+            .unwrap(),
+        })
+        .collect();
+    let out = run(&f, &ExportRequest::default());
+    let start = out.text.find("## Summary\n\n").unwrap() + 12;
+    let summary = &out.text[start..out.text.find("\n\n## Status").unwrap()];
+    assert!(summary.len() <= SUMMARY_MAX_BYTES, "{}", summary.len());
+    assert!(summary.contains("via launcher:#1"), "{summary}");
+}

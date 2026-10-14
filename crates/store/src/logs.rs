@@ -19,9 +19,26 @@ use serde_json::{Map, Value};
 
 use crate::layout::Layout;
 
-/// One request reads at most this many bytes, newest files first; past it the read stops and
-/// says so with [`LogRead::scan_truncated`] (#23 D5's 50 MB bound).
+/// One request reads at most this many bytes of each process's log (`worker`, `watchdog`),
+/// newest files first; past it that process's read stops and says so with
+/// [`LogRead::scan_truncated`] (#23 D5's 50 MB bound). Each process has its own budget, so a
+/// busy Worker log can't crowd the Watchdog's crash and restart lines out of a merged read.
 pub const SCAN_LIMIT_BYTES: u64 = 50_000_000;
+
+#[cfg(test)]
+thread_local! {
+    /// A smaller scan bound for tests, so they don't write 50 MB files.
+    pub(crate) static TEST_SCAN_LIMIT: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn scan_limit() -> u64 {
+    #[cfg(test)]
+    if let Some(limit) = TEST_SCAN_LIMIT.with(std::cell::Cell::get) {
+        return limit;
+    }
+    SCAN_LIMIT_BYTES
+}
 
 /// Which Daemon log to read (management-api §2.9 `logs.tail`'s `source`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -73,7 +90,7 @@ pub struct LogQuery {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogRead {
     pub entries: Vec<LogEntry>,
-    /// [`SCAN_LIMIT_BYTES`] stopped the read before the oldest file in the window.
+    /// [`SCAN_LIMIT_BYTES`] stopped some process's read before the oldest file in the window.
     pub scan_truncated: bool,
 }
 
@@ -199,16 +216,19 @@ pub(crate) fn read_positioned(
     // Newest first, so the scan bound keeps the most recent lines.
     files.sort_by(|a, b| b.date.cmp(&a.date).then(a.process.cmp(&b.process)));
 
-    let mut budget = SCAN_LIMIT_BYTES;
+    let mut budgets = vec![scan_limit(); source.processes().len()];
     let mut truncated = false;
     let mut lines = Vec::new();
     for file in &files {
-        if budget == 0 {
+        let budget = &mut budgets[file.process];
+        if *budget == 0 {
             truncated = true;
-            break;
+            continue;
         }
-        let (bytes, start, cut) = read_tail(&file.path, budget)?;
-        budget = budget.saturating_sub(bytes.len() as u64);
+        let (bytes, start, cut) = read_tail(&file.path, *budget)?;
+        *budget = budget
+            .saturating_sub(bytes.len() as u64)
+            .min(if cut { 0 } else { u64::MAX });
         truncated |= cut;
         let label = (source == LogSource::Daemon).then(|| source.processes()[file.process]);
         collect_lines(file, label, &bytes, start, query, &mut lines);
@@ -267,20 +287,22 @@ fn read_tail(path: &Path, budget: u64) -> Result<(Vec<u8>, u64, bool), LogsError
     let mut file = File::open(path).map_err(io_err("open", path))?;
     let len = file.metadata().map_err(io_err("stat", path))?.len();
     let start = len.saturating_sub(budget);
-    file.seek(SeekFrom::Start(start))
+    // Read one byte early, to know whether `start` is already at a line boundary.
+    let from = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(from))
         .map_err(io_err("seek", path))?;
-    let mut bytes = Vec::with_capacity((len - start) as usize);
+    let mut bytes = Vec::with_capacity((len - from) as usize);
     file.read_to_end(&mut bytes).map_err(io_err("read", path))?;
     if start == 0 {
         return Ok((bytes, 0, false));
     }
-    // Drop the partial first line.
+    // Drop the byte before `start`, and the rest of a partial first line up to its newline.
     let skip = bytes
         .iter()
         .position(|&b| b == b'\n')
         .map_or(bytes.len(), |i| i + 1);
     bytes.drain(..skip);
-    Ok((bytes, start + skip as u64, true))
+    Ok((bytes, from + skip as u64, true))
 }
 
 fn collect_lines(
@@ -626,6 +648,54 @@ mod tests {
         assert!(cut);
         assert_eq!(start, first.len() as u64 + 1);
         assert_eq!(bytes, format!("{second}\n").into_bytes());
+    }
+
+    #[test]
+    fn each_process_has_its_own_scan_bound() {
+        // A Worker log far over the bound must not crowd out the same day's Watchdog lines.
+        let worker: Vec<String> = (1..=40)
+            .map(|n| {
+                line(
+                    n,
+                    &format!("2026-10-13T01:{:02}:00Z", n),
+                    "INFO",
+                    "a",
+                    json!({}),
+                )
+            })
+            .collect();
+        let older = [line(1, "2026-10-12T23:00:00Z", "INFO", "old", json!({}))];
+        let (_dir, layout) = setup(&[
+            ("worker.2026-10-12.jsonl", &older),
+            ("worker.2026-10-13.jsonl", &worker),
+            (
+                "watchdog.2026-10-13.jsonl",
+                &[line(
+                    77,
+                    "2026-10-13T00:30:00Z",
+                    "ERROR",
+                    "worker.exit",
+                    json!({}),
+                )],
+            ),
+        ]);
+        let one_line = worker[39].len() as u64 + 1;
+        TEST_SCAN_LIMIT.with(|l| l.set(Some(one_line * 5)));
+        let read = super::read(&layout, LogSource::Daemon, &LogQuery::default());
+        TEST_SCAN_LIMIT.with(|l| l.set(None));
+        let read = read.unwrap();
+        assert!(read.scan_truncated);
+        let got = seqs(&read);
+        assert_eq!(got.first().map(String::as_str), Some("77"), "{got:?}");
+        assert_eq!(
+            &got[1..],
+            ["36", "37", "38", "39", "40"],
+            "newest Worker lines kept"
+        );
+        assert!(
+            !got.contains(&"1".to_owned()),
+            "the older Worker file is past the bound"
+        );
     }
 
     #[test]

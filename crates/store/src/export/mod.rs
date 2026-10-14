@@ -61,6 +61,12 @@ pub const DEFAULT_MAX_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_BYTES: u64 = 24 * 1024 * 1024;
 /// The Summary's size budget, so it can be pasted into an issue body (#28 D1.2).
 pub const SUMMARY_MAX_BYTES: usize = 2048;
+/// The newest crash's `fatal` in the Summary, after scrubbing.
+const FATAL_MAX_BYTES: usize = 300;
+/// Caller-supplied strings in the Summary (versions, OS, install method).
+const SUMMARY_FIELD_MAX_BYTES: usize = 48;
+/// `Claude Code … via …` rows in the Summary, at most.
+const CLAUDE_CODE_ROWS: usize = 5;
 
 const NOTICE: &str =
     "Read this file before posting it. Identifiers are replaced, but you are the last check.";
@@ -262,6 +268,7 @@ pub fn export(
     let (lines, scan_truncated) = logs::read_positioned(layout, LogSource::Daemon, &query)?;
     let known = collect::known(layout, input, settings_file.as_ref(), &runs, &lines, &crash)?;
     let targets = known.verify_targets();
+    let key_targets = known.key_targets();
     let parts = Parts {
         input,
         window: ExportWindow { since, until },
@@ -297,7 +304,7 @@ pub fn export(
             }
             continue;
         }
-        verify::verify(&built.sections, &rendered, &targets)?;
+        verify::verify(&built.sections, &rendered, &targets, &key_targets)?;
         let manifest = ExportManifest {
             format: FORMAT.to_owned(),
             created_at: input.now,
@@ -381,32 +388,32 @@ struct Built {
 
 impl Parts<'_> {
     /// Scrubs and lays out every section, in D1's order, so Pseudonyms number in file order.
+    /// Only what is kept is scrubbed: a trimmed line or a cut-off tail takes no number, so the
+    /// map and `manifest.pseudonyms` list exactly what the file shows (#28 D4).
     fn build(&self, s: &mut Scrubber, keep: &[bool], trimmed: &Trimmed) -> Built {
-        // The Summary's scrubbed values come first; its counts are filled in at the end.
-        let newest_crash = self.newest_crash(s);
-        let claude_code = self.claude_code_rows(s);
+        let kept = keep.iter().filter(|k| **k).count();
+        let header =
+            Section::new(ExportSection::Header).prose(format!("# {FORMAT}\n\n> {NOTICE}\n"));
+        let summary = self.summary(s, kept, trimmed);
         let status = self.status(s);
         let settings = self.settings(s);
         let jobs = self.jobs(s);
         let crash = self.crash_section(s);
         let runs = self.runs_section(s);
         let mut line_bytes = vec![0; self.lines.len()];
-        let mut log = Vec::new();
+        let mut log = Vec::with_capacity(kept);
         for (i, line) in self.lines.iter().enumerate() {
-            let value = s.log_entry(&line.entry);
-            line_bytes[i] = value.to_string().len() + 1;
             if keep[i] {
+                let value = s.log_entry(&line.entry);
+                line_bytes[i] = value.to_string().len() + 1;
                 log.push(value);
             }
         }
-        let kept = log.len();
-        let header =
-            Section::new(ExportSection::Header).prose(format!("# {FORMAT}\n\n> {NOTICE}\n"));
-        let summary = self.summary(newest_crash, claude_code, kept, trimmed);
-        let mut log_section = Section::new(ExportSection::DaemonLog).prose(format!(
-            "{kept} `worker` and `watchdog` lines, oldest first, merged by timestamp."
-        ));
-        log_section = log_section.jsonl(log);
+        let log_section = Section::new(ExportSection::DaemonLog)
+            .prose(format!(
+                "{kept} `worker` and `watchdog` lines, oldest first, merged by timestamp."
+            ))
+            .jsonl(log);
         Built {
             sections: vec![
                 header,
@@ -422,6 +429,7 @@ impl Parts<'_> {
         }
     }
 
+    /// `<at>, <exit>, fatal: <scrubbed fatal>`; the fatal is scrubbed, then cut (#28 D1.2).
     fn newest_crash(&self, s: &mut Scrubber) -> Option<String> {
         let CrashState::Read(status) = self.crash else {
             return None;
@@ -429,19 +437,19 @@ impl Parts<'_> {
         let crash = status.crashes.first()?;
         let exit = match (&crash.exit.code, &crash.exit.signal) {
             (Some(code), _) => format!("exit code {code}"),
-            (None, Some(signal)) => format!("signal {signal}"),
+            (None, Some(signal)) => format!("signal {}", cap(signal)),
             (None, None) => "no exit status".to_owned(),
         };
         let mut line = format!("{}, {exit}", stamp(crash.at));
         if let Some(fatal) = &crash.fatal {
-            let fatal: String = fatal.chars().take(300).collect();
-            line.push_str(&format!(", fatal: {}", s.free_text(&fatal)));
+            let fatal = s.free_text_capped(fatal, FATAL_MAX_BYTES);
+            line.push_str(&format!(", fatal: {fatal}"));
         }
         Some(line)
     }
 
-    /// `Claude Code <version> via <launcher>, seen <date>` rows (#42 D5).
-    fn claude_code_rows(&self, s: &mut Scrubber) -> Vec<String> {
+    /// `(launcher, version, seen)` for the `Claude Code … via …` rows (#42 D5).
+    fn claude_code_seen(&self) -> Vec<(String, String, DateTime<Utc>)> {
         let mut rows: Vec<(String, String, DateTime<Utc>)> = self
             .input
             .claude_code
@@ -460,48 +468,45 @@ impl Parts<'_> {
                 }
             }
         }
-        rows.iter()
-            .take(5)
-            .map(|(launcher, version, at)| {
-                let via = s.identifier_str(PseudonymKind::Launcher, "launcher", launcher);
-                format!(
-                    "Claude Code {} via {via}, seen {}",
-                    s.free_text(version),
-                    at.date_naive()
-                )
-            })
-            .collect()
+        rows.truncate(CLAUDE_CODE_ROWS);
+        rows
     }
 
-    fn summary(
-        &self,
-        newest_crash: Option<String>,
-        claude_code: Vec<String>,
-        kept: usize,
-        trimmed: &Trimmed,
-    ) -> Section {
+    /// At most [`SUMMARY_MAX_BYTES`]: caller-supplied strings are capped, the fatal is capped,
+    /// and `Claude Code` rows are added only while they fit, so nothing scrubbed is cut off.
+    fn summary(&self, s: &mut Scrubber, kept: usize, trimmed: &Trimmed) -> Section {
         let v = &self.input.versions;
         let mut out = vec![
             format!("- Format: {FORMAT}, created {}", stamp(self.input.now)),
-            format!("- claudeclaw {} ({}, {})", v.claudeclaw, v.commit, v.target),
+            format!(
+                "- claudeclaw {} ({}, {})",
+                cap(&v.claudeclaw),
+                cap(&v.commit),
+                cap(&v.target)
+            ),
             format!(
                 "- Daemon: {}",
-                v.daemon.as_deref().unwrap_or("not answering")
+                v.daemon.as_deref().map_or("not answering".into(), cap)
             ),
         ];
         if let Some(app) = &v.app {
-            out.push(format!("- Desktop app: {app}"));
+            out.push(format!("- Desktop app: {}", cap(app)));
         }
         out.push(format!(
             "- Install method: {}",
-            self.input.install_method.as_deref().unwrap_or("unknown")
+            self.input
+                .install_method
+                .as_deref()
+                .map_or("unknown".into(), cap)
         ));
         let os = &self.input.os;
         out.push(format!(
             "- OS: {} {} ({})",
-            os.family,
-            os.version.as_deref().unwrap_or("(version unknown)"),
-            os.arch
+            cap(&os.family),
+            os.version
+                .as_deref()
+                .map_or("(version unknown)".into(), cap),
+            cap(&os.arch)
         ));
         match &self.input.status {
             Some(status) => {
@@ -521,6 +526,7 @@ impl Parts<'_> {
             }
             None => out.push("- State: unknown".to_owned()),
         }
+        let newest_crash = self.newest_crash(s);
         out.push(format!(
             "- Newest crash: {}",
             newest_crash.unwrap_or_else(|| "none recorded".to_owned())
@@ -540,7 +546,7 @@ impl Parts<'_> {
         }
         if self.scan_truncated {
             out.push(format!(
-                "- The {} MB scan bound stopped before the start of the window",
+                "- The {} MB per-process scan bound stopped before the start of the window",
                 logs::SCAN_LIMIT_BYTES / 1_000_000
             ));
         }
@@ -550,21 +556,30 @@ impl Parts<'_> {
                 self.runs_unparsed
             ));
         }
-        if claude_code.is_empty() {
-            out.push("- Claude Code version: (run claude --version)".to_owned());
-        } else {
-            out.extend(claude_code.into_iter().map(|row| format!("- {row}")));
-        }
-        let mut text = out.join("\n");
-        if text.len() > SUMMARY_MAX_BYTES {
-            let mut cut = SUMMARY_MAX_BYTES - 4;
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
+        let mut size = out.iter().map(|l| l.len() + 1).sum::<usize>();
+        let mut rows = 0;
+        for (launcher, version, at) in self.claude_code_seen() {
+            let row = |s: &mut Scrubber| {
+                let via = s.identifier_str(PseudonymKind::Launcher, "launcher", &launcher);
+                format!(
+                    "- Claude Code {} via {via}, seen {}",
+                    s.free_text(&cap(&version)),
+                    at.date_naive()
+                )
+            };
+            // Try on a copy first, so a row that doesn't fit takes no number.
+            if size + row(&mut s.clone()).len() + 1 > SUMMARY_MAX_BYTES {
+                break;
             }
-            text.truncate(cut);
-            text.push_str(" […]");
+            let row = row(s);
+            size += row.len() + 1;
+            out.push(row);
+            rows += 1;
         }
-        Section::new(ExportSection::Summary).prose(text)
+        if rows == 0 {
+            out.push("- Claude Code version: (run claude --version)".to_owned());
+        }
+        Section::new(ExportSection::Summary).prose(out.join("\n"))
     }
 
     /// The `status.get` subset of #28 D1.3; `dir`, `socket`, `remote.listen`, the TLS
@@ -809,6 +824,18 @@ fn tail_line(s: &mut Scrubber, text: &str) -> String {
         line @ LogEntry::Line(_) => s.log_entry(&line).to_string(),
         LogEntry::Raw(raw) => s.free_text(&raw.raw),
     }
+}
+
+/// A caller-supplied Summary string, cut to [`SUMMARY_FIELD_MAX_BYTES`].
+fn cap(text: &str) -> String {
+    if text.len() <= SUMMARY_FIELD_MAX_BYTES {
+        return text.to_owned();
+    }
+    let mut cut = SUMMARY_FIELD_MAX_BYTES - "…".len();
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}…", &text[..cut])
 }
 
 fn stamp(at: DateTime<Utc>) -> String {
