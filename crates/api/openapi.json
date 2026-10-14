@@ -620,7 +620,8 @@
             "format": "date-time"
           },
           "outcome": {
-            "$ref": "#/components/schemas/CompactOutcome"
+            "$ref": "#/components/schemas/RunOutcome",
+            "description": "The compact run's own outcome (#23, #33)."
           },
           "duration_ms": {
             "type": "integer",
@@ -845,16 +846,6 @@
             "$ref": "#/components/schemas/ClearedBy"
           }
         }
-      },
-      "CompactOutcome": {
-        "type": "string",
-        "enum": [
-          "ok",
-          "failed",
-          "timeout",
-          "interrupted",
-          "rate_limited"
-        ]
       },
       "CostBasis": {
         "type": "string",
