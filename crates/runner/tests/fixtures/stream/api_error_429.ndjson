@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-0000000000d4","claude_code_version":"2.1.296"}
+{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":500,"error_status":429,"error":"rate_limit_error","session_id":"00000000-0000-4000-8000-0000000000d4"}
+{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"API Error: 429 rate_limit_error","api_error_status":429,"session_id":"00000000-0000-4000-8000-0000000000d4","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0},"modelUsage":{}}

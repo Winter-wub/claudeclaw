@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-0000000000c3","claude_code_version":"2.1.296"}
+{"type":"assistant","message":{"id":"msg_01","content":[{"type":"tool_use","id":"toolu_a1","name":"Agent","input":{"description":"Survey the repo","prompt":"List files","subagent_type":"general-purpose"}}],"usage":{"input_tokens":40,"output_tokens":20}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"id":"msg_s1","content":[{"type":"tool_use","id":"toolu_s1","name":"Glob","input":{"pattern":"**/*.rs"}}],"usage":{"input_tokens":9000,"output_tokens":10}},"parent_tool_use_id":"toolu_a1"}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_s1","content":"src/lib.rs"}]},"parent_tool_use_id":"toolu_a1"}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_a1","content":[{"type":"text","text":"One file: src/lib.rs"}]}]},"parent_tool_use_id":null}
+{"type":"assistant","message":{"id":"msg_02","content":[{"type":"text","text":"Found one file."}],"usage":{"input_tokens":60,"output_tokens":4}},"parent_tool_use_id":null}
+{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"Found one file.","session_id":"00000000-0000-4000-8000-0000000000c3","usage":{"input_tokens":9100,"output_tokens":34},"modelUsage":{"claude-test":{"inputTokens":100,"outputTokens":24,"costUSD":0.002},"claude-small":{"inputTokens":9000,"outputTokens":10,"costUSD":0.001,"costBasis":"unknown"}}}
