@@ -1,16 +1,38 @@
 //! Stable log event names, and the events the Desktop app's webview may log (#40 D1, D3).
 //!
-//! The names are binding: an App log line's `event` is one of [`app::ALL`]. New names may be
-//! added. Every field they carry needs a [`crate::export::FIELD_CLASSES`] entry (#40 D3).
+//! The names are binding, and new names may be added. Each event is declared with every field
+//! it may carry (#69), and each field needs a Field class: [`crate::export::APP_FIELD_CLASSES`]
+//! for the App log, [`crate::export::FIELD_CLASSES`] for the Daemon log (#40 D3, #28).
 
 use serde::{Deserialize, Serialize};
 use utoipa::openapi::RefOr;
 use utoipa::openapi::schema::Schema;
 use utoipa::{PartialSchema, ToSchema};
 
+/// One catalogue event and every field it may carry besides [`COMMON_FIELDS`] (#69). The canary
+/// tests fail when a line carries a field outside this list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventFields {
+    pub event: &'static str,
+    pub fields: &'static [&'static str],
+}
+
+/// Fields any line of either log may carry: #23 D2's fixed keys and the `err` Display chain.
+pub const COMMON_FIELDS: &[&str] = &[
+    "err",
+    "event",
+    "level",
+    "message",
+    "seq",
+    "target",
+    "timestamp",
+];
+
 /// The App log catalogue (#40 D3). The App log holds no owner identifiers: only the app-local
 /// daemon ID, `op`, statuses, error codes, durations, byte counts and versions.
 pub mod app {
+    use super::EventFields;
+
     // Lifecycle.
     /// `app_version`, `os`, `arch`, `webview_version`.
     pub const APP_START: &str = "app.start";
@@ -83,41 +105,781 @@ pub mod app {
     /// `count`: events over the `app_log` rate limit (100/s), never dropped silently (#40 D1).
     pub const UI_LOG_DROPPED: &str = "ui.log_dropped";
 
-    /// Every App log event name, in catalogue order.
-    pub const ALL: &[&str] = &[
-        APP_START,
-        APP_READY,
-        APP_EXIT,
-        APP_PANIC,
-        LOG_CAPPED,
-        UPDATE_CHECKED,
-        UPDATE_AVAILABLE,
-        UPDATE_INSTALLED,
-        UPDATE_FAILED,
-        DAEMON_ADDED,
-        DAEMON_REMOVED,
-        DAEMON_REACHABILITY,
-        DAEMON_START,
-        DAEMON_STOP,
-        DAEMON_ATTACH,
-        DAEMON_RESTART_ANYWAY,
-        OFFLINE_EXEC,
-        API_CALL,
-        API_CALL_FAILED,
-        API_CANCELLED,
-        SSE_OPEN,
-        SSE_GAP,
-        SSE_IDLE_RECONNECT,
-        SSE_CLOSED,
-        PAIRING_STARTED,
-        PAIRING_COMPLETED,
-        PAIRING_FAILED,
-        KEYCHAIN_FAILED,
-        UI_ERROR,
-        UI_UNHANDLED_REJECTION,
-        UI_RENDER_ERROR,
-        UI_SCREEN,
-        UI_LOG_DROPPED,
+    /// Every App log event with its fields, in catalogue order (#40 D3, #69).
+    pub const CATALOGUE: &[EventFields] = &[
+        EventFields {
+            event: APP_START,
+            fields: &["app_version", "os", "arch", "webview_version"],
+        },
+        EventFields {
+            event: APP_READY,
+            fields: &[],
+        },
+        EventFields {
+            event: APP_EXIT,
+            fields: &[],
+        },
+        EventFields {
+            event: APP_PANIC,
+            fields: &["location", "payload_bytes"],
+        },
+        EventFields {
+            event: LOG_CAPPED,
+            fields: &[],
+        },
+        EventFields {
+            event: UPDATE_CHECKED,
+            fields: &[],
+        },
+        EventFields {
+            event: UPDATE_AVAILABLE,
+            fields: &[],
+        },
+        EventFields {
+            event: UPDATE_INSTALLED,
+            fields: &[],
+        },
+        EventFields {
+            event: UPDATE_FAILED,
+            fields: &["kind"],
+        },
+        EventFields {
+            event: DAEMON_ADDED,
+            fields: &["daemon", "kind"],
+        },
+        EventFields {
+            event: DAEMON_REMOVED,
+            fields: &["daemon", "kind"],
+        },
+        EventFields {
+            event: DAEMON_REACHABILITY,
+            fields: &["daemon", "from", "to", "class"],
+        },
+        EventFields {
+            event: DAEMON_START,
+            fields: &["daemon", "exit_code", "code", "duration_ms"],
+        },
+        EventFields {
+            event: DAEMON_STOP,
+            fields: &["daemon", "exit_code", "code", "duration_ms"],
+        },
+        EventFields {
+            event: DAEMON_ATTACH,
+            fields: &["daemon", "exit_code", "code", "duration_ms"],
+        },
+        EventFields {
+            event: DAEMON_RESTART_ANYWAY,
+            fields: &["daemon", "exit_code", "code", "duration_ms"],
+        },
+        EventFields {
+            event: OFFLINE_EXEC,
+            fields: &[
+                "command",
+                "exit_code",
+                "duration_ms",
+                "stderr_bytes",
+                "outcome",
+            ],
+        },
+        EventFields {
+            event: API_CALL,
+            fields: &[
+                "daemon",
+                "op",
+                "status",
+                "code",
+                "duration_ms",
+                "deadline_ms",
+                "req_bytes",
+                "resp_bytes",
+            ],
+        },
+        EventFields {
+            event: API_CALL_FAILED,
+            fields: &["daemon", "op", "kind", "elapsed_ms", "deadline_ms"],
+        },
+        EventFields {
+            event: API_CANCELLED,
+            fields: &[],
+        },
+        EventFields {
+            event: SSE_OPEN,
+            fields: &["daemon", "family"],
+        },
+        EventFields {
+            event: SSE_GAP,
+            fields: &["daemon", "family"],
+        },
+        EventFields {
+            event: SSE_IDLE_RECONNECT,
+            fields: &["daemon", "family"],
+        },
+        EventFields {
+            event: SSE_CLOSED,
+            fields: &["daemon", "family"],
+        },
+        EventFields {
+            event: PAIRING_STARTED,
+            fields: &[],
+        },
+        EventFields {
+            event: PAIRING_COMPLETED,
+            fields: &[],
+        },
+        EventFields {
+            event: PAIRING_FAILED,
+            fields: &["kind"],
+        },
+        EventFields {
+            event: KEYCHAIN_FAILED,
+            fields: &["op", "kind"],
+        },
+        EventFields {
+            event: UI_ERROR,
+            fields: &["screen", "name", "frames", "message_bytes"],
+        },
+        EventFields {
+            event: UI_UNHANDLED_REJECTION,
+            fields: &["screen", "name", "frames", "message_bytes"],
+        },
+        EventFields {
+            event: UI_RENDER_ERROR,
+            fields: &["screen", "name", "frames", "message_bytes"],
+        },
+        EventFields {
+            event: UI_SCREEN,
+            fields: &["screen"],
+        },
+        EventFields {
+            event: UI_LOG_DROPPED,
+            fields: &["count"],
+        },
+    ];
+}
+
+/// The Daemon log catalogue (#23 D2 and later tickets, #69). Field names are exactly as the
+/// tickets give them; where a ticket only describes a field, it is left out until named (#74).
+pub mod daemon {
+    use super::EventFields;
+
+    /// Span correlation fields (#23 D2), carried inside `span` on every line within a span.
+    pub const SPAN_FIELDS: &[&str] = &[
+        "agent",
+        "attempt",
+        "job",
+        "launcher",
+        "name",
+        "origin",
+        "principal",
+        "run_id",
+        "scope",
+        "turn_id",
+    ];
+
+    /// #23, #36.
+    pub const DAEMON_START: &str = "daemon.start";
+    /// #23.
+    pub const WORKER_READY: &str = "worker.ready";
+    /// #23.
+    pub const WORKER_STOPPING: &str = "worker.stopping";
+    /// #23.
+    pub const SETTINGS_RELOADED: &str = "settings.reloaded";
+    /// #23.
+    pub const SETTINGS_INVALID: &str = "settings.invalid";
+    /// #32.
+    pub const SETTINGS_LEGACY_KEY: &str = "settings.legacy_key";
+    /// #23.
+    pub const JOBS_LOADED: &str = "jobs.loaded";
+    /// #23.
+    pub const JOB_INVALID: &str = "job.invalid";
+    /// #23.
+    pub const UPDATE_AVAILABLE: &str = "update.available";
+    /// #23.
+    pub const UPDATE_APPLIED: &str = "update.applied";
+    /// #23.
+    pub const TURN_ACCEPTED: &str = "turn.accepted";
+    /// #23, #33.
+    pub const RUN_START: &str = "run.start";
+    /// #23, #33, #38, #42.
+    pub const RUN_FINISH: &str = "run.finish";
+    /// #23.
+    pub const RUN_REFUSED: &str = "run.refused";
+    /// #23, #33.
+    pub const RUN_RECOVERY: &str = "run.recovery";
+    /// #32, #33.
+    pub const RUN_RECOVERY_SKIPPED: &str = "run.recovery_skipped";
+    /// #37.
+    pub const RUN_SETTLE: &str = "run.settle";
+    /// #47.
+    pub const RUN_LINGERED: &str = "run.lingered";
+    /// #25.
+    pub const RUN_STDIN_WRITE_FAILED: &str = "run.stdin_write_failed";
+    /// #23.
+    pub const RATELIMIT_SET: &str = "ratelimit.set";
+    /// #23.
+    pub const JOB_FIRE: &str = "job.fire";
+    /// #23.
+    pub const JOB_SKIP: &str = "job.skip";
+    /// #23.
+    pub const JOB_RETRY_SCHEDULED: &str = "job.retry_scheduled";
+    /// #23.
+    pub const JOB_RETRIES_EXHAUSTED: &str = "job.retries_exhausted";
+    /// #23.
+    pub const JOB_ONESHOT_FINISHED: &str = "job.oneshot_finished";
+    /// #46.
+    pub const JOB_FILE_CHANGED: &str = "job.file_changed";
+    /// #46.
+    pub const JOB_FILE_UNSTABLE: &str = "job.file_unstable";
+    /// #46.
+    pub const JOB_FRONTMATTER_RESTORED: &str = "job.frontmatter_restored";
+    /// #46.
+    pub const JOB_STATE_CARRIED: &str = "job.state_carried";
+    /// #46.
+    pub const SCAN_SLOW: &str = "scan.slow";
+    /// #46.
+    pub const SCAN_DIR_UNAVAILABLE: &str = "scan.dir_unavailable";
+    /// #23.
+    pub const HEARTBEAT_FIRE: &str = "heartbeat.fire";
+    /// #23.
+    pub const SCHEDULER_CLOCK_JUMP: &str = "scheduler.clock_jump";
+    /// #23.
+    pub const DISCORD_CONNECTED: &str = "discord.connected";
+    /// #23.
+    pub const DISCORD_DISCONNECTED: &str = "discord.disconnected";
+    /// #23.
+    pub const DISCORD_RESUMED: &str = "discord.resumed";
+    /// #23.
+    pub const DISCORD_MESSAGE: &str = "discord.message";
+    /// #23, #44.
+    pub const DISCORD_ATTACHMENT_REJECTED: &str = "discord.attachment_rejected";
+    /// #23.
+    pub const DISCORD_SEND_FAILED: &str = "discord.send_failed";
+    /// #23.
+    pub const API_REQUEST: &str = "api.request";
+    /// #23.
+    pub const API_AUTH_FAILED: &str = "api.auth_failed";
+    /// #40.
+    pub const API_CLIENT_GONE: &str = "api.client_gone";
+    /// #23.
+    pub const PAIRING_STARTED: &str = "pairing.started";
+    /// #23.
+    pub const PAIRING_COMPLETED: &str = "pairing.completed";
+    /// #23.
+    pub const PAIRING_FAILED: &str = "pairing.failed";
+    /// #23.
+    pub const DEVICE_REVOKED: &str = "device.revoked";
+    /// #23.
+    pub const NOTIFY_SENT: &str = "notify.sent";
+    /// #23.
+    pub const NOTIFY_FAILED: &str = "notify.failed";
+    /// #23, #44.
+    pub const LOG_DROPPED: &str = "log.dropped";
+    /// #23, #44.
+    pub const LOG_CAPPED: &str = "log.capped";
+    /// #36.
+    pub const LOGS_PRUNE_INCOMPLETE: &str = "logs.prune_incomplete";
+    /// #23.
+    pub const WATCHDOG_START: &str = "watchdog.start";
+    /// #23.
+    pub const WORKER_SPAWN: &str = "worker.spawn";
+    /// #23.
+    pub const WORKER_EXIT: &str = "worker.exit";
+    /// #23.
+    pub const WORKER_RESTART: &str = "worker.restart";
+    /// #23.
+    pub const WATCHDOG_GAVE_UP: &str = "watchdog.gave_up";
+    /// #23.
+    pub const WORKER_STDERR: &str = "worker.stderr";
+    /// #27.
+    pub const WORKER_PING_LATE: &str = "worker.ping_late";
+    /// #27.
+    pub const WORKER_STALLED: &str = "worker.stalled";
+    /// #27.
+    pub const WORKER_HUNG: &str = "worker.hung";
+    /// #27.
+    pub const WORKER_SHUTDOWN_OVERRUN: &str = "worker.shutdown_overrun";
+    /// #27.
+    pub const WATCHDOG_HANG_KILL_DISABLED: &str = "watchdog.hang_kill_disabled";
+    /// #45.
+    pub const WATCHDOG_START_HELD: &str = "watchdog.start_held";
+    /// #45.
+    pub const WATCHDOG_GIVE_UP_CLEARED: &str = "watchdog.give_up_cleared";
+    /// #45.
+    pub const WATCHDOG_EXIT: &str = "watchdog.exit";
+    /// #45.
+    pub const WATCHDOG_SUPERVISOR_UNREADABLE: &str = "watchdog.supervisor_unreadable";
+    /// #29.
+    pub const REAP_START: &str = "reap.start";
+    /// #29.
+    pub const RUN_REAPED: &str = "run.reaped";
+    /// #29.
+    pub const REAP_DONE: &str = "reap.done";
+    /// #29.
+    pub const REAP_ORPHAN_WORKER: &str = "reap.orphan_worker";
+    /// #32.
+    pub const SESSION_BREAKER_OPEN: &str = "session.breaker_open";
+    /// #32.
+    pub const SESSION_BREAKER_CLOSED: &str = "session.breaker_closed";
+    /// #39.
+    pub const SESSION_ROOT_MOVED: &str = "session.root_moved";
+    /// #38.
+    pub const SYSTEM_RESUMED: &str = "system.resumed";
+    /// #39.
+    pub const TRANSCRIPT_NOT_FOUND: &str = "transcript.not_found";
+    /// #39.
+    pub const USAGE_BASELINE_RESET: &str = "usage.baseline_reset";
+    /// #42.
+    pub const RUNNER_CC_VERSION_UNPARSED: &str = "runner.cc_version_unparsed";
+    /// #42.
+    pub const RUNNER_CLAUDE_CODE_OUTDATED: &str = "runner.claude_code_outdated";
+    /// #43.
+    pub const RUN_LOCALE_CHOSEN: &str = "run_locale.chosen";
+    /// #43.
+    pub const RUN_LOCALE_NOT_UTF8: &str = "run_locale.not_utf8";
+    /// #43.
+    pub const RUN_LOCALE_UNAVAILABLE: &str = "run_locale.unavailable";
+    /// #26.
+    pub const RUN_PATH_CAPTURED: &str = "run_path.captured";
+    /// #26.
+    pub const RUN_PATH_CHANGED: &str = "run_path.changed";
+    /// #26.
+    pub const RUN_PATH_CAPTURE_FAILED: &str = "run_path.capture_failed";
+    /// #44.
+    pub const RUNINDEX_BACKFILL_START: &str = "runindex.backfill_start";
+    /// #44.
+    pub const RUNINDEX_BACKFILL_DONE: &str = "runindex.backfill_done";
+    /// #44.
+    pub const RUNINDEX_BACKFILL_FAILED: &str = "runindex.backfill_failed";
+    /// #44.
+    pub const RUNINDEX_UNPARSED: &str = "runindex.unparsed";
+    /// #44.
+    pub const RUNINDEX_TORN: &str = "runindex.torn";
+    /// #44.
+    pub const INBOX_PRUNED: &str = "inbox.pruned";
+    /// #44.
+    pub const INBOX_OVER_CAP: &str = "inbox.over_cap";
+    /// #44.
+    pub const DISK_LOW: &str = "disk.low";
+    /// #44.
+    pub const DISK_OK: &str = "disk.ok";
+    /// #44.
+    pub const HOUSEKEEPING_DONE: &str = "housekeeping.done";
+    /// #24.
+    pub const COMPAT_STATUSLINE_MIGRATED: &str = "compat.statusline_migrated";
+    /// #24.
+    pub const COMPAT_STATE_JSON_REMOVED: &str = "compat.state_json_removed";
+
+    /// Every Daemon log event with its fields (#69).
+    pub const CATALOGUE: &[EventFields] = &[
+        EventFields {
+            event: DAEMON_START,
+            fields: &["version", "pid", "boot_id", "console"],
+        },
+        EventFields {
+            event: WORKER_READY,
+            fields: &[],
+        },
+        EventFields {
+            event: WORKER_STOPPING,
+            fields: &["reason"],
+        },
+        EventFields {
+            event: SETTINGS_RELOADED,
+            fields: &["changed_keys"],
+        },
+        EventFields {
+            event: SETTINGS_INVALID,
+            fields: &[],
+        },
+        EventFields {
+            event: SETTINGS_LEGACY_KEY,
+            fields: &[],
+        },
+        EventFields {
+            event: JOBS_LOADED,
+            fields: &["count", "invalid"],
+        },
+        EventFields {
+            event: JOB_INVALID,
+            fields: &["job", "line", "col", "diagnostic"],
+        },
+        EventFields {
+            event: UPDATE_AVAILABLE,
+            fields: &[],
+        },
+        EventFields {
+            event: UPDATE_APPLIED,
+            fields: &[],
+        },
+        EventFields {
+            event: TURN_ACCEPTED,
+            fields: &["queue_depth"],
+        },
+        EventFields {
+            event: RUN_START,
+            fields: &["session", "session_id", "model", "purpose"],
+        },
+        EventFields {
+            event: RUN_FINISH,
+            fields: &[
+                "outcome",
+                "exit_code",
+                "is_error",
+                "api_error_status",
+                "duration_ms",
+                "result_bytes",
+                "stderr_bytes",
+                "noise_lines",
+                "tool_uses",
+                "tokens_in",
+                "tokens_out",
+                "cost_usd",
+                "purpose",
+                "awake_ms",
+                "suspended_ms",
+                "wake_grace",
+                "claude_code_version",
+            ],
+        },
+        EventFields {
+            event: RUN_REFUSED,
+            fields: &[],
+        },
+        EventFields {
+            event: RUN_RECOVERY,
+            fields: &["kind", "compact_timeout_ms", "turn_timeout_ms"],
+        },
+        EventFields {
+            event: RUN_RECOVERY_SKIPPED,
+            fields: &["kind", "reason", "spent_secs_ago"],
+        },
+        EventFields {
+            event: RUN_SETTLE,
+            fields: &["run_id", "stragglers", "outcome", "pipe_held", "settle_ms"],
+        },
+        EventFields {
+            event: RUN_LINGERED,
+            fields: &["run_id", "linger_ms"],
+        },
+        EventFields {
+            event: RUN_STDIN_WRITE_FAILED,
+            fields: &[],
+        },
+        EventFields {
+            event: RATELIMIT_SET,
+            fields: &["until"],
+        },
+        EventFields {
+            event: JOB_FIRE,
+            fields: &["scheduled_for", "late_ms", "catch_up"],
+        },
+        EventFields {
+            event: JOB_SKIP,
+            fields: &["reason"],
+        },
+        EventFields {
+            event: JOB_RETRY_SCHEDULED,
+            fields: &[],
+        },
+        EventFields {
+            event: JOB_RETRIES_EXHAUSTED,
+            fields: &[],
+        },
+        EventFields {
+            event: JOB_ONESHOT_FINISHED,
+            fields: &[],
+        },
+        EventFields {
+            event: JOB_FILE_CHANGED,
+            fields: &["job", "change", "source", "revision"],
+        },
+        EventFields {
+            event: JOB_FILE_UNSTABLE,
+            fields: &["job", "secs"],
+        },
+        EventFields {
+            event: JOB_FRONTMATTER_RESTORED,
+            fields: &["job", "keys"],
+        },
+        EventFields {
+            event: JOB_STATE_CARRIED,
+            fields: &["from", "to"],
+        },
+        EventFields {
+            event: SCAN_SLOW,
+            fields: &["pass_ms", "interval_ms"],
+        },
+        EventFields {
+            event: SCAN_DIR_UNAVAILABLE,
+            fields: &["dir_kind", "errno"],
+        },
+        EventFields {
+            event: HEARTBEAT_FIRE,
+            fields: &[],
+        },
+        EventFields {
+            event: SCHEDULER_CLOCK_JUMP,
+            fields: &["ms"],
+        },
+        EventFields {
+            event: DISCORD_CONNECTED,
+            fields: &[],
+        },
+        EventFields {
+            event: DISCORD_DISCONNECTED,
+            fields: &[],
+        },
+        EventFields {
+            event: DISCORD_RESUMED,
+            fields: &[],
+        },
+        EventFields {
+            event: DISCORD_MESSAGE,
+            fields: &["scope", "author_id", "text_bytes", "attachments"],
+        },
+        EventFields {
+            event: DISCORD_ATTACHMENT_REJECTED,
+            fields: &["reason", "bytes"],
+        },
+        EventFields {
+            event: DISCORD_SEND_FAILED,
+            fields: &["status"],
+        },
+        EventFields {
+            event: API_REQUEST,
+            fields: &["method", "status", "duration_ms"],
+        },
+        EventFields {
+            event: API_AUTH_FAILED,
+            fields: &["listener", "reason", "peer"],
+        },
+        EventFields {
+            event: API_CLIENT_GONE,
+            fields: &["elapsed_ms"],
+        },
+        EventFields {
+            event: PAIRING_STARTED,
+            fields: &[],
+        },
+        EventFields {
+            event: PAIRING_COMPLETED,
+            fields: &[],
+        },
+        EventFields {
+            event: PAIRING_FAILED,
+            fields: &[],
+        },
+        EventFields {
+            event: DEVICE_REVOKED,
+            fields: &[],
+        },
+        EventFields {
+            event: NOTIFY_SENT,
+            fields: &[],
+        },
+        EventFields {
+            event: NOTIFY_FAILED,
+            fields: &[],
+        },
+        EventFields {
+            event: LOG_DROPPED,
+            fields: &["count"],
+        },
+        EventFields {
+            event: LOG_CAPPED,
+            fields: &["hard"],
+        },
+        EventFields {
+            event: LOGS_PRUNE_INCOMPLETE,
+            fields: &["kept", "expected"],
+        },
+        EventFields {
+            event: WATCHDOG_START,
+            fields: &[],
+        },
+        EventFields {
+            event: WORKER_SPAWN,
+            fields: &["pid"],
+        },
+        EventFields {
+            event: WORKER_EXIT,
+            fields: &["code", "signal", "uptime_ms"],
+        },
+        EventFields {
+            event: WORKER_RESTART,
+            fields: &["backoff_ms"],
+        },
+        EventFields {
+            event: WATCHDOG_GAVE_UP,
+            fields: &[],
+        },
+        EventFields {
+            event: WORKER_STDERR,
+            fields: &["line"],
+        },
+        EventFields {
+            event: WORKER_PING_LATE,
+            fields: &[],
+        },
+        EventFields {
+            event: WORKER_STALLED,
+            fields: &[
+                "beacon",
+                "quiet_s",
+                "waited_ms",
+                "workers",
+                "alive_tasks",
+                "global_queue",
+            ],
+        },
+        EventFields {
+            event: WORKER_HUNG,
+            fields: &["silence_ms"],
+        },
+        EventFields {
+            event: WORKER_SHUTDOWN_OVERRUN,
+            fields: &[],
+        },
+        EventFields {
+            event: WATCHDOG_HANG_KILL_DISABLED,
+            fields: &[],
+        },
+        EventFields {
+            event: WATCHDOG_START_HELD,
+            fields: &[],
+        },
+        EventFields {
+            event: WATCHDOG_GIVE_UP_CLEARED,
+            fields: &[],
+        },
+        EventFields {
+            event: WATCHDOG_EXIT,
+            fields: &["code", "meaning"],
+        },
+        EventFields {
+            event: WATCHDOG_SUPERVISOR_UNREADABLE,
+            fields: &[],
+        },
+        EventFields {
+            event: REAP_START,
+            fields: &["reason"],
+        },
+        EventFields {
+            event: RUN_REAPED,
+            fields: &["run_id", "scope", "outcome", "signal", "ms"],
+        },
+        EventFields {
+            event: REAP_DONE,
+            fields: &[],
+        },
+        EventFields {
+            event: REAP_ORPHAN_WORKER,
+            fields: &[],
+        },
+        EventFields {
+            event: SESSION_BREAKER_OPEN,
+            fields: &["scope", "launcher", "consecutive_timeouts", "failing_secs"],
+        },
+        EventFields {
+            event: SESSION_BREAKER_CLOSED,
+            fields: &["reason"],
+        },
+        EventFields {
+            event: SESSION_ROOT_MOVED,
+            fields: &["scope", "launcher"],
+        },
+        EventFields {
+            event: SYSTEM_RESUMED,
+            fields: &["suspended_ms"],
+        },
+        EventFields {
+            event: TRANSCRIPT_NOT_FOUND,
+            fields: &["reason", "searched_roots"],
+        },
+        EventFields {
+            event: USAGE_BASELINE_RESET,
+            fields: &[],
+        },
+        EventFields {
+            event: RUNNER_CC_VERSION_UNPARSED,
+            fields: &[],
+        },
+        EventFields {
+            event: RUNNER_CLAUDE_CODE_OUTDATED,
+            fields: &[],
+        },
+        EventFields {
+            event: RUN_LOCALE_CHOSEN,
+            fields: &[],
+        },
+        EventFields {
+            event: RUN_LOCALE_NOT_UTF8,
+            fields: &[],
+        },
+        EventFields {
+            event: RUN_LOCALE_UNAVAILABLE,
+            fields: &[],
+        },
+        EventFields {
+            event: RUN_PATH_CAPTURED,
+            fields: &[],
+        },
+        EventFields {
+            event: RUN_PATH_CHANGED,
+            fields: &[],
+        },
+        EventFields {
+            event: RUN_PATH_CAPTURE_FAILED,
+            fields: &["kind"],
+        },
+        EventFields {
+            event: RUNINDEX_BACKFILL_START,
+            fields: &["total"],
+        },
+        EventFields {
+            event: RUNINDEX_BACKFILL_DONE,
+            fields: &["added", "unknown", "duration_ms"],
+        },
+        EventFields {
+            event: RUNINDEX_BACKFILL_FAILED,
+            fields: &[],
+        },
+        EventFields {
+            event: RUNINDEX_UNPARSED,
+            fields: &["count"],
+        },
+        EventFields {
+            event: RUNINDEX_TORN,
+            fields: &["file"],
+        },
+        EventFields {
+            event: INBOX_PRUNED,
+            fields: &["count", "bytes", "reason"],
+        },
+        EventFields {
+            event: INBOX_OVER_CAP,
+            fields: &[],
+        },
+        EventFields {
+            event: DISK_LOW,
+            fields: &["free_mib"],
+        },
+        EventFields {
+            event: DISK_OK,
+            fields: &[],
+        },
+        EventFields {
+            event: HOUSEKEEPING_DONE,
+            fields: &["deleted", "freed_bytes", "duration_ms"],
+        },
+        EventFields {
+            event: COMPAT_STATUSLINE_MIGRATED,
+            fields: &[],
+        },
+        EventFields {
+            event: COMPAT_STATE_JSON_REMOVED,
+            fields: &[],
+        },
     ];
 }
 
@@ -163,7 +925,7 @@ pub enum UiLogEvent {
 }
 
 impl UiLogEvent {
-    /// The App log event name, one of [`app::ALL`]; `unknown` for the catch-all.
+    /// The App log event name, one of [`app::CATALOGUE`]'s; `unknown` for the catch-all.
     pub fn event(&self) -> &'static str {
         match self {
             UiLogEvent::Error { .. } => app::UI_ERROR,
@@ -241,9 +1003,10 @@ mod tests {
 
     #[test]
     fn app_event_names_are_unique_dotted_snake_case() {
-        let unique: BTreeSet<_> = app::ALL.iter().collect();
-        assert_eq!(unique.len(), app::ALL.len());
-        for name in app::ALL {
+        let names: Vec<_> = app::CATALOGUE.iter().map(|e| e.event).collect();
+        let unique: BTreeSet<_> = names.iter().collect();
+        assert_eq!(unique.len(), names.len());
+        for name in names {
             let parts: Vec<_> = name.split('.').collect();
             assert_eq!(parts.len(), 2, "{name}");
             assert!(
@@ -252,6 +1015,65 @@ mod tests {
                 ),
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn every_app_field_has_exactly_one_declared_class() {
+        let used: BTreeSet<&str> = app::CATALOGUE
+            .iter()
+            .flat_map(|e| e.fields.iter().copied())
+            .chain(COMMON_FIELDS.iter().copied())
+            .collect();
+        for field in &used {
+            assert!(
+                crate::export::app_field_class(field).is_some(),
+                "App log field `{field}` has no APP_FIELD_CLASSES entry"
+            );
+        }
+        let classed: BTreeSet<&str> = crate::export::APP_FIELD_CLASSES
+            .iter()
+            .map(|(field, _)| *field)
+            .collect();
+        assert_eq!(
+            classed, used,
+            "APP_FIELD_CLASSES lists a field no event carries"
+        );
+    }
+
+    #[test]
+    fn every_daemon_field_has_a_field_class() {
+        let names: Vec<_> = daemon::CATALOGUE.iter().map(|e| e.event).collect();
+        let unique: BTreeSet<_> = names.iter().collect();
+        assert_eq!(unique.len(), names.len(), "duplicate Daemon log event");
+        let missing: BTreeSet<&str> = daemon::CATALOGUE
+            .iter()
+            .flat_map(|e| e.fields.iter().copied())
+            .chain(COMMON_FIELDS.iter().copied())
+            .chain(daemon::SPAN_FIELDS.iter().copied())
+            .filter(|field| {
+                crate::export::FIELD_CLASSES
+                    .binary_search_by(|(f, _)| f.cmp(field))
+                    .is_err()
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "Daemon log fields with no FIELD_CLASSES entry: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn ui_events_carry_only_their_declared_fields() {
+        for (_, wire) in every_event() {
+            let event = wire["event"].as_str().unwrap();
+            let declared = app::CATALOGUE.iter().find(|e| e.event == event).unwrap();
+            for key in wire.as_object().unwrap().keys() {
+                assert!(
+                    key == "event" || declared.fields.contains(&key.as_str()),
+                    "{event} carries undeclared `{key}`"
+                );
+            }
         }
     }
 
@@ -317,7 +1139,7 @@ mod tests {
         for (event, wire) in every_event() {
             assert_eq!(serde_json::to_value(&event).unwrap(), wire);
             assert_eq!(wire["event"], event.event());
-            assert!(app::ALL.contains(&event.event()));
+            assert!(app::CATALOGUE.iter().any(|e| e.event == event.event()));
             assert_eq!(
                 serde_json::from_value::<UiLogEvent>(wire.clone()).unwrap(),
                 event
