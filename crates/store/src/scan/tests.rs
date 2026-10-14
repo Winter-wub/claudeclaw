@@ -26,6 +26,10 @@ enum Node {
     },
     /// A dir that can't be listed, or a file that can't be stat'd or read.
     Denied,
+    /// A file that can be stat'd but not read.
+    Unreadable {
+        stat: FileStat,
+    },
 }
 
 /// An in-memory tree. Every write bumps a counter that stands in for ctime, so a write always
@@ -107,6 +111,15 @@ impl FakeFs {
         self.nodes.insert(path.to_path_buf(), Node::Denied);
     }
 
+    fn deny_read(&mut self, path: &Path) {
+        let Some(Node::File { stat, .. }) = self.nodes.get(path) else {
+            panic!("no file {}", path.display());
+        };
+        let stat = *stat;
+        self.nodes
+            .insert(path.to_path_buf(), Node::Unreadable { stat });
+    }
+
     fn key(&self, path: &Path) -> StatKey {
         self.stat(path).unwrap().key
     }
@@ -123,7 +136,7 @@ fn not_found() -> io::Error {
 impl FsView for FakeFs {
     fn stat(&self, path: &Path) -> io::Result<FileStat> {
         match self.nodes.get(path) {
-            Some(Node::File { stat, .. }) => Ok(*stat),
+            Some(Node::File { stat, .. } | Node::Unreadable { stat }) => Ok(*stat),
             Some(Node::Dir) => Ok(FileStat {
                 kind: FileKind::Dir,
                 key: StatKey {
@@ -149,7 +162,9 @@ impl FsView for FakeFs {
                 .filter(|p| p.parent() == Some(dir))
                 .map(|p| p.file_name().unwrap().to_owned())
                 .collect()),
-            Some(Node::File { .. }) => Err(io::Error::from(io::ErrorKind::NotADirectory)),
+            Some(Node::File { .. } | Node::Unreadable { .. }) => {
+                Err(io::Error::from(io::ErrorKind::NotADirectory))
+            }
             Some(Node::Denied) => Err(denied()),
             None => Err(not_found()),
         }
@@ -159,7 +174,7 @@ impl FsView for FakeFs {
         match self.nodes.get(path) {
             Some(Node::File { bytes, .. }) => Ok(bytes.clone()),
             Some(Node::Dir) => Err(io::Error::from(io::ErrorKind::IsADirectory)),
-            Some(Node::Denied) => Err(denied()),
+            Some(Node::Denied | Node::Unreadable { .. }) => Err(denied()),
             None => Err(not_found()),
         }
     }
@@ -195,12 +210,20 @@ fn summary(changes: &[ScanChange]) -> Vec<(&'static str, String, String)> {
                 String::new(),
                 bytes.as_ref().map(text).unwrap_or_default(),
             ),
+            ScanChange::JobUnreadable { job, .. } => ("unreadable", job.name(), String::new()),
+            ScanChange::SettingsUnreadable { .. } => {
+                ("settings_unreadable", String::new(), String::new())
+            }
             ScanChange::DirUnavailable { dir, .. } => {
-                ("unavailable", dir.display().to_string(), String::new())
+                ("unavailable", format!("{dir:?}"), String::new())
             }
-            ScanChange::DirAvailable { dir } => {
-                ("available", dir.display().to_string(), String::new())
-            }
+            ScanChange::DirAvailable {
+                dir, first_listing, ..
+            } => (
+                "available",
+                format!("{dir:?}"),
+                if *first_listing { "first" } else { "" }.to_owned(),
+            ),
         })
         .collect()
 }
@@ -371,7 +394,7 @@ fn an_unreadable_dir_keeps_its_jobs_and_is_reported_once() {
     fs.deny(&dir);
     assert_eq!(
         summary(&s.stat_pass(&fs, at(6))),
-        one("unavailable", &dir.display().to_string(), "")
+        one("unavailable", "Jobs", "")
     );
     assert!(s.stat_pass(&fs, at(8)).is_empty(), "once per episode");
     assert!(s.hash_pass(&fs, at(10)).is_empty(), "no removal");
@@ -380,7 +403,7 @@ fn an_unreadable_dir_keeps_its_jobs_and_is_reported_once() {
     fs.nodes.insert(job("a"), saved);
     assert_eq!(
         summary(&s.stat_pass(&fs, at(12))),
-        one("available", &dir.display().to_string(), "")
+        one("available", "Jobs", "")
     );
     assert!(s.stat_pass(&fs, at(14)).is_empty());
 }
@@ -404,10 +427,18 @@ fn a_missing_jobs_dir_is_zero_jobs_unless_set_explicitly() {
     assert!(scanner().stat_pass(&fs, at(2)).is_empty());
 
     let mut s = Scanner::new(ScanTargets::new(&layout(), Some("my-jobs")));
-    assert_eq!(
-        summary(&s.stat_pass(&fs, at(2))),
-        one("unavailable", "/p/my-jobs", "")
-    );
+    let want = layout().project_dir().join("my-jobs");
+    assert_eq!(s.targets().path_of(&WatchedDir::Jobs), want);
+    match s.stat_pass(&fs, at(2)).as_slice() {
+        [
+            ScanChange::DirUnavailable {
+                dir: WatchedDir::Jobs,
+                path,
+                error: io::ErrorKind::NotFound,
+            },
+        ] => assert_eq!(*path, want),
+        other => panic!("{other:?}"),
+    }
 }
 
 // ---- What is scanned (#46 D2) ------------------------------------------------------------------
@@ -490,8 +521,8 @@ fn jobs_dir_resolves_like_ts() {
     for (setting, want) in cases {
         assert_eq!(l.jobs_dir_for(setting), Path::new(want), "{setting:?}");
     }
-    assert!(!ScanTargets::new(&l, Some(" ")).jobs_dir_explicit);
-    assert!(ScanTargets::new(&l, Some("jobs")).jobs_dir_explicit);
+    assert!(!ScanTargets::new(&l, Some(" ")).jobs_dir_explicit());
+    assert!(ScanTargets::new(&l, Some("jobs")).jobs_dir_explicit());
 }
 
 // ---- Stat key and hash pass (#46 D1) -----------------------------------------------------------
@@ -726,6 +757,207 @@ fn file_bytes_debug_shows_no_content() {
     assert_eq!(bytes.revision(), Revision::of(b"secret prompt"));
 }
 
+// ---- Ordering and full listings (#46 D4, D7) --------------------------------------------------
+
+#[test]
+fn removals_come_before_additions_on_a_retarget() {
+    let mut fs = FakeFs::default();
+    let mut s = with_job_a(&mut fs);
+    // The new dir's path sorts before the old one's, so path order alone would add first.
+    let other = Path::new("/a/jobs/a.md");
+    fs.put(other, b"other", at(5));
+    s.set_targets(ScanTargets::new(&layout(), Some("/a/jobs")));
+    assert!(s.hash_pass(&fs, at(6)).is_empty());
+    let changes = s.stat_pass(&fs, at(8));
+    assert_eq!(
+        summary(&changes),
+        vec![
+            ("removed", "a".to_owned(), String::new()),
+            ("added", "a".to_owned(), "other".to_owned()),
+        ]
+    );
+
+    // A consumer keyed by job name ends with the file that is there now.
+    let mut jobs = BTreeMap::new();
+    for change in &changes {
+        match change {
+            ScanChange::JobAdded { job, .. } | ScanChange::JobModified { job, .. } => {
+                jobs.insert(job.name(), job.path().to_path_buf());
+            }
+            ScanChange::JobRemoved { job } => {
+                jobs.remove(&job.name());
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(jobs.get("a").map(PathBuf::as_path), Some(other));
+}
+
+#[test]
+fn startup_reports_unreadable_job_files_and_keeps_tracking_them() {
+    let mut fs = FakeFs::default();
+    fs.put(&job("a"), b"one", at(1));
+    fs.deny_read(&job("a")); // stat works, read fails
+    fs.put(&job("b"), b"two", at(1));
+    fs.deny(&job("b")); // stat fails
+    fs.put(&job("c"), b"three", at(1));
+    let mut s = scanner();
+
+    let mut changes = summary(&s.startup_pass(&fs, at(10)));
+    changes.sort();
+    assert_eq!(
+        changes,
+        vec![
+            ("added", "c".to_owned(), "three".to_owned()),
+            ("settings", String::new(), String::new()),
+            ("unreadable", "a".to_owned(), String::new()),
+            ("unreadable", "b".to_owned(), String::new()),
+        ]
+    );
+    for t in [12, 14] {
+        assert!(s.stat_pass(&fs, at(t)).is_empty(), "kept as is");
+    }
+    assert!(s.hash_pass(&fs, at(16)).is_empty());
+
+    // Readable again: the caller learns its bytes. Gone: the caller learns that too.
+    fs.put(&job("a"), b"one", at(1));
+    fs.remove(&job("b"));
+    assert!(s.stat_pass(&fs, at(18)).is_empty());
+    assert_eq!(
+        summary(&s.stat_pass(&fs, at(20))),
+        vec![
+            ("removed", "b".to_owned(), String::new()),
+            ("modified", "a".to_owned(), "one".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn startup_reports_exactly_one_settings_event() {
+    let settings = layout().settings();
+    type Setup = fn(&mut FakeFs, &Path);
+    let cases: [(&str, Setup, &str); 4] = [
+        ("absent", |fs, p| fs.remove(p), "settings"),
+        ("readable", |_, _| {}, "settings"),
+        ("stat fails", |fs, p| fs.deny(p), "settings_unreadable"),
+        ("read fails", |fs, p| fs.deny_read(p), "settings_unreadable"),
+    ];
+    for (case, setup, want) in cases {
+        let mut fs = FakeFs::default();
+        fs.put(&settings, b"{}", at(1));
+        setup(&mut fs, &settings);
+        let changes = scanner().startup_pass(&fs, at(2));
+        let kinds: Vec<_> = summary(&changes).into_iter().map(|(k, ..)| k).collect();
+        assert_eq!(kinds, [want], "{case}");
+    }
+}
+
+#[test]
+fn unreadable_settings_at_startup_are_kept_and_later_applied() {
+    let mut fs = FakeFs::default();
+    let settings = layout().settings();
+    fs.put(&settings, b"{}", at(1));
+    fs.deny_read(&settings);
+    let mut s = scanner();
+    assert_eq!(
+        summary(&s.startup_pass(&fs, at(2))),
+        one("settings_unreadable", "", "")
+    );
+    fs.put(&settings, b"{}", at(3));
+    assert!(s.stat_pass(&fs, at(4)).is_empty());
+    assert_eq!(summary(&s.stat_pass(&fs, at(6))), one("settings", "", "{}"));
+}
+
+#[test]
+fn a_dir_unreadable_since_startup_is_listed_in_full_when_it_recovers() {
+    let mut fs = FakeFs::default();
+    fs.put(&job("a"), b"one", at(1));
+    fs.put(&agent_job("ops", "daily"), b"d", at(1));
+    let saved_a = fs.nodes.remove(&job("a")).unwrap();
+    fs.deny(&layout().jobs_dir());
+    fs.remove(&layout().agents_dir());
+    fs.deny(&layout().agents_dir());
+    let mut s = scanner();
+    assert_eq!(
+        summary(&s.startup_pass(&fs, at(2))),
+        vec![
+            ("unavailable", "Jobs".to_owned(), String::new()),
+            ("unavailable", "Agents".to_owned(), String::new()),
+            ("settings", String::new(), String::new()),
+        ]
+    );
+    assert!(s.stat_pass(&fs, at(4)).is_empty());
+
+    // The flat dir recovers: its whole contents come in the same pass, without a wait.
+    fs.nodes.insert(layout().jobs_dir(), Node::Dir);
+    fs.nodes.insert(job("a"), saved_a);
+    assert_eq!(
+        summary(&s.stat_pass(&fs, at(6))),
+        vec![
+            ("available", "Jobs".to_owned(), "first".to_owned()),
+            ("added", "a".to_owned(), "one".to_owned()),
+        ]
+    );
+
+    // `agents/` recovers, but one agent's `jobs/` is still unreadable: that dir now starts its
+    // own episode, and is listed in full once it recovers too.
+    fs.nodes.insert(layout().agents_dir(), Node::Dir);
+    fs.mkdir(&layout().agent_dir("ops"));
+    fs.deny(&layout().agent_jobs_dir("ops"));
+    assert_eq!(
+        summary(&s.stat_pass(&fs, at(8))),
+        vec![
+            (
+                "unavailable",
+                r#"AgentJobs("ops")"#.to_owned(),
+                String::new()
+            ),
+            ("available", "Agents".to_owned(), "first".to_owned()),
+        ]
+    );
+    fs.nodes.insert(layout().agent_jobs_dir("ops"), Node::Dir);
+    fs.put(&agent_job("ops", "daily"), b"d", at(9));
+    assert_eq!(
+        summary(&s.stat_pass(&fs, at(10))),
+        vec![
+            (
+                "available",
+                r#"AgentJobs("ops")"#.to_owned(),
+                "first".to_owned()
+            ),
+            ("added", "ops/daily".to_owned(), "d".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn watched_dirs_hold_their_jobs() {
+    let s = scanner();
+    let Some(Target::Job(flat)) = s.classify(&job("a")) else {
+        panic!()
+    };
+    let Some(Target::Job(ops)) = s.classify(&agent_job("ops", "a")) else {
+        panic!()
+    };
+    let table = [
+        (WatchedDir::Jobs, true, false),
+        (WatchedDir::Agents, false, true),
+        (WatchedDir::AgentJobs("ops".into()), false, true),
+        (WatchedDir::AgentJobs("dev".into()), false, false),
+    ];
+    for (dir, holds_flat, holds_ops) in table {
+        assert_eq!(
+            (dir.holds(&flat), dir.holds(&ops)),
+            (holds_flat, holds_ops),
+            "{dir:?}"
+        );
+    }
+    assert_eq!(
+        s.targets().path_of(&WatchedDir::AgentJobs("ops".into())),
+        layout().agent_jobs_dir("ops")
+    );
+}
+
 // ---- The real filesystem -----------------------------------------------------------------------
 
 mod real {
@@ -815,5 +1047,135 @@ mod real {
         s.stat_pass(&StdFs, now);
         let changes = s.stat_pass(&StdFs, now + Duration::from_secs(2));
         assert_eq!(summary(&changes), one("added", "live", "linked"));
+    }
+
+    /// #46 D9's editor patterns against the real filesystem: `a.md` starts as `"one"`, a save is
+    /// done with passes 2 s apart in between its steps, then the scan settles (two stat passes
+    /// and a hash pass). Each save must give exactly one modification and no removal.
+    mod editor_patterns {
+        use std::fs;
+        use std::io::Write;
+
+        use super::*;
+
+        struct Run {
+            _dir: tempfile::TempDir,
+            layout: Layout,
+            scanner: Scanner,
+            now: SystemTime,
+            changes: Vec<ScanChange>,
+        }
+
+        impl Run {
+            fn start() -> Self {
+                let (dir, layout, mut scanner) = setup();
+                fs::write(layout.jobs_dir().join("a.md"), b"one").unwrap();
+                let now = SystemTime::now();
+                let start = scanner.startup_pass(&StdFs, now);
+                assert_eq!(
+                    summary(&start)[0],
+                    ("added", "a".to_owned(), "one".to_owned())
+                );
+                Run {
+                    _dir: dir,
+                    layout,
+                    scanner,
+                    now,
+                    changes: Vec::new(),
+                }
+            }
+
+            fn job(&self) -> PathBuf {
+                self.layout.jobs_dir().join("a.md")
+            }
+
+            fn pass(&mut self) {
+                self.now += Duration::from_secs(2);
+                let changes = self.scanner.stat_pass(&StdFs, self.now);
+                self.changes.extend(changes);
+            }
+
+            fn settle(mut self) -> Vec<(&'static str, String, String)> {
+                self.pass();
+                self.pass();
+                self.now += Duration::from_secs(2);
+                let changes = self.scanner.hash_pass(&StdFs, self.now);
+                self.changes.extend(changes);
+                self.pass();
+                summary(&self.changes)
+            }
+        }
+
+        #[test]
+        fn a_slow_in_place_truncate_and_write() {
+            let mut run = Run::start();
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(run.job())
+                .unwrap();
+            file.write_all(b"first half, ").unwrap();
+            file.sync_all().unwrap();
+            run.pass(); // sees the truncated, half-written file
+            file.write_all(b"second half").unwrap();
+            drop(file);
+            assert_eq!(
+                run.settle(),
+                one("modified", "a", "first half, second half")
+            );
+        }
+
+        #[test]
+        fn a_temp_file_renamed_over_it_like_sed_or_vim() {
+            let mut run = Run::start();
+            let temp = run.layout.jobs_dir().join(".!123!a.md");
+            fs::write(&temp, b"sed save").unwrap();
+            run.pass(); // the dot-prefixed temp file is not a job
+            fs::rename(&temp, run.job()).unwrap();
+            assert_eq!(run.settle(), one("modified", "a", "sed save"));
+        }
+
+        #[test]
+        fn an_emacs_backup_rename_then_a_new_file() {
+            let mut run = Run::start();
+            let backup = run.layout.jobs_dir().join("a.md~");
+            fs::rename(run.job(), &backup).unwrap();
+            run.pass(); // missing once
+            fs::write(run.job(), b"emacs save").unwrap();
+            assert!(backup.exists());
+            assert_eq!(
+                run.settle(),
+                one("modified", "a", "emacs save"),
+                "`a.md~` is no job"
+            );
+        }
+
+        #[test]
+        fn a_git_checkout_like_unlink_and_create() {
+            let run = Run::start();
+            fs::remove_file(run.job()).unwrap();
+            fs::write(run.job(), b"checked out").unwrap();
+            assert_eq!(run.settle(), one("modified", "a", "checked out"));
+        }
+
+        #[test]
+        fn a_move_out_and_back_is_no_change() {
+            let mut run = Run::start();
+            let outside = run.layout.project_dir().join("a.md.away");
+            fs::rename(run.job(), &outside).unwrap();
+            run.pass();
+            fs::rename(&outside, run.job()).unwrap();
+            assert_eq!(run.settle(), []);
+        }
+
+        #[test]
+        fn a_touch_is_no_change() {
+            let run = Run::start();
+            let file = fs::OpenOptions::new().write(true).open(run.job()).unwrap();
+            file.set_modified(SystemTime::now() + Duration::from_secs(60))
+                .unwrap();
+            drop(file);
+            assert_eq!(run.settle(), []);
+        }
     }
 }
