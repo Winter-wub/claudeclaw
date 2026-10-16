@@ -2,6 +2,8 @@
 //!
 //! - [`launcher`]: [`Launcher`], [`resolve`] on the Run PATH and the Windows Launcher rules
 //!   (#8, #25, #26, #48).
+//! - [`launcher_test`]: the pure Test launcher check evaluation (architecture §4 runner
+//!   `launcher`; #16, #22, #25, #37, #39, #42, #43).
 //! - [`env`](mod@env): the run environment: the Run PATH, the Run locale and the env changes every
 //!   spawn applies (#26, #43, #47).
 //! - [`argv`]: the typed `claude` argv and its guards (architecture §4 runner `argv`; #25).
@@ -16,6 +18,7 @@ pub mod argv;
 pub mod clock;
 pub mod env;
 pub mod launcher;
+pub mod launcher_test;
 pub mod reap;
 pub mod spawn;
 pub mod stream;
