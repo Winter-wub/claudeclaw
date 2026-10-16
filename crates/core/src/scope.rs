@@ -325,8 +325,20 @@ mod tests {
         LauncherSettings::from_raw(&raw(value))
     }
 
-    fn launcher(value: &str) -> Launcher {
-        Launcher::parse(value).expect("a valid launcher")
+    /// An OS-appropriate absolute launcher path, so the same tests exercise Windows: Unix
+    /// `/opt/tools/<name>`, Windows `C:\tools\<name>.exe` (a drive-qualified rooted path with the
+    /// runnable extension runner's Windows rules expect).
+    fn tool_path(name: &str) -> String {
+        if cfg!(windows) {
+            format!(r"C:\tools\{name}.exe")
+        } else {
+            format!("/opt/tools/{name}")
+        }
+    }
+
+    /// The launcher [`tool_path`] names, parsed the way production code does.
+    fn launcher(name: &str) -> Launcher {
+        Launcher::parse(&tool_path(name)).expect("a valid launcher")
     }
 
     fn channel(id: &str) -> Scope {
@@ -472,10 +484,10 @@ mod tests {
     fn the_chain_resolves_every_branch() {
         let settings = view(json!({
             "launcher": {
-                "default": "/opt/tools/claude",
+                "default": tool_path("claude"),
                 "scopes": {
-                    "123": "/opt/tools/ccs",
-                    "agent:ops": "/opt/tools/agent",
+                    "123": tool_path("ccs"),
+                    "agent:ops": tool_path("agent"),
                 },
             },
         }));
@@ -488,43 +500,37 @@ mod tests {
         // The Scope's own key.
         assert_eq!(
             settings.resolve_with_source(&channel("123"), None),
-            (launcher("/opt/tools/ccs"), LauncherSource::Scope)
+            (launcher("ccs"), LauncherSource::Scope)
         );
         assert_eq!(
             settings.resolve_with_source(&thread("9", "123"), None),
-            (launcher("/opt/tools/ccs"), LauncherSource::ParentChannel)
+            (launcher("ccs"), LauncherSource::ParentChannel)
         );
         assert_eq!(
             settings.resolve_with_source(&thread("9", "7"), None),
-            (launcher("/opt/tools/claude"), LauncherSource::Global)
+            (launcher("claude"), LauncherSource::Global)
         );
         // A thread's own key beats its parent's.
         assert_eq!(
             settings.resolve_with_source(&thread("123", "7"), None),
-            (launcher("/opt/tools/ccs"), LauncherSource::Scope)
+            (launcher("ccs"), LauncherSource::Scope)
         );
         // An agent's job inherits the agent's entry.
         assert_eq!(
             settings.resolve(&Scope::Job("ops/digest".into()), None),
-            launcher("/opt/tools/agent")
+            launcher("agent")
         );
         assert_eq!(
             settings.resolve(&Scope::Agent("ops".into()), None),
-            launcher("/opt/tools/agent")
+            launcher("agent")
         );
         // Global is the default; an unset Scope too.
-        assert_eq!(
-            settings.resolve(&Scope::Global, None),
-            launcher("/opt/tools/claude")
-        );
-        assert_eq!(
-            settings.resolve(&channel("456"), None),
-            launcher("/opt/tools/claude")
-        );
+        assert_eq!(settings.resolve(&Scope::Global, None), launcher("claude"));
+        assert_eq!(settings.resolve(&channel("456"), None), launcher("claude"));
         // A job frontmatter that isn't a Launcher is ignored, falling through the chain.
         assert_eq!(
             settings.resolve(&channel("123"), Some("relative/path")),
-            launcher("/opt/tools/ccs")
+            launcher("ccs")
         );
     }
 
@@ -543,18 +549,18 @@ mod tests {
     fn the_picker_is_direct_then_distinct_paths_in_order() {
         let settings = view(json!({
             "launcher": {
-                "default": "/opt/b",
+                "default": tool_path("b"),
                 "scopes": {
-                    "1": "/opt/a",
-                    "2": "/opt/b",
-                    "3": "/opt/a",
+                    "1": tool_path("a"),
+                    "2": tool_path("b"),
+                    "3": tool_path("a"),
                     "4": "relative",
                 },
             },
         }));
         assert_eq!(
             settings.picker(),
-            [Launcher::Direct, launcher("/opt/a"), launcher("/opt/b")]
+            [Launcher::Direct, launcher("a"), launcher("b")]
         );
     }
 
@@ -577,14 +583,17 @@ mod tests {
 
         // Only the Rust `launcher` key is read.
         let settings = view(json!({
-            "launcher": {"default": "/opt/rust", "scopes": {"123": "/opt/rust-scope"}},
+            "launcher": {
+                "default": tool_path("rust"),
+                "scopes": {"123": tool_path("rust-scope")},
+            },
             "runtime": {
                 "launcher": {"kind": "direct"},
                 "launchers": {"123": {"kind": "direct"}, "1": {}},
             },
         }));
-        assert_eq!(settings.default_launcher(), launcher("/opt/rust"));
-        assert_eq!(settings.get("123"), Some(&launcher("/opt/rust-scope")));
+        assert_eq!(settings.default_launcher(), launcher("rust"));
+        assert_eq!(settings.get("123"), Some(&launcher("rust-scope")));
         assert_eq!(settings.get("1"), None);
     }
 
@@ -593,18 +602,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = Layout::new(dir.path());
         tokio::fs::create_dir_all(layout.root()).await.unwrap();
-        tokio::fs::write(
-            layout.settings(),
-            r#"{"launcher":{"default":"/opt/tools/claude","scopes":{"123":"/opt/tools/ccs"}}}"#,
-        )
-        .await
-        .unwrap();
+        let settings_json = json!({
+            "launcher": {
+                "default": tool_path("claude"),
+                "scopes": {"123": tool_path("ccs")},
+            },
+        });
+        tokio::fs::write(layout.settings(), settings_json.to_string())
+            .await
+            .unwrap();
 
         let settings = LauncherSettings::load(&layout).await.unwrap();
-        assert_eq!(settings.default_launcher(), launcher("/opt/tools/claude"));
-        assert_eq!(
-            settings.resolve(&channel("123"), None),
-            launcher("/opt/tools/ccs")
-        );
+        assert_eq!(settings.default_launcher(), launcher("claude"));
+        assert_eq!(settings.resolve(&channel("123"), None), launcher("ccs"));
     }
 }
