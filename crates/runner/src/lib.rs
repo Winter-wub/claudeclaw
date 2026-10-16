@@ -12,6 +12,8 @@
 //! - [`clock`]: the Worker-wide Awake clock and the Wake grace (#38).
 //! - [`spawn`]: process group / Job object, stdin, output cap, Awake-time timeout and Settle (#25,
 //!   #26, #36, #37, #38, #47).
+//! - [`run`]: spawn → stream → [`RunEvent`]s while the run works, the [`stream::RunOutcome`] at
+//!   leader exit and the [`spawn::Settle`] last (#37, #47).
 //! - [`reap`]: start stamps and the Reap of a gone Worker's runs (#29).
 
 pub mod argv;
@@ -20,9 +22,11 @@ pub mod env;
 pub mod launcher;
 pub mod launcher_test;
 pub mod reap;
+pub mod run;
 pub mod spawn;
 pub mod stream;
 pub mod version;
 
 pub use env::{RunEnv, RunPath};
 pub use launcher::{Launcher, LauncherError, ResolvedLauncher, resolve};
+pub use run::{RunEvent, RunHandle, RunRequest, start};
