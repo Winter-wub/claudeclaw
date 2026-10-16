@@ -17,10 +17,10 @@
 //!   a thread passes `[threadId, parentChannelId]`.
 //!
 //! [`LauncherSettings`] is a pure view of where launchers are set: the Rust `launcher` key (§7:
-//! `{ "default": "direct" | "<abs path>", "scopes": { "<ts scope key>": … } }`) and, kept as a
-//! fallback until the First-start import rewrites them (#17), the 1.x `runtime.launcher` /
-//! `runtime.launchers` keys. The Rust key wins where both name the same Scope. A `ccs <profile>`
-//! entry is not a [`Launcher`] — it has no path — so it is skipped; the import turns it into a
+//! `{ "default": "direct" | "<abs path>", "scopes": { "<ts scope key>": … } }`). Only that key is
+//! read: the 1.x `runtime.launcher` / `runtime.launchers` keys are read by the First-start import
+//! for import only and never rewritten (§7, #32), so they are not consulted here. A `ccs <profile>`
+//! entry is not a [`Launcher`] — it has no path — which is why the import turns the 1.x form into a
 //! generated script (#17 §2).
 //!
 //! [`LauncherSettings::resolve`] is the chain (#8): a job's frontmatter `launcher:` first, then
@@ -210,8 +210,9 @@ pub struct LauncherSettings {
 }
 
 impl LauncherSettings {
-    /// Reads the Rust `launcher` key and, wherever it is silent, the 1.x `runtime.launcher` /
-    /// `runtime.launchers` keys (§7, #17). An unparseable value is ignored, never a panic.
+    /// Reads the Rust `launcher` key (§7). An unparseable value is ignored, never a panic. The
+    /// 1.x `runtime.launcher` / `runtime.launchers` keys are import-only (§7, #32) and are not
+    /// read here.
     pub fn from_raw(raw: &Map<String, Value>) -> Self {
         let mut settings = LauncherSettings::default();
         if let Some(Value::Object(launcher)) = raw.get("launcher") {
@@ -221,21 +222,6 @@ impl LauncherSettings {
             if let Some(Value::Object(scopes)) = launcher.get("scopes") {
                 for (key, value) in scopes {
                     if let Some(launcher) = value.as_str().and_then(|v| Launcher::parse(v).ok()) {
-                        settings.scopes.insert(key.clone(), launcher);
-                    }
-                }
-            }
-        }
-        if let Some(Value::Object(runtime)) = raw.get("runtime") {
-            if settings.default.is_none() {
-                settings.default = runtime.get("launcher").and_then(ts_launcher);
-            }
-            if let Some(Value::Object(scopes)) = runtime.get("launchers") {
-                for (key, value) in scopes {
-                    if settings.scopes.contains_key(key) {
-                        continue;
-                    }
-                    if let Some(launcher) = ts_launcher(value) {
                         settings.scopes.insert(key.clone(), launcher);
                     }
                 }
@@ -307,16 +293,6 @@ impl LauncherSettings {
         let mut picker = vec![Launcher::Direct];
         picker.extend(paths.into_iter().cloned().map(Launcher::Path));
         picker
-    }
-}
-
-/// The 1.x `runtime.launcher` / `runtime.launchers` entry as a [`Launcher`]: `direct` when `kind`
-/// is `direct` or absent. A `ccs <profile>` entry has no path, so it is `None` until the import
-/// generates its script (#17 §2).
-fn ts_launcher(value: &Value) -> Option<Launcher> {
-    match value.as_object()?.get("kind").and_then(Value::as_str) {
-        None | Some("direct") => Some(Launcher::Direct),
-        Some(_) => None,
     }
 }
 
@@ -583,33 +559,33 @@ mod tests {
     }
 
     #[test]
-    fn ts_runtime_launchers_are_a_fallback() {
-        // `kind: direct` and a missing `kind` read as `direct`; a `ccs` entry has no path yet.
+    fn ts_launcher_keys_are_import_only() {
+        // The 1.x `runtime.launcher(s)` keys are read by the First-start import, never here (#32).
         let settings = view(json!({
             "runtime": {
                 "launcher": {"kind": "direct"},
                 "launchers": {
                     "123": {"kind": "direct"},
-                    "7": {"kind": "ccs", "profile": "work"},
-                    "8": {},
+                    "agent:ops": {"kind": "direct"},
                 },
             },
         }));
         assert_eq!(settings.default_launcher(), Launcher::Direct);
-        assert_eq!(settings.get("123"), Some(&Launcher::Direct));
-        assert_eq!(settings.get("7"), None);
-        assert_eq!(settings.get("8"), Some(&Launcher::Direct));
+        assert_eq!(settings.get("123"), None);
+        assert_eq!(settings.get("agent:ops"), None);
+        assert_eq!(settings.picker(), [Launcher::Direct]);
 
-        // The Rust key wins where both name a value.
+        // Only the Rust `launcher` key is read.
         let settings = view(json!({
             "launcher": {"default": "/opt/rust", "scopes": {"123": "/opt/rust-scope"}},
             "runtime": {
                 "launcher": {"kind": "direct"},
-                "launchers": {"123": {"kind": "direct"}, "scopes": {"1": {}}},
+                "launchers": {"123": {"kind": "direct"}, "1": {}},
             },
         }));
         assert_eq!(settings.default_launcher(), launcher("/opt/rust"));
         assert_eq!(settings.get("123"), Some(&launcher("/opt/rust-scope")));
+        assert_eq!(settings.get("1"), None);
     }
 
     #[tokio::test]
