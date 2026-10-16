@@ -22,16 +22,26 @@ pub const SYSTEM_PROMPT_MARKER_PREFIX: &str = "CLAUDECLAW-VERIFICATION-MARKER:";
 
 /// The stdin prompt and the System-prompt file text for one Test launcher run (#16, #22, #25).
 ///
-/// `marker` is a freshly generated value the caller keeps; it exists only in the returned system
-/// prompt text. The caller passes the reply through [`TestFacts::marker_echoed`].
-pub fn test_prompt(marker: &str) -> (String, String) {
-    let stdin =
-        "Reply with exactly the verification marker given in your system prompt.".to_owned();
-    let system = format!(
-        "The verification marker is {SYSTEM_PROMPT_MARKER_PREFIX}{marker}. \
-         Reply with exactly that marker when asked."
+/// `marker` and `nonce` are freshly generated values the caller keeps. The stdin prompt carries
+/// the `nonce` and points at the marker; the system prompt text carries only
+/// [`SYSTEM_PROMPT_MARKER_PREFIX`]` + marker`, so neither value can be echoed from where it does
+/// not belong. The caller passes the reply through [`reply_echoes`].
+pub fn test_prompt(marker: &str, nonce: &str) -> (String, String) {
+    let stdin = format!(
+        "Reply with exactly the nonce `{nonce}`, then the verification marker from your system \
+         prompt, and nothing else."
     );
+    let system = format!("The verification marker is {SYSTEM_PROMPT_MARKER_PREFIX}{marker}.");
     (stdin, system)
+}
+
+/// Whether `reply` echoed the System-prompt marker and the stdin nonce, the two booleans
+/// [`TestFacts`] takes. A marker match is `reply` containing
+/// `SYSTEM_PROMPT_MARKER_PREFIX + marker`.
+pub fn reply_echoes(reply: &str, marker: &str, nonce: &str) -> (bool, bool) {
+    let marker_echoed = reply.contains(&format!("{SYSTEM_PROMPT_MARKER_PREFIX}{marker}"));
+    let nonce_echoed = reply.contains(nonce);
+    (marker_echoed, nonce_echoed)
 }
 
 /// One Test launcher check's identity, in the order [`evaluate`] runs them (management-api
@@ -137,9 +147,9 @@ pub struct TestFacts {
     pub outcome: Option<RunOutcome>,
     /// The run's verdict ([`crate::stream::judge`]).
     pub verdict: Option<Verdict>,
-    /// The reply echoed the System-prompt marker ([`test_prompt`]).
+    /// The reply echoed the System-prompt marker (see [`reply_echoes`] and [`test_prompt`]).
     pub marker_echoed: bool,
-    /// The reply echoed the stdin nonce.
+    /// The reply echoed the stdin nonce (see [`reply_echoes`]).
     pub nonce_echoed: bool,
     /// The Settle, when the run happened (#37).
     pub settle: Option<Settle>,
@@ -638,11 +648,38 @@ mod tests {
     }
 
     #[test]
-    fn test_prompt_keeps_the_marker_in_the_system_prompt_only() {
-        let (stdin, system) = test_prompt("nonce-1234");
-        assert!(system.contains(&format!("{SYSTEM_PROMPT_MARKER_PREFIX}nonce-1234")));
-        assert!(!stdin.contains("nonce-1234"), "{stdin}");
-        assert!(stdin.contains("system prompt"));
-        assert!(!system.contains("stdin"));
+    fn test_prompt_keeps_the_marker_and_nonce_apart() {
+        let marker = "marker-1234";
+        let nonce = "nonce-5678";
+        let (stdin, system) = test_prompt(marker, nonce);
+        // The nonce is only in the stdin prompt; the marker is only in the system prompt, behind
+        // the prefix.
+        assert!(stdin.contains(nonce), "{stdin}");
+        assert!(!stdin.contains(marker), "{stdin}");
+        assert!(!stdin.contains(SYSTEM_PROMPT_MARKER_PREFIX), "{stdin}");
+        assert!(system.contains(&format!("{SYSTEM_PROMPT_MARKER_PREFIX}{marker}")));
+        assert!(!system.contains(nonce), "{system}");
+        assert!(!system.contains("stdin"), "{system}");
+    }
+
+    #[test]
+    fn reply_echoes_matches_the_two_facts() {
+        let marker = "marker-1234";
+        let nonce = "nonce-5678";
+        let echoed = format!("done {nonce} {SYSTEM_PROMPT_MARKER_PREFIX}{marker}");
+        assert_eq!(reply_echoes(&echoed, marker, nonce), (true, true));
+        // Only the stdin nonce: the system-prompt marker is missing.
+        assert_eq!(reply_echoes(nonce, marker, nonce), (false, true));
+        // Only the marker: the stdin nonce is missing.
+        assert_eq!(
+            reply_echoes(
+                &format!("{SYSTEM_PROMPT_MARKER_PREFIX}{marker}"),
+                marker,
+                nonce
+            ),
+            (true, false)
+        );
+        // The bare marker without the prefix does not count.
+        assert_eq!(reply_echoes(marker, marker, nonce), (false, false));
     }
 }
