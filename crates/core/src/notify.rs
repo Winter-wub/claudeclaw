@@ -440,6 +440,16 @@ impl NoticeLedger {
     }
 }
 
+impl crate::housekeeping::NoticePrune for NoticeLedger {
+    fn prune_unseen(
+        &self,
+        older_than: DateTime<Utc>,
+        dry_run: bool,
+    ) -> Result<u64, std::io::Error> {
+        NoticeLedger::prune_unseen(self, older_than, dry_run)
+    }
+}
+
 impl fmt::Debug for NoticeLedger {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let file = lock(&self.state);
@@ -540,6 +550,12 @@ impl Notices {
     /// How many Notifiers are registered.
     pub fn notifier_count(&self) -> usize {
         lock(&self.notifiers).len()
+    }
+
+    /// The dedupe ledger, so Housekeeping can prune unseen entries through
+    /// [`NoticePrune`](crate::housekeeping::NoticePrune) (#44 D7).
+    pub fn ledger(&self) -> Arc<NoticeLedger> {
+        Arc::clone(&self.ledger)
     }
 
     /// Publishes `notice` to the event bus and sends it to every Notifier together. One failing
@@ -1062,6 +1078,38 @@ mod tests {
         assert_ne!(std::fs::read(layout.notices()).unwrap(), before);
         // A reload sees only the fresh entry.
         assert_eq!(NoticeLedger::load(&layout).entry_count(), 1);
+    }
+
+    #[test]
+    fn the_ledger_prunes_through_the_housekeeping_trait() {
+        use crate::housekeeping::NoticePrune;
+
+        let (_dir, layout) = layout();
+        let ledger = NoticeLedger::load(&layout);
+        let old = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        ledger.mark_seen("job_invalid:0", old);
+        let cutoff = Utc.with_ymd_and_hms(2026, 1, 15, 0, 0, 0).unwrap();
+
+        // Housekeeping reaches the ledger only through the trait: `core::notify` owns the format.
+        let pruner: &dyn NoticePrune = &ledger;
+        assert_eq!(pruner.prune_unseen(cutoff, true).unwrap(), 1);
+        assert_eq!(pruner.prune_unseen(cutoff, false).unwrap(), 1);
+        assert_eq!(ledger.entry_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn notices_expose_their_ledger_for_housekeeping() {
+        let (_dir, layout) = layout();
+        let notices = Notices::open(EventBus::new(), &layout).await;
+        let (notifier, _seen) = RecordingNotifier::new(false);
+        notices.register(notifier);
+        assert!(
+            notices
+                .send_once(notice(NoticeKind::JobInvalid, "missing schedule"))
+                .await
+                .is_some()
+        );
+        assert_eq!(notices.ledger().entry_count(), 1);
     }
 
     #[tokio::test]

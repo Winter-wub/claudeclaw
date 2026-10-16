@@ -691,7 +691,7 @@ Later tickets added:
 - #25: `run.stdin_write_failed`;
 - #26: `run_path.captured {source, shell, dirs, duration_ms}`, `run_path.changed {added, removed}`, `run_path.capture_failed {kind}`;
 - #27: `worker.stalled {beacon, quiet_ms}` (ERROR), the Watchdog's `watchdog.stall_report {report_seq, waited_ms, workers, alive_tasks, global_queue}` (WARN, #74), `worker.ping_late`, `worker.hung {silence_ms}`, `worker.shutdown_overrun`, `watchdog.hang_kill_disabled` (WARN);
-- #29: `reap.start`, `run.reaped` (`already_gone` and `not_ours` at INFO, #74), `reap.done` with the `ReapCounts` fields, `reap.orphan_worker {waited_ms, killed}`, `reap.leftover_after_stop {count}` (WARN, #74), `reap.registry_unreadable {cause}` (ERROR, #74);
+- #29: `reap.start`, `run.reaped` (`already_gone` and `not_ours` at INFO, #74), `reap.done` with the `ReapCounts` fields, `reap.orphan_worker {waited_ms, killed}`, `reap.leftover_after_stop {count}` (WARN, #74), `reap.registry_unreadable {cause}` (ERROR, #74), `run_registry.write_failed {cause}` (ERROR, #74);
 - #32, #33: `session.breaker_open {limit, consecutive_timeouts, failing_ms}` (WARN), `session.breaker_closed` (INFO), `run.recovery_skipped` (INFO, with its reason and `spent_ms_ago`), `settings.legacy_key {key, replacement}` (WARN, besides the owner notice); `run.start` / `run.finish` gain `purpose`;
 - #36: `logs.prune_incomplete {kept, expected}` (WARN), and a content-free `console` field on `daemon.start`;
 - #37: `run.settle`;
