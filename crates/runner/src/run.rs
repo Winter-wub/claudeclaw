@@ -5,7 +5,9 @@
 //!
 //! 1. every [`SpawnEvent::Stdout`] line goes through the pure [`stream`] parser
 //!    ([`stream::parse_line`] → [`StreamState::observe`]), and each returned [`StreamEvent`] is
-//!    forwarded as a [`RunEvent::Stream`];
+//!    forwarded as a [`RunEvent::Stream`] on an **unbounded** channel: a slow reader must not
+//!    lose reply text, and the buffered events stay bounded because `spawn` already caps the run's
+//!    output at [`MAX_OUTPUT_BYTES`](crate::spawn::MAX_OUTPUT_BYTES);
 //! 2. every [`SpawnEvent::Stderr`] line is kept, capped, for [`ExitReport::stderr`];
 //! 3. at [`SpawnEvent::LeaderExited`] the run is judged ([`stream::judge`]) and the [`RunOutcome`]
 //!    is sent **at once**, so the reply can go out without waiting for the Stragglers (#37 D2);
@@ -25,9 +27,6 @@ use crate::spawn::{Run, Settle, SpawnError, SpawnEvent, SpawnSpec, Spawner, Term
 use crate::stream::{
     self, Event, ExitReport, RunClock, RunOutcome, StreamEvent, StreamItem, StreamState,
 };
-
-/// Room for unread [`RunEvent`]s before the pump waits (§4 runner "Output").
-pub const EVENT_CAPACITY: usize = 256;
 
 /// How much stderr is kept for [`ExitReport::stderr`] (§4 runner `stream`). Past it the pipe is
 /// still drained but nothing more is kept, so the buffer can't grow without bound.
@@ -74,8 +73,10 @@ impl fmt::Debug for RunEvent {
 /// (#37 D2), then [`RunHandle::settled`] once the group is empty (#37 D3). Dropping `events` is
 /// safe: the run still settles and the outcome is still delivered.
 pub struct RunHandle {
-    /// Stream events, bounded at [`EVENT_CAPACITY`].
-    pub events: mpsc::Receiver<RunEvent>,
+    /// Stream events, in order. Unbounded: a slow reader must not lose reply text, and the
+    /// buffer stays bounded because `spawn` caps the run's output at
+    /// [`MAX_OUTPUT_BYTES`](crate::spawn::MAX_OUTPUT_BYTES).
+    pub events: mpsc::UnboundedReceiver<RunEvent>,
     /// The judged run, sent at the leader's exit.
     pub outcome: oneshot::Receiver<RunOutcome>,
     /// The settle, sent once the run's process group (Job object on Windows) is empty.
@@ -114,7 +115,7 @@ pub fn start(spawner: &Spawner, req: RunRequest) -> Result<RunHandle, SpawnError
     let run = spawner.spawn(spawn)?;
     let pid = run.pid();
     let terminator = run.terminator();
-    let (events_tx, events) = mpsc::channel(EVENT_CAPACITY);
+    let (events_tx, events) = mpsc::unbounded_channel();
     let (outcome_tx, outcome) = oneshot::channel();
     let (settled_tx, settled) = oneshot::channel();
     tokio::spawn(pump(run, run_id, args, events_tx, outcome_tx, settled_tx));
@@ -133,7 +134,7 @@ async fn pump(
     mut run: Run,
     run_id: String,
     args: ClaudeArgs,
-    events: mpsc::Sender<RunEvent>,
+    events: mpsc::UnboundedSender<RunEvent>,
     outcome: oneshot::Sender<RunOutcome>,
     settled: oneshot::Sender<Settle>,
 ) {
@@ -201,12 +202,11 @@ async fn pump(
     }
 }
 
-/// Forwards one event without ever blocking the pump: a dropped receiver or a full queue just
-/// drops the event, so the run still settles and the outcome is still delivered. The reader is
-/// expected to keep up (the queue holds [`EVENT_CAPACITY`]); the whole reply text is on
-/// [`RunOutcome::reply`] regardless.
-fn forward(events: &mpsc::Sender<RunEvent>, event: RunEvent) {
-    let _ = events.try_send(event);
+/// Forwards one event to the reader. The channel is unbounded, so `send` never blocks and never
+/// drops an event while the reader is alive; only a dropped receiver's `SendError` is ignored,
+/// and the pump then keeps draining so the run still settles and the outcome is still delivered.
+fn forward(events: &mpsc::UnboundedSender<RunEvent>, event: RunEvent) {
+    let _ = events.send(event);
 }
 
 /// A capped stderr buffer, built line by line for [`ExitReport::stderr`].
@@ -519,6 +519,47 @@ exec sleep 30
             .await
             .expect("the settle in time")
             .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_slow_reader_loses_no_text_deltas() {
+        const MESSAGES: usize = 1_200;
+        let dir = tempfile::tempdir().unwrap();
+        // More assistant messages than any bounded queue would hold, each with its own text block.
+        let body = r#"i=0
+while [ "$i" -lt @N@ ]; do
+  printf '{"type":"assistant","message":{"id":"m%d","content":[{"type":"text","text":"x"}]},"parent_tool_use_id":null}\n' "$i"
+  i=$((i+1))
+done
+printf '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s-1"}\n'
+"#
+        .replace("@N@", &MESSAGES.to_string());
+        let program = fake_claude(&dir, &body).await;
+        let (_clock, spawner) = spawner();
+        let mut handle = start(&spawner, request(&program)).unwrap();
+
+        // The reader is as slow as possible: it reads no event until the outcome has arrived.
+        let outcome = tokio::time::timeout(LIMIT, handle.outcome)
+            .await
+            .expect("the outcome in time")
+            .unwrap();
+        assert_eq!(outcome.verdict, Verdict::Ok);
+        assert_eq!(outcome.reply.as_deref(), Some("done"));
+
+        // Every delta was kept: one per message, plus the "\n" between messages.
+        let mut deltas = Vec::new();
+        while let Some(RunEvent::Stream(event)) = handle.events.recv().await {
+            if let StreamEvent::TextDelta {
+                text,
+                subagent: false,
+            } = event
+            {
+                deltas.push(text);
+            }
+        }
+        assert_eq!(deltas.len(), 2 * MESSAGES - 1);
+        assert_eq!(deltas.concat(), vec!["x"; MESSAGES].join("\n"));
     }
 
     #[cfg(unix)]
