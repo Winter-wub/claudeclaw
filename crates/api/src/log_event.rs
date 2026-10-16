@@ -437,6 +437,9 @@ pub mod daemon {
     pub const REAP_LEFTOVER_AFTER_STOP: &str = "reap.leftover_after_stop";
     /// ERROR: `runs.json` could not be read at a Reap (#29 D4, #74).
     pub const REAP_REGISTRY_UNREADABLE: &str = "reap.registry_unreadable";
+    /// ERROR: `core::runs` could not write `runs.json`; its in-memory registry stands (#29 D2,
+    /// #74). Distinct from [`REAP_REGISTRY_UNREADABLE`], which is a Reap *read* failure.
+    pub const RUN_REGISTRY_WRITE_FAILED: &str = "run_registry.write_failed";
     /// #32.
     pub const SESSION_BREAKER_OPEN: &str = "session.breaker_open";
     /// #32.
@@ -823,6 +826,10 @@ pub mod daemon {
         },
         EventFields {
             event: REAP_REGISTRY_UNREADABLE,
+            fields: &["cause"],
+        },
+        EventFields {
+            event: RUN_REGISTRY_WRITE_FAILED,
             fields: &["cause"],
         },
         EventFields {
