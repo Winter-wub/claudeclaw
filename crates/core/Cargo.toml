@@ -24,6 +24,14 @@ tokio = { workspace = true, features = ["time", "sync", "rt", "macros", "fs"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 
+# The free-space probe (architecture §4 `core::disk`; #44 D6): `statvfs` on Unix,
+# `GetDiskFreeSpaceExW` on Windows. Target-specific, so neither pulls a runtime it doesn't need.
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
