@@ -19,9 +19,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use claudeclaw_api::log_event::daemon as event;
-use claudeclaw_api::scope::Scope;
 use claudeclaw_api::status::Beacon as StatusBeacon;
 use tokio::time::{Instant, MissedTickBehavior};
+
+use crate::scope::Scope;
 
 /// How often the monitor accuses quiet beacons (#27 D5). Every long-lived task's own loop ticks
 /// at least this often, so a healthy Worker never shows a quiet beacon for long.
@@ -46,6 +47,24 @@ pub fn turn_limit(run_timeout: Duration) -> Duration {
         .saturating_add(WAKE_GRACE)
         .saturating_add(KILL_SLACK)
         .saturating_add(TURN_SLACK)
+}
+
+/// The `turn:<scope>` beacon name (#27 D5). The management-API wire form when the Scope has one
+/// (`global`, `discord:<id>`, `job:<name>`, `agent:<name>`); only a Telegram or Slack chat Scope
+/// lacks one, so it gets the local `<transport>:<id>` built from the Scope's own fields
+/// (management-api §1.7).
+fn turn_name(scope: &Scope) -> String {
+    if let Ok(api) = scope.to_api() {
+        return api.to_string();
+    }
+    match scope {
+        Scope::Channel { transport, id } | Scope::Thread { transport, id, .. } => {
+            format!("{transport}:{id}")
+        }
+        Scope::Global => "global".to_owned(),
+        Scope::Job(name) => format!("job:{name}"),
+        Scope::Agent(name) => format!("agent:{name}"),
+    }
 }
 
 /// A beacon that has gone quiet for at least its limit (#27 D5). The caller logs, shuts down and
@@ -172,10 +191,11 @@ impl HealthMonitor {
     }
 
     /// The beacon for `scope`'s Turn, armed with [`turn_limit`] and re-armed on every call so
-    /// each run in the Turn gets the full timeout again. The name is `turn:<scope>`.
+    /// each run in the Turn gets the full timeout again. The name is `turn:<scope>`, in the
+    /// management-API wire form where the Scope has one ([`turn_name`]).
     pub fn turn(&self, scope: &Scope, run_timeout: Duration) -> Beacon {
         let limit = turn_limit(run_timeout);
-        let name = format!("turn:{scope}");
+        let name = format!("turn:{}", turn_name(scope));
         let mut beacons = self.beacons.lock().unwrap_or_else(|e| e.into_inner());
         match beacons.entry(name) {
             Entry::Occupied(mut entry) => {
@@ -255,6 +275,8 @@ fn millis(d: Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use claudeclaw_chat::Transport;
+
     use super::*;
 
     async fn advance(by: Duration) {
@@ -328,7 +350,13 @@ mod tests {
         let scheduler = monitor.named("scheduler");
         monitor.named("adapter:discord");
         monitor.named("outcome_sink");
-        monitor.turn(&Scope::Discord("123".into()), Duration::from_secs(300));
+        monitor.turn(
+            &Scope::Channel {
+                transport: Transport::Discord,
+                id: "123".into(),
+            },
+            Duration::from_secs(300),
+        );
         let names = |monitor: &HealthMonitor| {
             monitor
                 .beacons()
@@ -381,6 +409,22 @@ mod tests {
         let again = monitor.turn(&scope, Duration::from_secs(300));
         assert_eq!(again.name(), "turn:job:daily");
         assert_eq!(beacon.quiet_ms(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_scope_without_a_wire_form_names_itself() {
+        let monitor = HealthMonitor::new();
+        // A Telegram thread has no management-API wire form, so the beacon falls back to the
+        // Scope's own `<transport>:<id>`.
+        let beacon = monitor.turn(
+            &Scope::Thread {
+                transport: Transport::Telegram,
+                id: "9".into(),
+                parent: "7".into(),
+            },
+            Duration::from_secs(300),
+        );
+        assert_eq!(beacon.name(), "turn:telegram:9");
     }
 
     #[test]

@@ -6,7 +6,8 @@
 //! applies the per-run write order as typed transitions, and saves it atomically:
 //!
 //! 1. [`RunRegistryFile::add`] a `spawning` entry before the spawn;
-//! 2. [`RunRegistryFile::mark_running`] with the pid and start stamp once spawned;
+//! 2. [`RunRegistryFile::mark_running`] with the pid and start stamp once spawned (the stamp is
+//!    optional: an OS start stamp that couldn't be read leaves it `null`);
 //! 3. [`RunRegistryFile::mark_settling`] at leader exit (#37 D3);
 //! 4. [`RunRegistryFile::remove`] once settled.
 //!
@@ -157,15 +158,17 @@ impl RunRegistryFile {
     }
 
     /// `spawning` → `running`, with the child's pid and OS start stamp (#29 D2 steps 3–4).
+    /// `stamp` is `None` when the OS start stamp couldn't be read: the pid is still recorded, so
+    /// a later Reap reports `unverified`, never `unknown_pid`.
     pub fn mark_running(
         &mut self,
         run_id: &str,
         pid: u32,
-        stamp: ProcessStamp,
+        stamp: Option<ProcessStamp>,
     ) -> Result<(), RunRegistryError> {
         let entry = self.transition(run_id, RegistryState::Spawning, RegistryState::Running)?;
         entry.pid = Some(pid);
-        entry.stamp = Some(stamp);
+        entry.stamp = stamp;
         Ok(())
     }
 
@@ -290,7 +293,7 @@ mod tests {
         file.add(spawning("run-1")).unwrap();
         assert_eq!(file.get("run-1").unwrap().state, RegistryState::Spawning);
 
-        file.mark_running("run-1", 701, stamp()).unwrap();
+        file.mark_running("run-1", 701, Some(stamp())).unwrap();
         let entry = file.get("run-1").unwrap();
         assert_eq!(entry.state, RegistryState::Running);
         assert_eq!(entry.pid, Some(701));
@@ -304,6 +307,20 @@ mod tests {
         assert_eq!(file.remove("run-1").unwrap().run_id, "run-1");
         assert_eq!(file.get("run-1"), None);
         assert_eq!(file.remove("run-1"), None);
+    }
+
+    #[test]
+    fn running_without_a_stamp_still_records_the_pid() {
+        let mut file = RunRegistryFile::new();
+        file.add(spawning("run-1")).unwrap();
+        file.mark_running("run-1", 701, None).unwrap();
+        let entry = file.get("run-1").unwrap();
+        assert_eq!(entry.state, RegistryState::Running);
+        assert_eq!(entry.pid, Some(701));
+        assert_eq!(
+            entry.stamp, None,
+            "a stamp-less running entry is reaped as `unverified`, never `unknown_pid`"
+        );
     }
 
     #[test]
@@ -322,9 +339,9 @@ mod tests {
                 ..
             })
         ));
-        file.mark_running("run-1", 1, stamp()).unwrap();
+        file.mark_running("run-1", 1, Some(stamp())).unwrap();
         assert!(matches!(
-            file.mark_running("run-1", 1, stamp()),
+            file.mark_running("run-1", 1, Some(stamp())),
             Err(RunRegistryError::Transition { .. })
         ));
         assert!(matches!(
@@ -373,7 +390,7 @@ mod tests {
         fs::write(layout.run_registry(), on_disk.to_string()).unwrap();
 
         let mut file = RunRegistryFile::load(&layout).unwrap().unwrap();
-        file.mark_running("run-1", 701, stamp()).unwrap();
+        file.mark_running("run-1", 701, Some(stamp())).unwrap();
         file.save(&layout).unwrap();
         let saved: Value =
             serde_json::from_slice(&fs::read(layout.run_registry()).unwrap()).unwrap();
