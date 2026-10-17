@@ -11,3 +11,34 @@ publish.workspace = true
 [dependencies]
 claudeclaw-core.workspace = true
 claudeclaw-api.workspace = true
+axum.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "time", "sync", "rt", "macros", "fs", "io-util"] }
+tokio-rustls.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+utoipa = { workspace = true, features = ["axum_extras"] }
+utoipa-axum.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["fs", "user"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+reqwest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
