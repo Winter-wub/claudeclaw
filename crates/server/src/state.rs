@@ -1,0 +1,93 @@
+//! The state the router is built over: one erased handle per backend seam.
+//!
+//! [`AppStateBuilder`] defaults every seam to [`MissingBackend`], so the router can be built
+//! before the Daemon is wired; the composition root supplies the real implementations.
+
+use std::sync::Arc;
+
+use crate::auth::TokenStore;
+use crate::backend::{AuditBackend, DaemonBackend, EventsBackend, MissingBackend, StatusBackend};
+
+/// Everything the router needs, erased behind `Arc<dyn …>`. Cheap to clone: the router clones it
+/// into each route's layers.
+#[derive(Clone)]
+pub struct AppState {
+    pub status: Arc<dyn StatusBackend>,
+    pub daemon: Arc<dyn DaemonBackend>,
+    pub events: Arc<dyn EventsBackend>,
+    pub audit: Arc<dyn AuditBackend>,
+    pub tokens: Arc<dyn TokenStore>,
+}
+
+impl AppState {
+    pub fn builder() -> AppStateBuilder {
+        AppStateBuilder::default()
+    }
+}
+
+/// Builds an [`AppState`], filling every unset seam with [`MissingBackend`].
+#[derive(Default)]
+pub struct AppStateBuilder {
+    status: Option<Arc<dyn StatusBackend>>,
+    daemon: Option<Arc<dyn DaemonBackend>>,
+    events: Option<Arc<dyn EventsBackend>>,
+    audit: Option<Arc<dyn AuditBackend>>,
+    tokens: Option<Arc<dyn TokenStore>>,
+}
+
+impl AppStateBuilder {
+    pub fn status(mut self, backend: impl StatusBackend) -> Self {
+        self.status = Some(Arc::new(backend));
+        self
+    }
+
+    pub fn daemon(mut self, backend: impl DaemonBackend) -> Self {
+        self.daemon = Some(Arc::new(backend));
+        self
+    }
+
+    pub fn events(mut self, backend: impl EventsBackend) -> Self {
+        self.events = Some(Arc::new(backend));
+        self
+    }
+
+    pub fn audit(mut self, backend: impl AuditBackend) -> Self {
+        self.audit = Some(Arc::new(backend));
+        self
+    }
+
+    pub fn tokens(mut self, backend: impl TokenStore) -> Self {
+        self.tokens = Some(Arc::new(backend));
+        self
+    }
+
+    pub fn build(self) -> AppState {
+        AppState {
+            status: self.status.unwrap_or_else(missing_status),
+            daemon: self.daemon.unwrap_or_else(missing_daemon),
+            events: self.events.unwrap_or_else(missing_events),
+            audit: self.audit.unwrap_or_else(missing_audit),
+            tokens: self.tokens.unwrap_or_else(missing_tokens),
+        }
+    }
+}
+
+fn missing_status() -> Arc<dyn StatusBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_daemon() -> Arc<dyn DaemonBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_events() -> Arc<dyn EventsBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_audit() -> Arc<dyn AuditBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_tokens() -> Arc<dyn TokenStore> {
+    Arc::new(MissingBackend::new())
+}
