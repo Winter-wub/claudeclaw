@@ -9,8 +9,13 @@
 //!    lose reply text, and the buffered events stay bounded because `spawn` already caps the run's
 //!    output at [`MAX_OUTPUT_BYTES`](crate::spawn::MAX_OUTPUT_BYTES);
 //! 2. every [`SpawnEvent::Stderr`] line is kept, capped, for [`ExitReport::stderr`];
-//! 3. at [`SpawnEvent::LeaderExited`] the run is judged ([`stream::judge`]) and the [`RunOutcome`]
-//!    is sent **at once**, so the reply can go out without waiting for the Stragglers (#37 D2);
+//! 3. the [`SpawnEvent::LeaderExited`] exit is remembered, and the run is judged ([`stream::judge`])
+//!    and the [`RunOutcome`] sent at the first point where the leader has exited **and** the parser
+//!    has seen a `result` event or [`SpawnEvent::StdoutEof`] has arrived. The stdout reader can
+//!    still hold the final lines when the leader exit is reported, so a `result` that is the last
+//!    line must not be lost. If neither has happened by [`SpawnEvent::Settled`], the run is judged
+//!    there instead, just before the `Settle` is sent — no more lines can arrive (spawn.rs "Seam
+//!    with `stream`"). Either way the reply goes out before the Stragglers are waited for (#37 D2);
 //! 4. at [`SpawnEvent::Settled`] the [`Settle`] is sent, which is what the Scope's next Turn waits
 //!    for (#37 D3).
 //!
@@ -23,7 +28,9 @@ use std::fmt;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::argv::ClaudeArgs;
-use crate::spawn::{Run, Settle, SpawnError, SpawnEvent, SpawnSpec, Spawner, Terminator};
+use crate::spawn::{
+    LeaderExit, Run, Settle, SpawnError, SpawnEvent, SpawnSpec, Spawner, Terminator,
+};
 use crate::stream::{
     self, Event, ExitReport, RunClock, RunOutcome, StreamEvent, StreamItem, StreamState,
 };
@@ -128,8 +135,8 @@ pub fn start(spawner: &Spawner, req: RunRequest) -> Result<RunHandle, SpawnError
     })
 }
 
-/// The one task that drains a [`Run`]: stream events out, the outcome at leader exit, the settle
-/// last. It runs to the end whatever the receiver does, so the run always settles.
+/// The one task that drains a [`Run`]: stream events out, the outcome once it can be judged, the
+/// settle last. It runs to the end whatever the receiver does, so the run always settles.
 async fn pump(
     mut run: Run,
     run_id: String,
@@ -145,6 +152,10 @@ async fn pump(
     let mut stderr = StderrBuffer::new(STDERR_CAP);
     let mut stdout_lines: u64 = 0;
     let mut json_lines: u64 = 0;
+    // The remembered leader exit and whether stdout has ended. The outcome waits for both facts:
+    // the leader exit, plus a `result` line or EOF (spawn.rs "Seam with `stream`").
+    let mut leader_exit: Option<LeaderExit> = None;
+    let mut stdout_eof = false;
 
     while let Some(event) = run.next_event().await {
         match event {
@@ -157,24 +168,23 @@ async fn pump(
                 for event in state.observe(&item) {
                     forward(&events, RunEvent::Stream(event));
                 }
+                // The `result` can be the very last line, read after the leader exit was already
+                // reported: judge as soon as the parser has seen one.
+                if state.result_seen()
+                    && let Some(exit) = &leader_exit
+                {
+                    judge(&run_id, &state, exit, &args, &mut stderr, &mut outcome);
+                }
             }
             SpawnEvent::Stderr(line) => stderr.push(&line),
-            SpawnEvent::StdoutEof => {}
+            SpawnEvent::StdoutEof => {
+                stdout_eof = true;
+                // No more lines can arrive, so an already-seen leader exit can be judged now.
+                if let Some(exit) = &leader_exit {
+                    judge(&run_id, &state, exit, &args, &mut stderr, &mut outcome);
+                }
+            }
             SpawnEvent::LeaderExited(exit) => {
-                let report = ExitReport {
-                    exit_code: exit.code,
-                    signal: exit.signal,
-                    // A timeout that a `result` beat is judged by that `result`, not as a timeout
-                    // (#47 D3). `lingered` carries that fact on the outcome below.
-                    timed_out: exit.timed_out && !exit.lingered,
-                    interrupted: exit.stopped,
-                    stderr: stderr.take(),
-                    clock: RunClock {
-                        awake_ms: exit.awake_ms,
-                        suspended_ms: exit.suspended_ms,
-                        wake_grace: exit.wake_grace,
-                    },
-                };
                 tracing::debug!(
                     run_id = %run_id,
                     stdout_lines,
@@ -185,14 +195,19 @@ async fn pump(
                     stopped = exit.stopped,
                     "run.leader_exited"
                 );
-                let mut judged = stream::judge(&state, &report, &args);
-                judged.lingered = exit.lingered;
-                // The reply goes out at leader exit, before the Stragglers are dealt with (#37 D2).
-                if let Some(outcome) = outcome.take() {
-                    let _ = outcome.send(judged);
+                // Judge now only if a `result` was read or stdout ended; otherwise wait for one of
+                // them, or for the Settle (spawn.rs "Seam with `stream`").
+                if state.result_seen() || stdout_eof {
+                    judge(&run_id, &state, &exit, &args, &mut stderr, &mut outcome);
                 }
+                leader_exit = Some(exit);
             }
             SpawnEvent::Settled(settle) => {
+                // Nothing more can arrive: judge now if the outcome is still owed, just before the
+                // Settle goes out so the reply is still delivered first (#37 D2).
+                if let Some(exit) = &leader_exit {
+                    judge(&run_id, &state, exit, &args, &mut stderr, &mut outcome);
+                }
                 tracing::debug!(run_id = %run_id, "run.settled");
                 if let Some(settled) = settled.take() {
                     let _ = settled.send(settle);
@@ -200,6 +215,40 @@ async fn pump(
             }
         }
     }
+}
+
+/// Judges the run once and sends the outcome, if it is still owed. `stderr` is snapshotted at this
+/// point, so it holds everything captured up to the judgement; `state` and `exit` are only read.
+/// After the first call the outcome is gone and later calls are no-ops.
+fn judge(
+    run_id: &str,
+    state: &StreamState,
+    exit: &LeaderExit,
+    args: &ClaudeArgs,
+    stderr: &mut StderrBuffer,
+    outcome: &mut Option<oneshot::Sender<RunOutcome>>,
+) {
+    let Some(outcome) = outcome.take() else {
+        return;
+    };
+    let report = ExitReport {
+        exit_code: exit.code,
+        signal: exit.signal,
+        // A timeout that a `result` beat is judged by that `result`, not as a timeout
+        // (#47 D3). `lingered` carries that fact on the outcome below.
+        timed_out: exit.timed_out && !exit.lingered,
+        interrupted: exit.stopped,
+        stderr: stderr.take(),
+        clock: RunClock {
+            awake_ms: exit.awake_ms,
+            suspended_ms: exit.suspended_ms,
+            wake_grace: exit.wake_grace,
+        },
+    };
+    let mut judged = stream::judge(state, &report, args);
+    judged.lingered = exit.lingered;
+    tracing::debug!(run_id = %run_id, "run.judged");
+    let _ = outcome.send(judged);
 }
 
 /// Forwards one event to the reader. The channel is unbounded, so `send` never blocks and never
@@ -416,6 +465,29 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_result_that_is_the_last_line_is_not_judged_before_it_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        // The leader prints `init`, then the `result` as its final line — with no trailing
+        // newline, so the codec can only deliver it at EOF — and exits at once. A backgrounded
+        // Straggler inherits stdout and holds the pipe open past the leader exit (until the
+        // Straggler grace reaps it), so the `result` is guaranteed to be read *after*
+        // `LeaderExited`. Judging at the leader exit (the old behaviour) reports
+        // `Failed(no_result)`; the rule waits for the `result` or EOF instead.
+        let body = r#"printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-1"}'
+printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s-1"}'
+sleep 30 &
+exit 0
+"#;
+        let program = fake_claude(&dir, body).await;
+        let (_clock, spawner) = spawner();
+        let handle = start(&spawner, request(&program)).unwrap();
+        let (_events, outcome, _settle) = finish(handle).await;
+        assert_eq!(outcome.verdict, Verdict::Ok);
+        assert_eq!(outcome.reply.as_deref(), Some("done"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn no_result_on_exit_zero_is_a_failure() {
         let dir = tempfile::tempdir().unwrap();
         let body = r#"printf '%s\n' \
@@ -434,6 +506,36 @@ mod tests {
                 .any(|e| matches!(e, StreamEvent::TextDelta { text, .. } if text == "Starting"))
         );
         assert_eq!(settle.stragglers, 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_result_with_a_straggler_holding_stdout_is_judged_at_settle() {
+        let dir = tempfile::tempdir().unwrap();
+        // The leader prints `init` and exits at once; a Straggler inherits stdout, so neither a
+        // `result` nor EOF arrive until the Straggler grace reaps it. The run must be judged at
+        // Settle — `Failed(no_result)` — and must not hang waiting for a line that never comes.
+        let body = r#"printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-1"}'
+sleep 30 &
+exit 0
+"#;
+        let program = fake_claude(&dir, body).await;
+        let (_clock, spawner) = spawner();
+        let mut handle = start(&spawner, request(&program)).unwrap();
+        // The init event means the run is up.
+        assert!(handle.events.recv().await.is_some());
+        let outcome = tokio::time::timeout(LIMIT, handle.outcome)
+            .await
+            .expect("the outcome in time")
+            .unwrap();
+        assert_eq!(outcome.verdict, Verdict::Failed(Failure::NoResult));
+        // The settle still follows, with the reaped Straggler accounted for.
+        while handle.events.recv().await.is_some() {}
+        let settle = tokio::time::timeout(LIMIT, handle.settled)
+            .await
+            .expect("the settle in time")
+            .unwrap();
+        assert!(settle.stragglers >= 1);
     }
 
     #[cfg(unix)]
