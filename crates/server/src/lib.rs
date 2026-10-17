@@ -17,6 +17,7 @@ pub mod devices;
 pub mod error;
 pub mod listener;
 pub mod pairing;
+pub mod random;
 pub mod router;
 pub mod routes;
 pub mod state;

@@ -601,7 +601,10 @@ impl<H: PairingHooks> PairingService<H> {
             return Err(PairingError::invalid_host());
         }
         let cert = self.ensure_cert().await?;
-        let created = self.registry.create(request.host.clone());
+        let created = self
+            .registry
+            .create(request.host.clone())
+            .map_err(|_| PairingError::internal("could not generate a pairing code"))?;
         let host = request.host.clone().or_else(|| default_host(&remote.host));
         let pairing_string = PairingString {
             code: created.code,
@@ -673,7 +676,8 @@ impl<H: PairingHooks> PairingService<H> {
         let now = self.clock.now();
         match self.registry.claim(code) {
             Submit::Matched { id, .. } => {
-                let proposed = new_device_id();
+                let proposed = new_device_id()
+                    .map_err(|_| PairingError::internal("could not generate a device id"))?;
                 // The record is keyed by the cert, so re-pairing the same key reuses its id.
                 let device_id = write(&self.devices).pair(
                     proposed,
@@ -781,7 +785,7 @@ impl<H: PairingHooks> PairingService<H> {
         }
         let secret = new_secret()
             .map_err(|_| PairingError::internal("could not generate a token secret"))?;
-        let id = new_id();
+        let id = new_id().map_err(|_| PairingError::internal("could not generate a token id"))?;
         let hash = hash_token(&secret);
         let now = self.clock.now();
         let token = {
@@ -922,10 +926,10 @@ impl PairingBackend for MissingBackend {
 }
 
 /// A fresh Device id, `dev_<16 hex>`.
-fn new_device_id() -> DeviceId {
+fn new_device_id() -> Result<DeviceId, crate::random::Unavailable> {
     let mut bytes = [0u8; 8];
-    let _ = getrandom::fill(&mut bytes);
-    format!("dev_{}", hex(&bytes))
+    crate::random::fill(&mut bytes)?;
+    Ok(format!("dev_{}", hex(&bytes)))
 }
 
 /// The host a Pairing string carries when `pairing.create` was given none: `remote.listen` if it
@@ -1148,6 +1152,41 @@ mod tests {
         // A wildcard `remote.listen` leaves the host out of the string.
         assert_eq!(parsed.host, None);
         assert!(store.cert().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_failing_random_source_creates_no_pairing_code() {
+        let store = Arc::new(MemorySecrets::new());
+        let clock = Arc::new(TestClock::at(9));
+        let service = build(TestHooks::enabled(), &store, &clock).await;
+        let error = {
+            let _fail = crate::random::failing::enable();
+            service
+                .pairing_create(PairingCreate::default())
+                .await
+                .unwrap_err()
+        };
+        assert_eq!(error.code(), ErrorCode::Internal);
+        assert_eq!(service.registry.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_failing_random_source_creates_no_token() {
+        let store = Arc::new(MemorySecrets::new());
+        let clock = Arc::new(TestClock::at(9));
+        let service = build(TestHooks::enabled(), &store, &clock).await;
+        let error = {
+            let _fail = crate::random::failing::enable();
+            service
+                .tokens_create(TokenCreate {
+                    name: "ci".into(),
+                    allow: vec![TokenPermission::Send],
+                })
+                .await
+                .unwrap_err()
+        };
+        assert_eq!(error.code(), ErrorCode::Internal);
+        assert!(service.tokens_list().await.unwrap().tokens.is_empty());
     }
 
     #[tokio::test]

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::auth::{TokenRecord, TokenStore};
+use crate::random;
 use crate::tls::cert::base64_encode;
 
 /// The `schema` this build writes into `api-tokens.json`.
@@ -225,21 +226,27 @@ impl TokensFile {
     /// The stored hash is compared with `hash`: the same value changes nothing (a revoked legacy
     /// token stays revoked, so it is not re-imported); a changed value updates the record and
     /// clears the tombstone. A first-ever import adds the legacy token.
-    pub fn import_legacy(&mut self, hash: [u8; 32], now: DateTime<Utc>) -> bool {
+    ///
+    /// Fails, and changes nothing, when a first-ever import can't draw a token id.
+    pub fn import_legacy(
+        &mut self,
+        hash: [u8; 32],
+        now: DateTime<Utc>,
+    ) -> Result<bool, TokenError> {
         let hex = hex(&hash);
         if self.tokens.iter().any(|token| token.hash == hex) {
-            return false;
+            return Ok(false);
         }
         match self.tokens.iter_mut().find(|token| token.legacy()) {
             Some(token) => {
                 token.hash = hex;
                 token.revoked_at = None;
                 token.last_used_at = None;
-                true
+                Ok(true)
             }
             None => {
                 self.tokens.push(Token {
-                    id: new_id(),
+                    id: new_id()?,
                     name: "legacy-apiToken".to_owned(),
                     allow: vec![TokenPermission::Send],
                     hash: hex,
@@ -248,7 +255,7 @@ impl TokensFile {
                     source: Some(LEGACY_SOURCE.to_owned()),
                     revoked_at: None,
                 });
-                true
+                Ok(true)
             }
         }
     }
@@ -260,15 +267,15 @@ pub type SharedTokens = Arc<RwLock<TokensFile>>;
 /// A fresh bearer value: 32 random bytes in unpadded base64url, shown once by `tokens.create`.
 pub fn new_secret() -> Result<String, TokenError> {
     let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).map_err(|_| TokenError::Random)?;
+    random::fill(&mut bytes).map_err(|_| TokenError::Random)?;
     Ok(base64_encode(&bytes, true, false))
 }
 
 /// A fresh token id, `tok_<16 hex>`.
-pub fn new_id() -> String {
+pub fn new_id() -> Result<String, TokenError> {
     let mut bytes = [0u8; 8];
-    let _ = getrandom::fill(&mut bytes);
-    format!("tok_{}", hex(&bytes))
+    random::fill(&mut bytes).map_err(|_| TokenError::Random)?;
+    Ok(format!("tok_{}", hex(&bytes)))
 }
 
 /// Why a secret could not be generated.
@@ -387,19 +394,29 @@ mod tests {
     }
 
     #[test]
+    fn a_failing_random_source_yields_no_secret_or_id() {
+        let _fail = random::failing::enable();
+        assert!(new_secret().is_err());
+        assert!(new_id().is_err());
+        let mut file = TokensFile::default();
+        assert!(file.import_legacy([7; 32], at(9)).is_err());
+        assert!(file.tokens.is_empty());
+    }
+
+    #[test]
     fn legacy_import_is_kept_in_step() {
         let mut file = TokensFile::default();
         let first = hash_token("legacy-value");
-        assert!(file.import_legacy(first, at(9)));
+        assert!(file.import_legacy(first, at(9)).unwrap());
         let legacy = file.infos().pop().unwrap();
         assert!(legacy.legacy);
         assert_eq!(legacy.source.as_deref(), Some(LEGACY_SOURCE));
         assert_eq!(legacy.allow, vec![Send]);
         // The same value is not re-imported.
-        assert!(!file.import_legacy(first, at(10)));
+        assert!(!file.import_legacy(first, at(10)).unwrap());
         // Revoked, then the same value again: still no re-import.
         assert!(file.revoke(&legacy.id, at(11)));
-        assert!(!file.import_legacy(first, at(12)));
+        assert!(!file.import_legacy(first, at(12)).unwrap());
         assert_eq!(
             file.lookup(&first),
             TokenLookup::Revoked {
@@ -408,7 +425,7 @@ mod tests {
         );
         // A changed value revives the record with the new hash.
         let second = hash_token("changed-value");
-        assert!(file.import_legacy(second, at(13)));
+        assert!(file.import_legacy(second, at(13)).unwrap());
         assert_eq!(
             file.lookup(&second),
             TokenLookup::Granted {
@@ -427,8 +444,8 @@ mod tests {
         let b = new_secret().unwrap();
         assert_ne!(a, b);
         assert_eq!(a.len(), 43);
-        assert!(new_id().starts_with("tok_"));
-        assert_ne!(new_id(), new_id());
+        assert!(new_id().unwrap().starts_with("tok_"));
+        assert_ne!(new_id().unwrap(), new_id().unwrap());
         assert_eq!(hash_token("x").len(), 32);
     }
 

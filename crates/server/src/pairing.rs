@@ -12,6 +12,7 @@ use chrono::{DateTime, Duration, Utc};
 use claudeclaw_api::PairingCode;
 use claudeclaw_api::pairing::PairingStatus;
 
+use crate::random;
 use crate::tokens::hex;
 
 /// How long a Pairing code lives (#41 D3).
@@ -110,13 +111,20 @@ impl PairingRegistry {
         &self.clock
     }
 
-    /// Creates a code for a new pairing: 40 random bits as 8 Crockford base32 characters.
-    pub fn create(&self, host: Option<String>) -> Created {
+    /// How many pairings the registry holds, for tests.
+    #[cfg(test)]
+    pub(crate) fn pending_count(&self) -> usize {
+        lock(&self.inner).len()
+    }
+
+    /// Creates a code for a new pairing: 40 random bits as 8 Crockford base32 characters. Fails,
+    /// and stores nothing, when the OS random source fails (#41).
+    pub fn create(&self, host: Option<String>) -> Result<Created, random::Unavailable> {
         let mut bytes = [0u8; 5];
-        let _ = getrandom::fill(&mut bytes);
+        random::fill(&mut bytes)?;
         let code = PairingCode::from_bytes(bytes);
         let now = self.clock.now();
-        let id = format!("pair_{}", random_hex());
+        let id = format!("pair_{}", random_hex()?);
         let expires_at = now + PAIRING_TTL;
         let mut map = lock(&self.inner);
         map.insert(
@@ -132,11 +140,11 @@ impl PairingRegistry {
                 device_id: None,
             },
         );
-        Created {
+        Ok(Created {
             id,
             code,
             expires_at,
-        }
+        })
     }
 
     /// The state of a pairing, with expiry applied; `None` when there is no such pairing.
@@ -284,10 +292,10 @@ impl Pending {
     }
 }
 
-fn random_hex() -> String {
+fn random_hex() -> Result<String, random::Unavailable> {
     let mut bytes = [0u8; 8];
-    let _ = getrandom::fill(&mut bytes);
-    hex(&bytes)
+    random::fill(&mut bytes)?;
+    Ok(hex(&bytes))
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -333,7 +341,7 @@ mod tests {
     #[test]
     fn a_code_is_8_crockford_characters_shown_once() {
         let (_clock, registry) = registry();
-        let created = registry.create(None);
+        let created = registry.create(None).unwrap();
         assert_eq!(created.code.compact().len(), 8);
         assert_eq!(created.code.to_string().len(), 9); // XXXX-XXXX
         assert!(
@@ -352,7 +360,7 @@ mod tests {
     #[test]
     fn a_code_expires_after_ten_minutes_on_a_paused_clock() {
         let (clock, registry) = registry();
-        let created = registry.create(None);
+        let created = registry.create(None).unwrap();
         assert_eq!(created.expires_at, clock_start() + Duration::minutes(10));
         *clock.0.lock().unwrap() = clock_start() + Duration::minutes(9);
         assert_eq!(
@@ -380,9 +388,21 @@ mod tests {
     }
 
     #[test]
+    fn a_failing_random_source_creates_no_code() {
+        let registry = PairingRegistry::new();
+        {
+            let _fail = random::failing::enable();
+            assert_eq!(registry.create(None).unwrap_err(), random::Unavailable);
+        }
+        assert!(lock(&registry.inner).is_empty());
+        // The source recovers: the next code is created normally.
+        assert!(registry.create(None).is_ok());
+    }
+
+    #[test]
     fn five_wrong_attempts_burn_the_code() {
         let (_clock, registry) = registry();
-        let created = registry.create(None);
+        let created = registry.create(None).unwrap();
         let wrong: PairingCode = "ZZZZ-ZZZZ".parse().unwrap();
         for attempt in 1..MAX_ATTEMPTS {
             assert!(
@@ -406,7 +426,7 @@ mod tests {
     #[test]
     fn a_wrong_code_does_not_match_and_counts() {
         let (_clock, registry) = registry();
-        let created = registry.create(None);
+        let created = registry.create(None).unwrap();
         let wrong: PairingCode = "0000-0001".parse().unwrap();
         assert_eq!(registry.submit(wrong), Submit::NoMatch);
         assert_eq!(registry.record_wrong_attempt(), Vec::<String>::new());
@@ -422,7 +442,7 @@ mod tests {
     #[test]
     fn a_code_is_single_use() {
         let (_clock, registry) = registry();
-        let created = registry.create(Some("build-box".into()));
+        let created = registry.create(Some("build-box".into())).unwrap();
         assert!(registry.complete(&created.id, "dev-1".into()));
         let view = registry.get(&created.id).unwrap();
         assert_eq!(view.status, PairingStatus::Completed);
@@ -435,7 +455,7 @@ mod tests {
     #[test]
     fn claim_hands_a_code_to_exactly_one_caller() {
         let (_clock, registry) = registry();
-        let created = registry.create(None);
+        let created = registry.create(None).unwrap();
         assert_eq!(
             registry.claim(created.code),
             Submit::Matched {
@@ -457,7 +477,7 @@ mod tests {
     #[test]
     fn cancel_ends_a_pending_pairing() {
         let (_clock, registry) = registry();
-        let created = registry.create(None);
+        let created = registry.create(None).unwrap();
         assert!(registry.cancel(&created.id));
         assert_eq!(
             registry.get(&created.id).unwrap().status,
@@ -471,7 +491,7 @@ mod tests {
     #[test]
     fn expired_codes_cannot_be_cancelled_or_completed() {
         let (clock, registry) = registry();
-        let created = registry.create(None);
+        let created = registry.create(None).unwrap();
         *clock.0.lock().unwrap() = clock_start() + Duration::minutes(11);
         assert!(!registry.cancel(&created.id));
         assert!(!registry.complete(&created.id, "dev-1".into()));
@@ -492,9 +512,11 @@ mod tests {
     #[test]
     fn codes_are_unique() {
         let (_clock, registry) = registry();
-        let codes: Vec<_> = (0..20).map(|_| registry.create(None).code).collect();
+        let codes: Vec<_> = (0..20)
+            .map(|_| registry.create(None).unwrap().code)
+            .collect();
         let unique: std::collections::HashSet<_> = codes.iter().map(PairingCode::compact).collect();
         assert_eq!(unique.len(), codes.len());
-        let _ = code_of(&registry, &registry.create(None).id);
+        let _ = code_of(&registry, &registry.create(None).unwrap().id);
     }
 }
