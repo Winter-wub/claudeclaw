@@ -1,5 +1,8 @@
 //! Scopes, Launcher resolution, sessions, Conversations and notifications.
 //!
+//! - [`conversations`]: the per-Scope serial Turn queues ([`conversations::queue`]) and the Run
+//!   pipeline behind them ([`conversations::pipeline`]) (architecture §4, §6; #8, #9, #25, #29,
+//!   #33, #37, #79).
 //! - [`disk`]: the free-space guard ([`disk::DiskGuard`]) — probes, warns and gates intake.
 //! - [`events`]: the event bus, a `tokio::sync::broadcast` of `api::DaemonEvent` that feeds SSE
 //!   (management-api §1.6, §2.2).
@@ -16,6 +19,7 @@
 //!   Timeout breaker, the Auto-compact budget, the Cost baseline, parking and orphan pruning
 //!   (architecture §4, §9.1; #8, #12 §6, #32, #33, #39, #44).
 
+pub mod conversations;
 pub mod disk;
 pub mod events;
 pub mod health;
