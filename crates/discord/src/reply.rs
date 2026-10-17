@@ -16,8 +16,13 @@
 //! One TS piece is deliberately not ported: an outbound image size cap, because TS has none. A
 //! file over 25 MB is skipped with a warning rather than read into memory, where TS would let
 //! Discord reject the upload.
+//!
+//! One deliberate divergence: TS's `IMAGE_PATH_RE` (`src/commands/discord.ts:396`) matches only
+//! Unix paths, so on Windows it finds nothing. [`is_image_token`] also recognises drive-absolute
+//! and UNC paths, since Claude Code on Windows prints `C:\...\outbox\a.png`. The security
+//! property is unchanged: a path still has to canonicalize inside a canonicalized root.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -528,10 +533,7 @@ fn extract_image_paths(
     } else {
         allowed_roots.to_vec()
     };
-    let canonical_roots: Vec<PathBuf> = roots
-        .iter()
-        .map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.clone()))
-        .collect();
+    let canonical_roots: Vec<PathBuf> = roots.iter().map(|root| canonical(root)).collect();
     let floor = started_at
         .checked_sub(PATH_SKEW)
         .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -545,7 +547,7 @@ fn extract_image_paths(
             index += next_char(text, index).len_utf8();
         }
         let token = &text[token_start..index];
-        if token.starts_with('/') && is_image_token(token) {
+        if is_image_token(token) {
             if let Some(resolved) = confined_recent(token, &canonical_roots, floor) {
                 paths.push(resolved);
                 // The token is dropped; the whitespace after it is copied below.
@@ -573,8 +575,14 @@ fn next_char(text: &str, index: usize) -> char {
 
 /// Whether `token` is an absolute image path with a known extension (the regex
 /// `IMAGE_PATH_RE`, `src/commands/discord.ts:396`).
+///
+/// TS's regex only matches Unix paths (`/[^\s]+\.(?:png|jpe?g|gif|webp)`); Claude Code on
+/// Windows prints `C:\Users\x\outbox\a.png` (and, sometimes, forward-slash `C:/...`), so
+/// recognising those here is a deliberate divergence. It is safe because path shape never
+/// carries the security property: [`confined_recent`] still requires the canonical path to
+/// live under a canonicalized root.
 fn is_image_token(token: &str) -> bool {
-    if !token.starts_with('/') {
+    if !is_absolute_path(token) {
         return false;
     }
     let lower = token.to_ascii_lowercase();
@@ -583,10 +591,53 @@ fn is_image_token(token: &str) -> bool {
         .any(|ext| lower.ends_with(ext) && token.len() > ext.len() + 1)
 }
 
+/// Whether `token` is absolute on either platform: a Unix `/...`, a drive-absolute
+/// `C:\...` / `C:/...`, or a `\\server\share` UNC path. Whitespace tokenization already
+/// supplies the TS regex's leading `(?<![^\s])` boundary, so the token start is the match start.
+fn is_absolute_path(token: &str) -> bool {
+    if token.starts_with('/') || token.starts_with(r"\\") {
+        return true;
+    }
+    let bytes = token.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+}
+
+/// Canonicalizes `path` for confinement, normalising a Windows extended-length (`\\?\`) prefix
+/// away from both sides so the comparison is component-wise between like forms. The prefix is
+/// stripped *before* resolving too, so a verbatim spelling still resolves to a real path. A path
+/// that does not exist keeps its stripped input spelling (TS falls back to the raw root/path
+/// too, `src/commands/discord.ts:404-411`).
+fn canonical(path: &Path) -> PathBuf {
+    let stripped = strip_extended_prefix(path);
+    match std::fs::canonicalize(&stripped) {
+        Ok(resolved) => strip_extended_prefix(&resolved),
+        Err(_) => stripped,
+    }
+}
+
+/// A local `dunce`-style strip of a Windows verbatim prefix: `\\?\C:\dir` becomes `C:\dir`
+/// and `\\?\UNC\server\share` becomes `\\server\share`. A no-op elsewhere, and it avoids a
+/// dependency for the one call site that needs it.
+fn strip_extended_prefix(path: &Path) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => path.to_path_buf(),
+    }
+}
+
 /// Canonicalizes `token`, returning it when it is inside one of `roots` and recent enough
 /// (TS `extractImagePaths`'s per-match body, `src/commands/discord.ts:411-427`).
 fn confined_recent(token: &str, roots: &[PathBuf], floor: SystemTime) -> Option<PathBuf> {
-    let resolved = std::fs::canonicalize(token).ok()?;
+    let resolved = canonical(Path::new(token));
     let confined = roots
         .iter()
         .any(|root| resolved == *root || resolved.starts_with(root));
@@ -988,6 +1039,71 @@ mod tests {
         assert!(!is_image_token("/.png"), "no name before the extension");
         assert!(!is_image_token("/a.pngx"));
         assert!(!is_image_token("/a.txt"));
+    }
+
+    /// TS's `IMAGE_PATH_RE` never matches a Windows path; recognising drive-absolute and UNC
+    /// paths is the deliberate divergence (`is_image_token`). Detection is platform-independent
+    /// so the shape can be checked anywhere; confinement still needs a real file.
+    #[test]
+    fn windows_paths_are_recognised_as_image_tokens() {
+        // Fictional drive and share names, so nothing here names a real machine.
+        assert!(is_image_token(r"C:\Users\x\outbox\a.png"));
+        assert!(is_image_token("D:/outbox/a.png"));
+        assert!(is_image_token(r"Z:\tmp\shot.JPEG"));
+        assert!(is_image_token(r"\\server\share\a.webp"));
+        // A bare drive is not an absolute path, and neither is a drive-relative one.
+        assert!(!is_image_token(r"C:a.png"));
+        assert!(!is_image_token("C:\\"));
+        assert!(!is_image_token(r"x\outbox\a.png"), "drive-less is relative");
+        assert!(!is_image_token(r"C:\Users\x\a.txt"), "unknown extension");
+    }
+
+    /// The local `dunce`-style strip is pure string work, so it is testable on every platform.
+    #[test]
+    fn extended_length_prefixes_are_stripped() {
+        assert_eq!(
+            strip_extended_prefix(Path::new(r"\\?\C:\dir\a.png")),
+            PathBuf::from(r"C:\dir\a.png")
+        );
+        assert_eq!(
+            strip_extended_prefix(Path::new(r"\\?\UNC\server\share\a.png")),
+            PathBuf::from(r"\\server\share\a.png")
+        );
+        // Already plain, Unix, or not UTF-8: returned unchanged.
+        assert_eq!(
+            strip_extended_prefix(Path::new("/tmp/a.png")),
+            PathBuf::from("/tmp/a.png")
+        );
+    }
+
+    /// The temp root and the file canonicalize to the same form, so the reply attaches the file
+    /// whichever slash style it is written in, and a root already written as a verbatim `\\?\`
+    /// path still confines it. On Unix the two spellings collapse to one, which is fine: the
+    /// drive/UNC spellings get their coverage from `windows_paths_are_recognised_as_image_tokens`.
+    #[test]
+    fn slash_styles_and_extended_prefixes_are_confined() {
+        let dir = TempDir::new().unwrap();
+        let image = dir.path().join("shot.png");
+        std::fs::write(&image, b"x").unwrap();
+
+        let native = image.display().to_string();
+        let forward = native.replace('\\', "/");
+        let text = format!("one {native} two {forward} end");
+
+        let now = SystemTime::now();
+        let (paths, cleaned) = extract_image_paths(&text, &[dir.path().to_path_buf()], now);
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert!(paths.iter().all(|path| path.ends_with("shot.png")));
+        assert!(!cleaned.contains("shot.png"), "{cleaned}");
+        assert!(
+            cleaned.starts_with("one") && cleaned.ends_with("end"),
+            "{cleaned}"
+        );
+
+        // A root already written as a verbatim `\\?\` path confines the same file.
+        let verbatim_root = PathBuf::from(format!(r"\\?\{}", dir.path().display()));
+        let (paths, _) = extract_image_paths(&native, &[verbatim_root], now);
+        assert_eq!(paths.len(), 1, "{paths:?}");
     }
 
     #[tokio::test]
