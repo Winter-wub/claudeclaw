@@ -3,9 +3,10 @@
 //! Each Scope gets its own queue and its own draining task. The task runs one Turn at a time, so
 //! two Turns in the same Scope never overlap, and — because the pipeline only returns once the
 //! run is settled (#37) — the next Turn starts only after the previous run's process group is
-//! empty. The reply goes out earlier, at the run's leader exit (#37 D2), so an answer is never
-//! delayed by the settle. A task that finds its queue empty removes the Scope from the map and
-//! exits, so an idle Worker holds no per-Scope task.
+//! empty. The reply goes out earlier, at the run's leader exit and after the events channel has
+//! closed (#37 D2, the `chat` contract), so an answer is never delayed by the settle. A task that
+//! finds its queue empty removes the Scope from the map and exits, so an idle Worker holds no
+//! per-Scope task.
 //!
 //! The map lock is the only synchronisation between a producer ([`Queues::converse`]) and the
 //! drain task. `converse` sends into the unbounded channel **while holding the lock**, and the
@@ -59,8 +60,9 @@ impl Queues {
     }
 
     /// Accepts `turn` and returns the adapter's [`RunHandle`]. The Turn is queued behind any other
-    /// Turn in the same Scope. The handle's outcome arrives at the run's leader exit, **before**
-    /// the settle (#37 D2); the next Turn is queued only after this run has settled (#37 D3).
+    /// Turn in the same Scope. The handle's events channel closes and its outcome arrives at the
+    /// run's leader exit, **before** the settle (#37 D2); the next Turn is queued only after this
+    /// run has settled (#37 D3).
     pub fn converse(&self, turn: Turn) -> RunHandle {
         let (sender, handle) = RunHandle::channel(self.capacity);
         let scope = Scope::from_chat(&turn.scope);
@@ -156,7 +158,7 @@ mod tests {
     use crate::conversations::pipeline::test_support::{
         HAPPY, harness, harness_with_straggler_grace, read_calls, turn,
     };
-    use claudeclaw_chat::OutcomeKind;
+    use claudeclaw_chat::{OutcomeKind, RunEvent};
 
     /// A fake `claude` that reports success, records its start, and leaves a straggler that traps
     /// `TERM` and records `strap-<n>`. The straggler is what makes the settle observable.
@@ -164,6 +166,7 @@ mod tests {
         format!(
             "n=$(cat '{counter}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{counter}'\n\
              echo \"start-$n\" >> '{log}'\n\
+             printf '%s\\n' '{{\"type\":\"assistant\",\"message\":{{\"id\":\"m0\",\"content\":[{{\"type\":\"text\",\"text\":\"x\"}}]}},\"parent_tool_use_id\":null}}'\n\
              printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"s-1\"}}'\n\
              ( trap \"echo strap-$n >> '{log}'; exit 0\" TERM; while :; do sleep 0.05; done ) &\n\
              exit 0"
@@ -212,10 +215,19 @@ mod tests {
         ));
         let queues = Queues::new(Arc::clone(&h.pipeline), 8);
 
-        let first = queues.converse(turn("one", "123"));
+        let mut first = queues.converse(turn("one", "123"));
         let second = queues.converse(turn("two", "123"));
 
-        // The reply arrives at the first run's leader exit, before its Straggler is dealt with.
+        // The events channel closes first (the `chat` contract), then the reply arrives at the first
+        // run's leader exit, before its Straggler is dealt with.
+        let mut deltas = 0;
+        while let Some(event) = first.events.recv().await {
+            if matches!(event, RunEvent::TextDelta(_)) {
+                deltas += 1;
+            }
+        }
+        assert_eq!(deltas, 1, "the run's event was delivered before the reply");
+
         let outcome = first.outcome.await.unwrap();
         assert_eq!(outcome.kind, OutcomeKind::Ok);
 

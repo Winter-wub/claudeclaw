@@ -11,9 +11,11 @@
 //! 3. plans the run ([`Planner::plan`]), writes the per-run System-prompt file at 0600 under
 //!    `daemon/tmp/` (#25 D2), enters the run in the Run registry with its origin ([`RunRegistry`],
 //!    #29, #79) and spawns it ([`claudeclaw_runner::run::start`]);
-//! 4. forwards the run's events to the adapter off the reply's path (see below), arms the Turn's
-//!    health beacon ([`HealthMonitor::turn`]), and, at the leader's exit, sends the adapter's
-//!    [`ChatOutcome`] on `outcome` — **before** the Stragglers settle (#37 D2);
+//! 4. forwards the run's events to the adapter off the observation loop (see below), arms the
+//!    Turn's health beacon ([`HealthMonitor::turn`]), and, at the final run's leader exit, closes the
+//!    Turn's event queue, awaits the forwarder and sends the adapter's [`ChatOutcome`] on `outcome`
+//!    — so the events channel closes **before** the outcome (the `chat` contract, §6) and the reply
+//!    still precedes the settle (#37 D2);
 //! 5. records the run against its session ([`SessionManager::record_run`]) and applies the
 //!    recovery policy ([`SessionManager::decide`]): a stale session is retried once fresh; a
 //!    resumed-session timeout runs `/compact` and re-runs the Turn once (#33). Every run in the
@@ -25,15 +27,15 @@
 //! The queue calls this and only returns to the next Turn once the final run has settled, so the
 //! next Turn never starts before the previous run's process group is empty (#37 D3).
 //!
-//! # Events are delivered off the reply's path
+//! # Events and the reply (the `chat` contract, §6)
 //!
 //! A run's events go onto an **unbounded** channel as they stream and a small task forwards them
-//! to the adapter with backpressure ([`forward_events`]). The observation loop therefore never
-//! waits on the adapter: the outcome still goes out at the leader's exit even if the adapter is
-//! slow (#37 D2), and no event is dropped — a full adapter channel makes the forwarder wait rather
-//! than a `try_send` lose the event. The run's events are drained until the pump ends (after the
-//! settle), so a late line is delivered too, and the adapter's events channel closes once every
-//! event has been delivered — which may be after the outcome for a slow adapter.
+//! to the adapter with backpressure ([`forward_events`]); no event is dropped — a full adapter
+//! channel makes the forwarder wait rather than a `try_send` lose the event. At the final run's
+//! leader exit the queue is closed and the forwarder awaited, so its last event is delivered and
+//! the adapter's events channel is closed **before** the [`ChatOutcome`] is sent, and both happen
+//! before the settle: a slow adapter delays only its own reply, and the Stragglers — which settle
+//! after the leader's exit — never delay it (#37 D2).
 //!
 //! # Rate-limit fallback (follow-up)
 //!
@@ -258,13 +260,13 @@ impl Pipeline {
     }
 
     /// Runs one Turn: spawns its run(s), forwards events to `events`, and sends the adapter's
-    /// [`ChatOutcome`] on `outcome` the moment the Turn's **final** run is judged — at the leader's
-    /// exit, before the Stragglers settle (#37 D2). A recovery run inside the Turn still waits for
-    /// the previous run to settle, and this does not return until the final run has settled and
-    /// been recorded, so the queue starts the next Turn only after the settle (#37 D3).
-    ///
-    /// Events are delivered by [`forward_events`] off this path, so the outcome is never delayed by
-    /// a slow adapter; the adapter's events channel closes once every event has been delivered.
+    /// [`ChatOutcome`] on `outcome` at the Turn's **final** run's leader exit (#37 D2): the Turn's
+    /// event queue is closed and the forwarder awaited first, so the adapter's events channel is
+    /// closed before the outcome — the `chat` contract (§6) — while every event was still delivered
+    /// off the observation loop, so a slow adapter delays only its own reply. A recovery run inside the
+    /// Turn still waits for the previous run to settle, and this does not return until the final run
+    /// has settled and been recorded, so the queue starts the next Turn only after the settle
+    /// (#37 D3).
     pub async fn run_turn(
         &self,
         turn: Turn,
@@ -308,9 +310,10 @@ impl Pipeline {
 
         // Events go onto an unbounded channel as the run streams, and a small task forwards them
         // to the adapter with backpressure. The observation loop therefore never waits on the
-        // adapter, so the reply still goes out at the leader's exit (#37 D2) while a slow adapter
-        // only ever makes the forwarder wait — no event is dropped (`send`, never `try_send`).
-        let (event_tx, _forwarder) = match events {
+        // adapter: no event is dropped (`send`, never `try_send`). Before the reply goes out the
+        // queue is closed and this task is awaited, so the adapter's events channel is closed first
+        // — the `chat` contract (§6) — and a slow adapter delays only its own reply.
+        let (mut event_tx, mut forwarder) = match events {
             Some(adapter_tx) => {
                 let (tx, rx) = mpsc::unbounded_channel();
                 (Some(tx), Some(tokio::spawn(forward_events(adapter_tx, rx))))
@@ -353,7 +356,9 @@ impl Pipeline {
             let mut judged = match self.run_attempt(&input, &event_tx).await {
                 Ok(judged) => judged,
                 Err(err) => {
-                    let _ = outcome.send(self.start_failed(&label, &err));
+                    let chat = self.start_failed(&label, &err);
+                    self.reply(&mut event_tx, &mut forwarder, chat, outcome)
+                        .await;
                     return;
                 }
             };
@@ -403,7 +408,8 @@ impl Pipeline {
                             "the Turn could not be re-planned for a new session"
                         );
                         let chat = chat_outcome(&judged.attempt.outcome, None);
-                        let _ = outcome.send(chat);
+                        self.reply(&mut event_tx, &mut forwarder, chat, outcome)
+                            .await;
                         self.settle_attempt(&mut judged, &input, recorded).await;
                         final_outcome = judged.attempt.outcome;
                         break;
@@ -439,7 +445,9 @@ impl Pipeline {
                     let mut compact = match self.run_attempt(&compact_input, &event_tx).await {
                         Ok(judged) => judged,
                         Err(err) => {
-                            let _ = outcome.send(self.start_failed(&label, &err));
+                            let chat = self.start_failed(&label, &err);
+                            self.reply(&mut event_tx, &mut forwarder, chat, outcome)
+                                .await;
                             return;
                         }
                     };
@@ -481,7 +489,9 @@ impl Pipeline {
                     let mut retry = match self.run_attempt(&retry_input, &event_tx).await {
                         Ok(judged) => judged,
                         Err(err) => {
-                            let _ = outcome.send(self.start_failed(&label, &err));
+                            let chat = self.start_failed(&label, &err);
+                            self.reply(&mut event_tx, &mut forwarder, chat, outcome)
+                                .await;
                             return;
                         }
                     };
@@ -493,7 +503,8 @@ impl Pipeline {
                         )
                         .await;
                     let chat = chat_outcome(&retry.attempt.outcome, compact_note.as_deref());
-                    let _ = outcome.send(chat);
+                    self.reply(&mut event_tx, &mut forwarder, chat, outcome)
+                        .await;
                     self.settle_attempt(&mut retry, &retry_input, retry_recorded)
                         .await;
                     final_outcome = retry.attempt.outcome;
@@ -503,7 +514,8 @@ impl Pipeline {
                 // returns the failed outcome instead of re-running against the fallback model (#8).
                 Recovery::None | Recovery::Skipped(_) | Recovery::RateLimitFallback => {
                     let chat = chat_outcome(&judged.attempt.outcome, compact_note.as_deref());
-                    let _ = outcome.send(chat);
+                    self.reply(&mut event_tx, &mut forwarder, chat, outcome)
+                        .await;
                     self.settle_attempt(&mut judged, &input, recorded).await;
                     final_outcome = judged.attempt.outcome;
                     break;
@@ -518,6 +530,27 @@ impl Pipeline {
                 .await;
         }
         self.health.turn(&scope, planned.timeout).disarm();
+    }
+
+    /// Sends the adapter's reply: closes the Turn's event queue and awaits the forwarder, so the
+    /// last event is delivered and the adapter's events channel is closed **before** `chat` — the
+    /// `chat` contract (§6) — then sends `chat`. The forwarder waits for the adapter, so a slow
+    /// adapter delays only its own reply; the Stragglers settle after the leader's exit and never
+    /// delay it (#37 D2).
+    async fn reply(
+        &self,
+        event_tx: &mut Option<mpsc::UnboundedSender<RunEvent>>,
+        forwarder: &mut Option<tokio::task::JoinHandle<()>>,
+        chat: ChatOutcome,
+        outcome: oneshot::Sender<ChatOutcome>,
+    ) {
+        drop(event_tx.take());
+        if let Some(forwarder) = forwarder.take() {
+            // The forwarder only returns once the queue is closed and drained; a send error means
+            // the adapter stopped reading, and it drops the events sender either way.
+            let _ = forwarder.await;
+        }
+        let _ = outcome.send(chat);
     }
 
     /// The Refused-run path (#8, #26): a failed outcome and a `run.refused` owner notice, no
@@ -581,7 +614,8 @@ impl Pipeline {
 
     /// Runs one attempt: writes the System-prompt file, spawns the run, forwards its events to
     /// `events`, and returns as soon as the run is **judged** at the leader's exit. The settle is
-    /// left pending in [`Judged`] so the caller can reply first and wait for it later (#37 D2/D3).
+    /// left pending in [`Judged`] so the caller can close the queue, await the forwarder, reply and
+    /// wait for the settle later (#37 D2/D3).
     async fn run_attempt(
         &self,
         input: &AttemptInput<'_>,
@@ -673,8 +707,8 @@ impl Pipeline {
         let mut events_done = false;
         let mut tool_uses: u64 = 0;
         // The runner pump sends the outcome at the leader's exit (#37 D2). `biased` reads the
-        // events queued before it first, and [`settle_attempt`] drains whatever is left while the
-        // run settles, so no event is lost.
+        // events queued before it first, so the reply's preview includes everything the leader
+        // produced up to that point; the caller then closes the queue and waits for the forwarder.
         loop {
             tokio::select! {
                 biased;
@@ -713,8 +747,6 @@ impl Pipeline {
                 tool_uses,
             },
             settled,
-            events: run_events,
-            events_tx: events.clone(),
         })
     }
 
@@ -727,36 +759,9 @@ impl Pipeline {
         input: &AttemptInput<'_>,
         recorded: Option<RunRecorded>,
     ) {
-        // Drain the run's events while it settles, to the end of the pump: a slow stdout reader can
-        // still be forwarding lines after the leader's exit, and the pump closes the channel only
-        // after the settle, so nothing is dropped (#37 D2/D3).
-        let mut settle: Option<Settle> = None;
-        let mut events_done = false;
-        let mut settle_done = false;
-        {
-            let events = &mut judged.events;
-            let events_tx = &judged.events_tx;
-            let tool_uses = &mut judged.attempt.tool_uses;
-            let settled_rx = &mut judged.settled;
-            while !(events_done && settle_done) {
-                tokio::select! {
-                    biased;
-                    event = events.recv(), if !events_done => match event {
-                        Some(RunnerEvent::Stream(stream)) => {
-                            forward_event(events_tx, stream, tool_uses);
-                        }
-                        None => events_done = true,
-                    },
-                    result = &mut *settled_rx, if !settle_done => {
-                        settle_done = true;
-                        if let Ok(settled) = result {
-                            settle = Some(settled);
-                        }
-                    }
-                }
-            }
+        if let Ok(settled) = (&mut judged.settled).await {
+            judged.attempt.settle = Some(settled);
         }
-        judged.attempt.settle = settle;
         let span = tracing::info_span!(
             "run",
             run_id = %judged.attempt.run_id,
@@ -989,15 +994,11 @@ struct Attempt {
 }
 
 /// A run judged at the leader's exit, with its settle still to come. The reply goes out as soon as
-/// this is handed back; its remaining events are drained and its settle is awaited later, before
-/// the next Turn (#37 D2/D3).
+/// this is handed back (after the forwarder), and the settle is awaited later, before the next Turn
+/// (#37 D2/D3).
 struct Judged {
     attempt: Attempt,
     settled: oneshot::Receiver<Settle>,
-    /// The run's event stream, still being read until the pump ends after the settle.
-    events: mpsc::UnboundedReceiver<RunnerEvent>,
-    /// The Turn's unbounded event channel, to keep forwarding the events drained above.
-    events_tx: Option<mpsc::UnboundedSender<RunEvent>>,
 }
 
 fn build_record(
@@ -1187,9 +1188,11 @@ fn chat_event(event: StreamEvent) -> Option<RunEvent> {
     }
 }
 
-/// Forwards a run's mapped events to the adapter with backpressure, off the reply's path. It waits
-/// for room rather than dropping an event, and only a closed adapter ([`Err`]) ends it. The
-/// unbounded receiver is fed by [`forward_event`], so the observation loop never blocks here.
+/// Forwards a run's mapped events to the adapter with backpressure. It waits for room rather than
+/// dropping an event, and only a closed adapter ([`Err`]) ends it early; otherwise it returns once
+/// the queue is closed and drained, which drops the adapter's events sender and closes its channel
+/// before the reply is sent. The unbounded receiver is fed by [`forward_event`], so the observation
+/// loop never blocks here.
 async fn forward_events(
     adapter: mpsc::Sender<RunEvent>,
     mut stream: mpsc::UnboundedReceiver<RunEvent>,
@@ -1804,20 +1807,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_slow_adapter_receives_every_event_after_the_reply() {
+    async fn a_slow_adapter_receives_every_event_before_the_outcome() {
         let h = harness(Duration::from_secs(30)).await;
         // Each assistant message is a text delta and each following one adds a "\n" delta, so the
-        // adapter must see 2*MESSAGES-1 deltas — far more than any bounded channel holds (#37 D2).
+        // adapter must see 2*MESSAGES-1 deltas — far more than the tiny channel below holds (#37
+        // D2).
         const MESSAGES: usize = 1200;
-        // More text than the stdout pipe buffer holds, so the run's stdout reader must keep up and
-        // the `result` line reaches the judge before the leader's exit is processed — the shape the
-        // runner's own slow-reader test uses.
+        // More text than the stdout pipe buffer holds, so the run's stdout reader must keep up.
+        // The leader then lingers briefly after its `result` line: the runner judges at the leader's
+        // exit and its stdout reader can otherwise lose the race to forward a small final line (a
+        // pre-existing seam, out of this change's scope), so this keeps the verdict deterministic.
         let body = r#"i=0
 while [ "$i" -lt @N@ ]; do
   printf '{"type":"assistant","message":{"id":"m%d","content":[{"type":"text","text":"x"}]},"parent_tool_use_id":null}\n' "$i"
   i=$((i+1))
 done
 printf '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s-1"}\n'
+sleep 0.2
 "#
         .replace("@N@", &MESSAGES.to_string());
         h.write_claude(&body);
@@ -1832,19 +1838,20 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"done","s
                 .await;
         });
 
-        // The adapter is as slow as possible: it reads nothing until the reply is ready.
-        let outcome = outcome_rx
-            .await
-            .expect("the reply arrives at the leader's exit");
-        assert_eq!(outcome.kind, OutcomeKind::Ok, "{}", outcome.text);
-        assert_eq!(outcome.text, "done");
-
+        // A slow adapter: the reply cannot go out until every event has been delivered and the
+        // events channel has closed (the `chat` contract, §6), so drain the events — counting the
+        // deltas — and only then read the outcome.
         let mut deltas = 0usize;
         while let Some(event) = events_rx.recv().await {
             if matches!(event, claudeclaw_chat::RunEvent::TextDelta(_)) {
                 deltas += 1;
             }
         }
+        let outcome = outcome_rx
+            .await
+            .expect("the outcome arrives after the events channel closes");
+        assert_eq!(outcome.kind, OutcomeKind::Ok, "{}", outcome.text);
+        assert_eq!(outcome.text, "done");
         call.await.unwrap();
         assert_eq!(deltas, 2 * MESSAGES - 1, "no delta may be dropped");
     }
