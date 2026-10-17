@@ -52,6 +52,8 @@ croner = "4.0.1"
 futures-util = "0.3.34"
 libc = "0.2"
 nix = { version = "0.31", default-features = false }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "stream", "http2"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 process-wrap = { version = "10.0.1", default-features = false }
 secrecy = "0.10.3"
 serde-saphyr = "1.3.0"
@@ -64,6 +66,9 @@ serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha2 = "0.11.1"
 thiserror = "2.0.21"
 tracing = "0.1.44"
+twilight-gateway = { version = "0.17.1", default-features = false, features = ["rustls-platform-verifier", "zlib"] }
+twilight-http = { version = "0.17.1", default-features = false, features = ["rustls-platform-verifier", "decompression"] }
+twilight-model = "0.17.1"
 utoipa = { version = "6.0.0", features = ["chrono", "preserve_order"] }
 uuid = { version = "1.28", default-features = false, features = ["v5"] }
 which = "8.0.6"
