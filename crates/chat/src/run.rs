@@ -1,4 +1,4 @@
-//! What a Chat adapter gets back for a Turn: a stream of events, then one outcome
+//! What a Chat adapter gets back for a Turn: a stream of events and one outcome
 //! (architecture §6).
 
 use std::fmt;
@@ -79,8 +79,9 @@ impl fmt::Debug for ChatOutcome {
     }
 }
 
-/// The adapter's end of a queued Turn (architecture §6): [`RunEvent`]s while Claude works,
-/// then one [`ChatOutcome`]. The events channel closes before the outcome is sent.
+/// The adapter's end of a queued Turn (architecture §6): [`RunEvent`]s while Claude works and one
+/// [`ChatOutcome`] at the run's leader exit (#37 D2). The outcome may reach a slow adapter before
+/// the events channel closes; read both to the end.
 #[derive(Debug)]
 pub struct RunHandle {
     pub events: mpsc::Receiver<RunEvent>,
@@ -105,7 +106,8 @@ impl RunHandle {
     }
 }
 
-/// `core`'s end of a [`RunHandle`]. Drop `events` before sending `outcome`.
+/// `core`'s end of a [`RunHandle`]. Deliver `events` off the outcome's path, so a slow adapter
+/// never delays the outcome; close `events` once every event has been delivered.
 #[derive(Debug)]
 pub struct RunSender {
     pub events: mpsc::Sender<RunEvent>,

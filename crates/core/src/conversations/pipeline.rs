@@ -11,18 +11,29 @@
 //! 3. plans the run ([`Planner::plan`]), writes the per-run System-prompt file at 0600 under
 //!    `daemon/tmp/` (#25 D2), enters the run in the Run registry with its origin ([`RunRegistry`],
 //!    #29, #79) and spawns it ([`claudeclaw_runner::run::start`]);
-//! 4. forwards the run's events to the adapter, arms the Turn's health beacon
-//!    ([`HealthMonitor::turn`]), and waits for the outcome and then the settle (#37);
+//! 4. forwards the run's events to the adapter off the reply's path (see below), arms the Turn's
+//!    health beacon ([`HealthMonitor::turn`]), and, at the leader's exit, sends the adapter's
+//!    [`ChatOutcome`] on `outcome` — **before** the Stragglers settle (#37 D2);
 //! 5. records the run against its session ([`SessionManager::record_run`]) and applies the
 //!    recovery policy ([`SessionManager::decide`]): a stale session is retried once fresh; a
 //!    resumed-session timeout runs `/compact` and re-runs the Turn once (#33). Every run in the
 //!    Turn shares `turn_id` and counts `attempt` up, with a `purpose` of `turn`, `compact` or
-//!    `compact_retry` (#33);
-//! 6. writes the Run log and appends the Run-index record ([`RunLog`], [`RunIndex`]), ends the Turn
-//!    ([`SessionManager::end_turn`]) and returns the adapter's [`ChatOutcome`].
+//!    `compact_retry` (#33). A recovery run still starts only after the previous run has settled;
+//! 6. waits for the final run's settle, writes its Run log and appends its Run-index record
+//!    ([`RunLog`], [`RunIndex`]) and ends the Turn ([`SessionManager::end_turn`]).
 //!
-//! The queue calls this and only returns to the next Turn once it has resolved, so the next Turn
-//! never starts before the previous run is settled (#37).
+//! The queue calls this and only returns to the next Turn once the final run has settled, so the
+//! next Turn never starts before the previous run's process group is empty (#37 D3).
+//!
+//! # Events are delivered off the reply's path
+//!
+//! A run's events go onto an **unbounded** channel as they stream and a small task forwards them
+//! to the adapter with backpressure ([`forward_events`]). The observation loop therefore never
+//! waits on the adapter: the outcome still goes out at the leader's exit even if the adapter is
+//! slow (#37 D2), and no event is dropped — a full adapter channel makes the forwarder wait rather
+//! than a `try_send` lose the event. The run's events are drained until the pump ends (after the
+//! settle), so a late line is delivered too, and the adapter's events channel closes once every
+//! event has been delivered — which may be after the outcome for a slow adapter.
 //!
 //! # Rate-limit fallback (follow-up)
 //!
@@ -59,14 +70,14 @@ use claudeclaw_chat::{ChatOutcome, MessageRef, Notifier, OutcomeKind, Turn};
 use claudeclaw_runner::argv::{ArgvError, ClaudeArgs};
 use claudeclaw_runner::env::{RunEnv, RunVars};
 use claudeclaw_runner::launcher::{Launcher, LauncherError, resolve};
-use claudeclaw_runner::run::{RunEvent as RunnerEvent, RunRequest, start};
+use claudeclaw_runner::run::{RunEvent as RunnerEvent, RunHandle, RunRequest, start};
 use claudeclaw_runner::spawn::{Settle, SpawnError, SpawnSpec, Spawner};
 use claudeclaw_runner::stream::{RunOutcome, StreamEvent, Verdict};
 use claudeclaw_scheduler::WallClock;
 use claudeclaw_store::{
     FileMode, Layout, RunIndex, RunLog, RunLogBody, RunSection, StoreError, write_atomic,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::health::HealthMonitor;
 use crate::notify::{Notice, NoticeKind, Notices};
@@ -246,13 +257,20 @@ impl Pipeline {
         }
     }
 
-    /// Runs one Turn to its settle and returns the adapter's outcome. The events channel is
-    /// dropped before this returns, so the adapter sees the channel close before the outcome.
+    /// Runs one Turn: spawns its run(s), forwards events to `events`, and sends the adapter's
+    /// [`ChatOutcome`] on `outcome` the moment the Turn's **final** run is judged — at the leader's
+    /// exit, before the Stragglers settle (#37 D2). A recovery run inside the Turn still waits for
+    /// the previous run to settle, and this does not return until the final run has settled and
+    /// been recorded, so the queue starts the next Turn only after the settle (#37 D3).
+    ///
+    /// Events are delivered by [`forward_events`] off this path, so the outcome is never delayed by
+    /// a slow adapter; the adapter's events channel closes once every event has been delivered.
     pub async fn run_turn(
         &self,
         turn: Turn,
         events: Option<mpsc::Sender<RunEvent>>,
-    ) -> ChatOutcome {
+        outcome: oneshot::Sender<ChatOutcome>,
+    ) {
         let scope = Scope::from_chat(&turn.scope);
         let label = scope_label(&scope);
         let api_scope = scope.to_api().ok();
@@ -263,7 +281,9 @@ impl Pipeline {
         let resolved = match resolve(&launcher, &self.run_env.path) {
             Ok(resolved) => resolved,
             Err(err) => {
-                return self.refuse(&label, &scope, &launcher_name, err).await;
+                let chat = self.refuse(&label, &scope, &launcher_name, err).await;
+                let _ = outcome.send(chat);
+                return;
             }
         };
         let launcher_resolved = resolved.program().to_string_lossy().into_owned();
@@ -280,10 +300,24 @@ impl Pipeline {
         let mut is_new = resume.is_none();
         let mut planned = match self.plan(&turn, resume.as_deref()) {
             Ok(planned) => planned,
-            Err(failure) => return self.plan_failed(&label, &failure),
+            Err(failure) => {
+                let _ = outcome.send(self.plan_failed(&label, &failure));
+                return;
+            }
         };
 
-        let mut events = events;
+        // Events go onto an unbounded channel as the run streams, and a small task forwards them
+        // to the adapter with backpressure. The observation loop therefore never waits on the
+        // adapter, so the reply still goes out at the leader's exit (#37 D2) while a slow adapter
+        // only ever makes the forwarder wait — no event is dropped (`send`, never `try_send`).
+        let (event_tx, _forwarder) = match events {
+            Some(adapter_tx) => {
+                let (tx, rx) = mpsc::unbounded_channel();
+                (Some(tx), Some(tokio::spawn(forward_events(adapter_tx, rx))))
+            }
+            None => (None, None),
+        };
+
         let mut compact_note: Option<String> = None;
         let mut attempt: u32 = 0;
         let final_outcome: RunOutcome;
@@ -316,11 +350,20 @@ impl Pipeline {
                 model: planned.model.as_deref(),
             };
 
-            let attempt_result = match self.run_attempt(&input, &mut events).await {
-                Ok(result) => result,
-                Err(err) => return self.start_failed(&label, &err),
+            let mut judged = match self.run_attempt(&input, &event_tx).await {
+                Ok(judged) => judged,
+                Err(err) => {
+                    let _ = outcome.send(self.start_failed(&label, &err));
+                    return;
+                }
             };
-            self.record_attempt(&attempt_result, &input).await;
+
+            // Record the run against its session at the leader's exit, before the recovery
+            // decision reads the session this run just updated. The Run log and Run index wait for
+            // the settle (#37 D3).
+            let recorded = self
+                .record_session(&judged.attempt.outcome, judged.attempt.duration_ms, &input)
+                .await;
 
             let recovery = match &api_scope {
                 Some(api) => self
@@ -329,7 +372,7 @@ impl Pipeline {
                         api,
                         &launcher_key,
                         &RunFacts {
-                            outcome: &attempt_result.outcome,
+                            outcome: &judged.attempt.outcome,
                             is_new,
                             run_timeout: planned.timeout,
                             started_at,
@@ -346,6 +389,8 @@ impl Pipeline {
                 // to `None`/`Skipped` and no third run happens.
                 Recovery::NewSession(_) => match self.plan(&turn, None) {
                     Ok(fresh) => {
+                        // Settle and record this run before the retry starts (#37 D3).
+                        self.settle_attempt(&mut judged, &input, recorded).await;
                         resume = None;
                         is_new = true;
                         planned = fresh;
@@ -357,12 +402,16 @@ impl Pipeline {
                             reason = failure.code(),
                             "the Turn could not be re-planned for a new session"
                         );
-                        final_outcome = attempt_result.outcome;
+                        let chat = chat_outcome(&judged.attempt.outcome, None);
+                        let _ = outcome.send(chat);
+                        self.settle_attempt(&mut judged, &input, recorded).await;
+                        final_outcome = judged.attempt.outcome;
                         break;
                     }
                 },
                 // `/compact` with its own timeout, then re-run the Turn once (#33).
                 Recovery::AutoCompact { timeout } => {
+                    self.settle_attempt(&mut judged, &input, recorded).await;
                     attempt += 1;
                     let compact_input = AttemptInput {
                         scope: &scope,
@@ -387,12 +436,23 @@ impl Pipeline {
                         timeout,
                         model: planned.model.as_deref(),
                     };
-                    let compact = match self.run_attempt(&compact_input, &mut events).await {
-                        Ok(result) => result,
-                        Err(err) => return self.start_failed(&label, &err),
+                    let mut compact = match self.run_attempt(&compact_input, &event_tx).await {
+                        Ok(judged) => judged,
+                        Err(err) => {
+                            let _ = outcome.send(self.start_failed(&label, &err));
+                            return;
+                        }
                     };
-                    self.record_attempt(&compact, &compact_input).await;
-                    compact_note = Some(compact_note_text(&compact.outcome));
+                    let compact_recorded = self
+                        .record_session(
+                            &compact.attempt.outcome,
+                            compact.attempt.duration_ms,
+                            &compact_input,
+                        )
+                        .await;
+                    self.settle_attempt(&mut compact, &compact_input, compact_recorded)
+                        .await;
+                    compact_note = Some(compact_note_text(&compact.attempt.outcome));
 
                     attempt += 1;
                     let retry_input = AttemptInput {
@@ -418,18 +478,34 @@ impl Pipeline {
                         timeout: planned.timeout,
                         model: planned.model.as_deref(),
                     };
-                    let retry = match self.run_attempt(&retry_input, &mut events).await {
-                        Ok(result) => result,
-                        Err(err) => return self.start_failed(&label, &err),
+                    let mut retry = match self.run_attempt(&retry_input, &event_tx).await {
+                        Ok(judged) => judged,
+                        Err(err) => {
+                            let _ = outcome.send(self.start_failed(&label, &err));
+                            return;
+                        }
                     };
-                    self.record_attempt(&retry, &retry_input).await;
-                    final_outcome = retry.outcome;
+                    let retry_recorded = self
+                        .record_session(
+                            &retry.attempt.outcome,
+                            retry.attempt.duration_ms,
+                            &retry_input,
+                        )
+                        .await;
+                    let chat = chat_outcome(&retry.attempt.outcome, compact_note.as_deref());
+                    let _ = outcome.send(chat);
+                    self.settle_attempt(&mut retry, &retry_input, retry_recorded)
+                        .await;
+                    final_outcome = retry.attempt.outcome;
                     break;
                 }
                 // The run's own outcome stands. `RateLimitFallback` is the named follow-up: it
                 // returns the failed outcome instead of re-running against the fallback model (#8).
                 Recovery::None | Recovery::Skipped(_) | Recovery::RateLimitFallback => {
-                    final_outcome = attempt_result.outcome;
+                    let chat = chat_outcome(&judged.attempt.outcome, compact_note.as_deref());
+                    let _ = outcome.send(chat);
+                    self.settle_attempt(&mut judged, &input, recorded).await;
+                    final_outcome = judged.attempt.outcome;
                     break;
                 }
             }
@@ -442,7 +518,6 @@ impl Pipeline {
                 .await;
         }
         self.health.turn(&scope, planned.timeout).disarm();
-        chat_outcome(&final_outcome, compact_note.as_deref())
     }
 
     /// The Refused-run path (#8, #26): a failed outcome and a `run.refused` owner notice, no
@@ -505,12 +580,13 @@ impl Pipeline {
     }
 
     /// Runs one attempt: writes the System-prompt file, spawns the run, forwards its events to
-    /// `events`, and waits for the outcome and then the settle.
+    /// `events`, and returns as soon as the run is **judged** at the leader's exit. The settle is
+    /// left pending in [`Judged`] so the caller can reply first and wait for it later (#37 D2/D3).
     async fn run_attempt(
         &self,
         input: &AttemptInput<'_>,
-        events: &mut Option<mpsc::Sender<RunEvent>>,
-    ) -> Result<Attempt, PipelineError> {
+        events: &Option<mpsc::UnboundedSender<RunEvent>>,
+    ) -> Result<Judged, PipelineError> {
         let run_id = self.next_id("run");
         let started_at = self.clock.now();
         let span = tracing::info_span!(
@@ -579,7 +655,12 @@ impl Pipeline {
             system_prompt_file: Some(system_prompt_file),
             result_probe: None,
         };
-        let mut handle = start(
+        let RunHandle {
+            events: mut run_events,
+            outcome: mut outcome_rx,
+            settled,
+            ..
+        } = start(
             &self.spawner,
             RunRequest {
                 spawn: spec,
@@ -589,43 +670,25 @@ impl Pipeline {
         .map_err(PipelineError::Spawn)?;
 
         let mut outcome: Option<RunOutcome> = None;
-        let mut settle: Option<Settle> = None;
-        let mut outcome_done = false;
-        let mut settle_done = false;
         let mut events_done = false;
         let mut tool_uses: u64 = 0;
+        // The runner pump sends the outcome at the leader's exit (#37 D2). `biased` reads the
+        // events queued before it first, and [`settle_attempt`] drains whatever is left while the
+        // run settles, so no event is lost.
         loop {
-            if outcome_done && settle_done {
-                break;
-            }
             tokio::select! {
                 biased;
-                result = &mut handle.outcome, if !outcome_done => {
-                    outcome_done = true;
+                event = run_events.recv(), if !events_done => match event {
+                    Some(RunnerEvent::Stream(stream)) => {
+                        forward_event(events, stream, &mut tool_uses);
+                    }
+                    None => events_done = true,
+                },
+                result = &mut outcome_rx => {
                     if let Ok(judged) = result {
                         outcome = Some(judged);
                     }
-                }
-                result = &mut handle.settled, if !settle_done => {
-                    settle_done = true;
-                    if let Ok(settled) = result {
-                        settle = Some(settled);
-                    }
-                }
-                event = handle.events.recv(), if !events_done => {
-                    match event {
-                        Some(RunnerEvent::Stream(stream)) => {
-                            if let Some(chat_event) = chat_event(stream) {
-                                if matches!(chat_event, RunEvent::ToolUse { .. }) {
-                                    tool_uses += 1;
-                                }
-                                if let Some(tx) = events.as_ref() {
-                                    let _ = tx.try_send(chat_event);
-                                }
-                            }
-                        }
-                        None => events_done = true,
-                    }
+                    break;
                 }
             }
         }
@@ -638,25 +701,91 @@ impl Pipeline {
             .clone()
             .or_else(|| input.session_id.map(str::to_owned));
 
+        Ok(Judged {
+            attempt: Attempt {
+                outcome,
+                settle: None,
+                run_id,
+                started_at,
+                ended_at,
+                duration_ms,
+                session_id,
+                tool_uses,
+            },
+            settled,
+            events: run_events,
+            events_tx: events.clone(),
+        })
+    }
+
+    /// Waits for `judged`'s run to settle, logs `run.finish` / `run.settle` and writes the Run log
+    /// and Run-index record. The reply has already gone out; this is what the queue — and any
+    /// recovery run — waits for (#37 D3).
+    async fn settle_attempt(
+        &self,
+        judged: &mut Judged,
+        input: &AttemptInput<'_>,
+        recorded: Option<RunRecorded>,
+    ) {
+        // Drain the run's events while it settles, to the end of the pump: a slow stdout reader can
+        // still be forwarding lines after the leader's exit, and the pump closes the channel only
+        // after the settle, so nothing is dropped (#37 D2/D3).
+        let mut settle: Option<Settle> = None;
+        let mut events_done = false;
+        let mut settle_done = false;
+        {
+            let events = &mut judged.events;
+            let events_tx = &judged.events_tx;
+            let tool_uses = &mut judged.attempt.tool_uses;
+            let settled_rx = &mut judged.settled;
+            while !(events_done && settle_done) {
+                tokio::select! {
+                    biased;
+                    event = events.recv(), if !events_done => match event {
+                        Some(RunnerEvent::Stream(stream)) => {
+                            forward_event(events_tx, stream, tool_uses);
+                        }
+                        None => events_done = true,
+                    },
+                    result = &mut *settled_rx, if !settle_done => {
+                        settle_done = true;
+                        if let Ok(settled) = result {
+                            settle = Some(settled);
+                        }
+                    }
+                }
+            }
+        }
+        judged.attempt.settle = settle;
+        let span = tracing::info_span!(
+            "run",
+            run_id = %judged.attempt.run_id,
+            scope = %input.scope_label,
+            turn_id = %input.turn_id,
+            attempt = input.attempt,
+            launcher = %input.launcher_key,
+        );
         span.in_scope(|| {
             tracing::info!(
                 event = daemon::RUN_FINISH,
-                outcome = outcome_str(&outcome),
-                exit_code = ?outcome.exit_code,
-                is_error = ?outcome.is_error,
-                api_error_status = ?outcome.api_error_status,
-                duration_ms = duration_ms,
-                result_bytes = settle.as_ref().map(|s| s.stdout.bytes).unwrap_or(0),
-                stderr_bytes = settle.as_ref().map(|s| s.stderr.bytes).unwrap_or(0),
-                tool_uses = tool_uses,
-                tokens_in = outcome.usage.map(|u| u.input_tokens).unwrap_or(0),
-                tokens_out = outcome.usage.map(|u| u.output_tokens).unwrap_or(0),
-                cost_usd = ?outcome.total_cost_usd,
+                outcome = outcome_str(&judged.attempt.outcome),
+                exit_code = ?judged.attempt.outcome.exit_code,
+                is_error = ?judged.attempt.outcome.is_error,
+                api_error_status = ?judged.attempt.outcome.api_error_status,
+                duration_ms = judged.attempt.duration_ms,
+                result_bytes = judged.attempt.settle.as_ref().map(|s| s.stdout.bytes).unwrap_or(0),
+                stderr_bytes = judged.attempt.settle.as_ref().map(|s| s.stderr.bytes).unwrap_or(0),
+                tool_uses = judged.attempt.tool_uses,
+                tokens_in = judged.attempt.outcome.usage.map(|u| u.input_tokens).unwrap_or(0),
+                tokens_out = judged.attempt.outcome.usage.map(|u| u.output_tokens).unwrap_or(0),
+                cost_usd = ?judged.attempt.outcome.total_cost_usd,
                 purpose = purpose_str(input.purpose),
-                awake_ms = outcome.clock.awake_ms,
-                suspended_ms = outcome.clock.suspended_ms,
-                wake_grace = outcome.clock.wake_grace,
-                claude_code_version = outcome
+                awake_ms = judged.attempt.outcome.clock.awake_ms,
+                suspended_ms = judged.attempt.outcome.clock.suspended_ms,
+                wake_grace = judged.attempt.outcome.clock.wake_grace,
+                claude_code_version = judged
+                    .attempt
+                    .outcome
                     .claude_code_version
                     .as_ref()
                     .map(|v| v.raw.as_str())
@@ -664,11 +793,11 @@ impl Pipeline {
                 "the run finished"
             )
         });
-        if let Some(settled) = &settle {
+        if let Some(settled) = &judged.attempt.settle {
             span.in_scope(|| {
                 tracing::info!(
                     event = daemon::RUN_SETTLE,
-                    run_id = %run_id,
+                    run_id = %judged.attempt.run_id,
                     stragglers = settled.stragglers,
                     outcome = settled.outcome.as_str(),
                     pipe_held = settled.pipe_held,
@@ -677,24 +806,20 @@ impl Pipeline {
                 )
             });
         }
-
-        Ok(Attempt {
-            outcome,
-            settle,
-            run_id,
-            started_at,
-            ended_at,
-            duration_ms,
-            session_id,
-        })
+        self.record_files(&judged.attempt, input, recorded).await;
     }
 
-    /// Records a finished attempt against its session and appends its Run-index record; a
-    /// non-compact attempt also writes a Run log. Best effort: a failure is logged, never fatal.
-    async fn record_attempt(&self, attempt: &Attempt, input: &AttemptInput<'_>) {
-        let Some(api) = input.api_scope else {
-            return;
-        };
+    /// The session half of recording a finished attempt: the run against its session, or the
+    /// compact against it. Done at the leader's exit, before the recovery decision reads the
+    /// session this run just updated. Returns the [`RunRecorded`] the Run index needs, once the run
+    /// has settled. Best effort: a failure is logged, never fatal.
+    async fn record_session(
+        &self,
+        outcome: &RunOutcome,
+        duration_ms: u64,
+        input: &AttemptInput<'_>,
+    ) -> Option<RunRecorded> {
+        let api = input.api_scope?;
         let now = self.clock.now();
         if input.purpose == RunPurpose::Compact {
             let _ = self
@@ -703,16 +828,15 @@ impl Pipeline {
                     api,
                     input.launcher_key,
                     now,
-                    index_outcome(&attempt.outcome),
-                    attempt.duration_ms,
+                    index_outcome(outcome),
+                    duration_ms,
                 )
                 .await;
-            self.write_index(attempt, input, None, None).await;
-            return;
+            return None;
         }
-        let recorded = match self
+        match self
             .sessions
-            .record_run(api, input.launcher_key, &attempt.outcome, now)
+            .record_run(api, input.launcher_key, outcome, now)
             .await
         {
             Ok(recorded) => Some(recorded),
@@ -720,7 +844,24 @@ impl Pipeline {
                 tracing::warn!(err = %err, "the run could not be recorded against its session");
                 None
             }
-        };
+        }
+    }
+
+    /// The file half of recording a settled attempt: its Run log (a non-compact run) and its
+    /// Run-index record. Best effort: a failure is logged, never fatal.
+    async fn record_files(
+        &self,
+        attempt: &Attempt,
+        input: &AttemptInput<'_>,
+        recorded: Option<RunRecorded>,
+    ) {
+        if input.api_scope.is_none() {
+            return;
+        }
+        if input.purpose == RunPurpose::Compact {
+            self.write_index(attempt, input, None, None).await;
+            return;
+        }
         let run_log = self.write_run_log(attempt, input).await;
         self.write_index(attempt, input, recorded.as_ref(), run_log)
             .await;
@@ -844,6 +985,19 @@ struct Attempt {
     ended_at: DateTime<Utc>,
     duration_ms: u64,
     session_id: Option<String>,
+    tool_uses: u64,
+}
+
+/// A run judged at the leader's exit, with its settle still to come. The reply goes out as soon as
+/// this is handed back; its remaining events are drained and its settle is awaited later, before
+/// the next Turn (#37 D2/D3).
+struct Judged {
+    attempt: Attempt,
+    settled: oneshot::Receiver<Settle>,
+    /// The run's event stream, still being read until the pump ends after the settle.
+    events: mpsc::UnboundedReceiver<RunnerEvent>,
+    /// The Turn's unbounded event channel, to keep forwarding the events drained above.
+    events_tx: Option<mpsc::UnboundedSender<RunEvent>>,
 }
 
 fn build_record(
@@ -1033,6 +1187,37 @@ fn chat_event(event: StreamEvent) -> Option<RunEvent> {
     }
 }
 
+/// Forwards a run's mapped events to the adapter with backpressure, off the reply's path. It waits
+/// for room rather than dropping an event, and only a closed adapter ([`Err`]) ends it. The
+/// unbounded receiver is fed by [`forward_event`], so the observation loop never blocks here.
+async fn forward_events(
+    adapter: mpsc::Sender<RunEvent>,
+    mut stream: mpsc::UnboundedReceiver<RunEvent>,
+) {
+    while let Some(event) = stream.recv().await {
+        if adapter.send(event).await.is_err() {
+            break;
+        }
+    }
+}
+
+/// Maps one runner stream event and pushes it onto the Turn's unbounded event channel, counting
+/// tool uses for `run.finish`. The send never blocks and never drops while the forwarder runs.
+fn forward_event(
+    events: &Option<mpsc::UnboundedSender<RunEvent>>,
+    stream: StreamEvent,
+    tool_uses: &mut u64,
+) {
+    if let Some(chat_event) = chat_event(stream) {
+        if matches!(chat_event, RunEvent::ToolUse { .. }) {
+            *tool_uses += 1;
+        }
+        if let Some(tx) = events {
+            let _ = tx.send(chat_event);
+        }
+    }
+}
+
 /// The user-facing outcome: the reply on success, or a short, secret-free message on a failure.
 /// `note` (what Auto-compact did, #33) is appended to a failure only.
 fn chat_outcome(outcome: &RunOutcome, note: Option<&str>) -> ChatOutcome {
@@ -1132,7 +1317,7 @@ pub(crate) mod test_support {
     use claudeclaw_api::scope::Scope as ApiScope;
     use claudeclaw_api::supervisor::{ChatOrigin, ReapOutcome, RegistryState, SpawnPurpose};
     use claudeclaw_chat::{
-        Author, ChatScope, MessageRef, Notifier, NotifyError, OwnerNotice, Transport,
+        Author, ChatOutcome, ChatScope, MessageRef, Notifier, NotifyError, OwnerNotice, Transport,
     };
     use claudeclaw_runner::RunPath;
     use claudeclaw_runner::argv::ClaudeArgs;
@@ -1281,7 +1466,7 @@ pub(crate) mod test_support {
         }
     }
 
-    async fn build(timeout: Duration, on_path: bool) -> Harness {
+    async fn build(timeout: Duration, on_path: bool, timings: SpawnTimings) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let layout = Layout::new(dir.path());
         layout.create_daemon_dirs().unwrap();
@@ -1303,7 +1488,7 @@ pub(crate) mod test_support {
         let (clock_tx, clock_rx) = watch::channel(AwakeTime::default());
         let spawner = Spawner::new(clock_rx)
             .with_hook(Arc::new(runs.clone()))
-            .with_timings(timings());
+            .with_timings(timings);
         let run_env = claudeclaw_runner::env::RunEnv {
             path: if on_path {
                 // Prepend the fake-Launcher dir, keep the inherited PATH so the script's own
@@ -1345,12 +1530,39 @@ pub(crate) mod test_support {
 
     /// A harness whose Run PATH holds the fake `claude`.
     pub(crate) async fn harness(timeout: Duration) -> Harness {
-        build(timeout, true).await
+        build(timeout, true, timings()).await
     }
 
     /// A harness whose Run PATH is empty, so `direct` cannot resolve.
     pub(crate) async fn harness_without_launcher(timeout: Duration) -> Harness {
-        build(timeout, false).await
+        build(timeout, false, timings()).await
+    }
+
+    /// A harness whose Straggler grace is stretched out, so a test can observe the gap between a
+    /// run's leader exit (the reply, #37 D2) and its settle (#37 D3).
+    pub(crate) async fn harness_with_straggler_grace(
+        timeout: Duration,
+        straggler_grace: Duration,
+    ) -> Harness {
+        build(
+            timeout,
+            true,
+            SpawnTimings {
+                straggler_grace,
+                ..timings()
+            },
+        )
+        .await
+    }
+
+    /// Runs one Turn to its settle with no event channel, returning the outcome the pipeline sent
+    /// at the run's leader exit. Waiting for this also waits for the settle.
+    pub(crate) async fn run_to_settle(pipeline: &Pipeline, turn: Turn) -> ChatOutcome {
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
+        pipeline.run_turn(turn, None, outcome_tx).await;
+        outcome_rx
+            .await
+            .expect("the pipeline delivered the outcome")
     }
 
     /// Pushes the Awake clock to `ms`, which times out any run whose deadline has passed.
@@ -1463,7 +1675,7 @@ mod tests {
 
     use super::test_support::{
         RecordingNotifier, harness, harness_without_launcher, message, origin, read_index, reaped,
-        turn, wait_for,
+        run_to_settle, turn, wait_for,
     };
     use super::{IndexOutcome, OutcomeKind, interrupt_in_flight, interrupt_reaped};
     use claudeclaw_api::runs::{RunPurpose, RunSession};
@@ -1486,7 +1698,7 @@ mod tests {
         // A script that would leave a marker if it ever ran.
         h.write_unreachable_claude(&format!("touch '{}'", h.marker.display()));
 
-        let outcome = h.pipeline.run_turn(turn("hi", "123"), None).await;
+        let outcome = run_to_settle(&h.pipeline, turn("hi", "123")).await;
 
         assert_eq!(outcome.kind, OutcomeKind::Refused);
         assert!(!h.marker.exists(), "the refused Launcher must never run");
@@ -1521,7 +1733,7 @@ mod tests {
             count = counter.display()
         ));
 
-        let outcome = h.pipeline.run_turn(turn("hi", "123"), None).await;
+        let outcome = run_to_settle(&h.pipeline, turn("hi", "123")).await;
 
         assert_eq!(outcome.kind, OutcomeKind::Ok);
         assert_eq!(outcome.text, "fresh");
@@ -1555,7 +1767,11 @@ mod tests {
         ));
 
         let pipeline = Arc::clone(&h.pipeline);
-        let call = tokio::spawn(async move { pipeline.run_turn(turn("hi", "123"), None).await });
+        let call = tokio::spawn(async move {
+            let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
+            pipeline.run_turn(turn("hi", "123"), None, outcome_tx).await;
+            outcome_rx.await
+        });
 
         assert!(
             wait_for(&h.marker, Duration::from_secs(5)).await,
@@ -1564,7 +1780,7 @@ mod tests {
         // The first run is parked on `sleep 60`; time it out on the Awake clock.
         super::test_support::timeout_awake(&h.clock_tx, 1_000);
 
-        let outcome = call.await.unwrap();
+        let outcome = call.await.unwrap().unwrap();
         assert_eq!(
             outcome.kind,
             OutcomeKind::Ok,
@@ -1585,6 +1801,52 @@ mod tests {
             Some(IndexOutcome::Timeout),
             "the first run timed out"
         );
+    }
+
+    #[tokio::test]
+    async fn a_slow_adapter_receives_every_event_after_the_reply() {
+        let h = harness(Duration::from_secs(30)).await;
+        // Each assistant message is a text delta and each following one adds a "\n" delta, so the
+        // adapter must see 2*MESSAGES-1 deltas — far more than any bounded channel holds (#37 D2).
+        const MESSAGES: usize = 1200;
+        // More text than the stdout pipe buffer holds, so the run's stdout reader must keep up and
+        // the `result` line reaches the judge before the leader's exit is processed — the shape the
+        // runner's own slow-reader test uses.
+        let body = r#"i=0
+while [ "$i" -lt @N@ ]; do
+  printf '{"type":"assistant","message":{"id":"m%d","content":[{"type":"text","text":"x"}]},"parent_tool_use_id":null}\n' "$i"
+  i=$((i+1))
+done
+printf '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s-1"}\n'
+"#
+        .replace("@N@", &MESSAGES.to_string());
+        h.write_claude(&body);
+
+        // A tiny adapter channel: a `try_send` would drop all but a handful.
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(4);
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
+        let pipeline = Arc::clone(&h.pipeline);
+        let call = tokio::spawn(async move {
+            pipeline
+                .run_turn(turn("hi", "123"), Some(events_tx), outcome_tx)
+                .await;
+        });
+
+        // The adapter is as slow as possible: it reads nothing until the reply is ready.
+        let outcome = outcome_rx
+            .await
+            .expect("the reply arrives at the leader's exit");
+        assert_eq!(outcome.kind, OutcomeKind::Ok, "{}", outcome.text);
+        assert_eq!(outcome.text, "done");
+
+        let mut deltas = 0usize;
+        while let Some(event) = events_rx.recv().await {
+            if matches!(event, claudeclaw_chat::RunEvent::TextDelta(_)) {
+                deltas += 1;
+            }
+        }
+        call.await.unwrap();
+        assert_eq!(deltas, 2 * MESSAGES - 1, "no delta may be dropped");
     }
 
     #[tokio::test]

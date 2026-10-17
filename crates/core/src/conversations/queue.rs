@@ -3,8 +3,9 @@
 //! Each Scope gets its own queue and its own draining task. The task runs one Turn at a time, so
 //! two Turns in the same Scope never overlap, and — because the pipeline only returns once the
 //! run is settled (#37) — the next Turn starts only after the previous run's process group is
-//! empty. A task that finds its queue empty removes the Scope from the map and exits, so an idle
-//! Worker holds no per-Scope task.
+//! empty. The reply goes out earlier, at the run's leader exit (#37 D2), so an answer is never
+//! delayed by the settle. A task that finds its queue empty removes the Scope from the map and
+//! exits, so an idle Worker holds no per-Scope task.
 //!
 //! The map lock is the only synchronisation between a producer ([`Queues::converse`]) and the
 //! drain task. `converse` sends into the unbounded channel **while holding the lock**, and the
@@ -58,7 +59,8 @@ impl Queues {
     }
 
     /// Accepts `turn` and returns the adapter's [`RunHandle`]. The Turn is queued behind any other
-    /// Turn in the same Scope; waiting for the handle's outcome also waits for the run to settle.
+    /// Turn in the same Scope. The handle's outcome arrives at the run's leader exit, **before**
+    /// the settle (#37 D2); the next Turn is queued only after this run has settled (#37 D3).
     pub fn converse(&self, turn: Turn) -> RunHandle {
         let (sender, handle) = RunHandle::channel(self.capacity);
         let scope = Scope::from_chat(&turn.scope);
@@ -122,9 +124,9 @@ async fn drain(
             Ok(QueuedTurn { turn, sender }) => {
                 queued.fetch_sub(1, Ordering::SeqCst);
                 let RunSender { events, outcome } = sender;
-                // Awaiting this also awaits the run's settle (#37): the next Turn waits for it.
-                let result = pipeline.run_turn(turn, Some(events)).await;
-                let _ = outcome.send(result);
+                // The pipeline sends the adapter's outcome at the run's leader exit (#37 D2) and
+                // this only returns once the run is settled, so the next Turn waits for the settle.
+                pipeline.run_turn(turn, Some(events), outcome).await;
             }
             Err(mpsc::error::TryRecvError::Empty) => {
                 // Removing an idle Scope must be atomic with a producer's send. Both take this
@@ -151,7 +153,10 @@ mod tests {
     use std::time::Duration;
 
     use super::Queues;
-    use crate::conversations::pipeline::test_support::{HAPPY, harness, read_calls, turn};
+    use crate::conversations::pipeline::test_support::{
+        HAPPY, harness, harness_with_straggler_grace, read_calls, turn,
+    };
+    use claudeclaw_chat::OutcomeKind;
 
     /// A fake `claude` that reports success, records its start, and leaves a straggler that traps
     /// `TERM` and records `strap-<n>`. The straggler is what makes the settle observable.
@@ -189,6 +194,56 @@ mod tests {
             .iter()
             .position(|line| line == "strap-1")
             .unwrap_or_else(|| panic!("the first Turn never settled: {calls:?}"));
+        assert!(
+            strap_one < start_two,
+            "the second Turn must start only after the first run settled: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reply_goes_out_before_the_settle_then_the_next_turn_waits() {
+        // A long Straggler grace: the gap between the reply (leader exit) and the settle is
+        // observable with margin.
+        let h = harness_with_straggler_grace(Duration::from_secs(30), Duration::from_secs(2)).await;
+        let counter = h.dir.path().join("count");
+        h.write_claude(&straggler_script(
+            &counter.display().to_string(),
+            &h.calls.display().to_string(),
+        ));
+        let queues = Queues::new(Arc::clone(&h.pipeline), 8);
+
+        let first = queues.converse(turn("one", "123"));
+        let second = queues.converse(turn("two", "123"));
+
+        // The reply arrives at the first run's leader exit, before its Straggler is dealt with.
+        let outcome = first.outcome.await.unwrap();
+        assert_eq!(outcome.kind, OutcomeKind::Ok);
+
+        let calls = read_calls(&h.calls);
+        assert!(
+            calls.iter().any(|line| line == "start-1"),
+            "the first run should have started: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|line| line == "strap-1"),
+            "the reply must arrive before the settle: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|line| line == "start-2"),
+            "the next Turn must wait for the first run to settle: {calls:?}"
+        );
+
+        // Once the first run settles, the second Turn runs.
+        let _ = second.outcome.await.unwrap();
+        let calls = read_calls(&h.calls);
+        let strap_one = calls
+            .iter()
+            .position(|line| line == "strap-1")
+            .unwrap_or_else(|| panic!("the first Turn never settled: {calls:?}"));
+        let start_two = calls
+            .iter()
+            .position(|line| line == "start-2")
+            .unwrap_or_else(|| panic!("the second Turn never ran: {calls:?}"));
         assert!(
             strap_one < start_two,
             "the second Turn must start only after the first run settled: {calls:?}"
