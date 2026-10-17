@@ -4,8 +4,8 @@
 //! - [`adapter`]: [`DiscordAdapter`], the value `core` registers and runs.
 //! - [`attachments`]: the inbound attachment fetcher ([`attachments::DiscordAttachmentFetcher`]).
 //! - [`commands`]: the slash commands and the interaction handler.
-//! - [`control`]: the outbound REST side behind the Management API's Discord routes, and the
-//!   owner notifier.
+//! - [`control`]: the transport calls behind the Management API's Discord routes (overview,
+//!   Hire, Fire), on top of [`rest::Rest`].
 //! - [`gateway`]: the twilight gateway loop, the cache both sides read, and the message handler.
 //! - [`notifier`]: the [`Notifier`](claudeclaw_chat::Notifier) that DMs configured owners.
 //! - [`reply`]: the outbound reply sink ([`reply::DiscordReplySink`]) with streaming previews.
@@ -28,5 +28,5 @@ pub mod triggers;
 pub mod turn;
 
 pub use adapter::DiscordAdapter;
-pub use control::notify_owner;
+pub use rest::notify_owner;
 pub use seams::{AttachmentFetcher, DiscordEndpoints, FetchError, ReplySink, ReplyTarget};

@@ -38,9 +38,8 @@ use twilight_model::id::Id;
 use twilight_model::id::marker::{ApplicationMarker, ChannelMarker, UserMarker};
 
 use crate::commands;
-use crate::control::{
-    DiscordNotifier, THINKING_REACTION, TwilightRest, channel_kind, guild_info, user_info,
-};
+use crate::control::{channel_kind, guild_info, user_info};
+use crate::rest::Rest;
 use crate::seams::{AttachmentFetcher, DiscordEndpoints, ReplySink, ReplyTarget};
 use crate::triggers::{Decision, DiscordSettings, IgnoreReason, TriggerContext};
 use crate::turn::{ThreadTrack, agent_dir_key, clean_content};
@@ -75,7 +74,7 @@ struct Cache {
     settings: DiscordSettings,
     connection: Connection,
     /// The cached REST client; rebuilt when the token changes (§7).
-    rest: Option<Arc<TwilightRest>>,
+    rest: Option<Arc<Rest>>,
     /// The application id, learned from READY; needed to answer interactions.
     application: Option<Id<ApplicationMarker>>,
     /// The bot's own user, for the overview and the trigger rules.
@@ -127,12 +126,12 @@ impl Shared {
     }
 
     /// The cached REST client, or [`AdapterError::NotConnected`] before a token is published.
-    pub(crate) fn rest(&self) -> Result<Arc<TwilightRest>, AdapterError> {
+    pub(crate) fn rest(&self) -> Result<Arc<Rest>, AdapterError> {
         self.lock().rest.clone().ok_or(AdapterError::NotConnected)
     }
 
     /// Replaces the REST client, or clears it when the token is gone.
-    pub(crate) fn set_rest(&self, rest: Option<Arc<TwilightRest>>) {
+    pub(crate) fn set_rest(&self, rest: Option<Arc<Rest>>) {
         self.lock().rest = rest;
     }
 
@@ -330,10 +329,8 @@ pub(crate) async fn run(
     loop {
         if shard.is_none() && !fatal {
             if let Some(secret) = token.as_ref() {
-                ctx.shared.set_rest(Some(Arc::new(TwilightRest::new(
-                    secrecy::ExposeSecret::expose_secret(secret),
-                    &endpoints,
-                ))));
+                ctx.shared
+                    .set_rest(Some(Arc::new(Rest::connect(secret, &endpoints))));
                 ctx.shared.set_state(AdapterState::Connecting);
                 shard = Some(build_shard(secret, &endpoints));
                 tracing::info!("discord.connecting");
@@ -708,14 +705,8 @@ async fn handle_message(ctx: Ctx, message: Box<twilight_model::channel::Message>
         return;
     }
 
-    // The thinking reaction the ReplySink clears when it finishes; #29's interrupted path clears
-    // it too if the run is cut short.
-    let rest = ctx.shared.rest().ok();
-    if let Some(rest) = &rest {
-        rest.add_own_reaction(message.channel_id, message.id, THINKING_REACTION)
-            .await;
-    }
-
+    // The thinking reaction (👀) and its clear are the [`ReplySink`]'s: it adds 👀 before the
+    // first event and removes it last, so a Turn gets exactly one (#29).
     let turn = crate::turn::build(
         &message,
         bot,
@@ -729,11 +720,6 @@ async fn handle_message(ctx: Ctx, message: Box<twilight_model::channel::Message>
         origin: message.id,
     };
     ctx.reply.deliver(target, ctx.host.converse(turn)).await;
-
-    if let Some(rest) = &rest {
-        rest.remove_own_reaction(message.channel_id, message.id, THINKING_REACTION)
-            .await;
-    }
 }
 
 /// Whether a message carries anything to answer: text, attachments, or a forwarded snapshot
@@ -938,11 +924,6 @@ fn defang_untrusted(label: &str, content: &str) -> String {
             }
         }
     }
-}
-
-/// Expose the notifier over the shared cache (used by [`crate::adapter`]).
-pub(crate) fn notifier(shared: Arc<Shared>) -> Arc<dyn claudeclaw_chat::Notifier> {
-    Arc::new(DiscordNotifier::new(shared))
 }
 
 /// The channel an interaction was invoked in. `Interaction::channel_id` is deprecated; the full
