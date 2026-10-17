@@ -10,3 +10,20 @@ publish.workspace = true
 
 [dependencies]
 claudeclaw-chat.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "sync", "rt", "macros", "fs", "io-util"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tracing.workspace = true
+twilight-gateway.workspace = true
+twilight-http.workspace = true
+twilight-model.workspace = true
+
+[dev-dependencies]
+rustls.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
