@@ -20,9 +20,19 @@ use secrecy::{ExposeSecret, SecretString};
 use twilight_http::Client;
 use twilight_http::error::ErrorType;
 use twilight_http::request::channel::reaction::RequestReactionType;
+use twilight_model::application::command::Command;
+use twilight_model::channel::Channel;
+use twilight_model::channel::ChannelType;
+use twilight_model::channel::message::MessageFlags;
+use twilight_model::channel::thread::AutoArchiveDuration;
 use twilight_model::http::attachment::Attachment;
+use twilight_model::http::interaction::{
+    InteractionResponse, InteractionResponseData, InteractionResponseType,
+};
 use twilight_model::id::Id;
-use twilight_model::id::marker::{ChannelMarker, MessageMarker, UserMarker};
+use twilight_model::id::marker::{
+    ApplicationMarker, ChannelMarker, InteractionMarker, MessageMarker, UserMarker,
+};
 
 use crate::DiscordEndpoints;
 
@@ -311,6 +321,115 @@ impl Rest {
         discord_call!(
             self.client
                 .delete_current_user_reaction(channel, message, &reaction)
+        )?;
+        Ok(())
+    }
+
+    /// Creates a public thread under `channel`, auto-archiving after three days (TS
+    /// `createThread`, `src/commands/discord.ts:1157-1166`).
+    pub async fn create_thread(
+        &self,
+        channel: Id<ChannelMarker>,
+        name: &str,
+    ) -> Result<Channel, RestError> {
+        let response = discord_call!(
+            self.client
+                .create_thread(channel, name, ChannelType::PublicThread)
+                .auto_archive_duration(AutoArchiveDuration::ThreeDays)
+        )?;
+        response.model().await.map_err(|_| RestError::Malformed)
+    }
+
+    /// Deletes a channel or thread (TS `deleteChannel`, `src/commands/discord.ts:1200`). A thread
+    /// Discord no longer has is a success with `false`, not an error.
+    pub async fn delete_channel(&self, channel: Id<ChannelMarker>) -> Result<bool, RestError> {
+        match discord_call!(self.client.delete_channel(channel)) {
+            Ok(_) => Ok(true),
+            Err(err) if err.is_not_found() => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Fetches one channel or thread (TS `src/commands/discord.ts:515`, `:972`, `:1189`).
+    pub async fn channel(&self, channel: Id<ChannelMarker>) -> Result<Channel, RestError> {
+        let response = discord_call!(self.client.channel(channel))?;
+        response.model().await.map_err(|_| RestError::Malformed)
+    }
+
+    /// Makes the bot join `thread` so Discord delivers its messages (TS
+    /// `src/commands/discord.ts:1875`, `:535`).
+    pub async fn join_thread(&self, thread: Id<ChannelMarker>) -> Result<(), RestError> {
+        discord_call!(self.client.join_thread(thread))?;
+        Ok(())
+    }
+
+    /// Sends `content` to `channel`, split at [`MAX_MESSAGE_LEN`] (TS `sendMessage`'s chunking,
+    /// `src/commands/discord.ts:273-289`).
+    pub async fn send_message(
+        &self,
+        channel: Id<ChannelMarker>,
+        content: &str,
+    ) -> Result<(), RestError> {
+        for chunk in reply_chunks(content, MAX_MESSAGE_LEN) {
+            self.send(channel, &chunk, None).await?;
+        }
+        Ok(())
+    }
+
+    /// Replaces the bot's global slash commands (TS `registerSlashCommands`,
+    /// `src/commands/discord.ts:723-806`).
+    pub async fn set_global_commands(
+        &self,
+        application: Id<ApplicationMarker>,
+        commands: &[Command],
+    ) -> Result<(), RestError> {
+        discord_call!(
+            self.client
+                .interaction(application)
+                .set_global_commands(commands)
+        )?;
+        Ok(())
+    }
+
+    /// Answers an interaction (TS `respondToInteraction`, `src/commands/discord.ts:810-825`).
+    /// `ephemeral` sets the `64` flag.
+    pub async fn respond_to_interaction(
+        &self,
+        application: Id<ApplicationMarker>,
+        interaction: Id<InteractionMarker>,
+        token: &str,
+        content: &str,
+        ephemeral: bool,
+    ) -> Result<(), RestError> {
+        let response = InteractionResponse {
+            kind: InteractionResponseType::ChannelMessageWithSource,
+            data: Some(InteractionResponseData {
+                content: Some(content.to_owned()),
+                flags: ephemeral.then_some(MessageFlags::EPHEMERAL),
+                ..Default::default()
+            }),
+        };
+        discord_call!(self.client.interaction(application).create_response(
+            interaction,
+            token,
+            &response
+        ))?;
+        Ok(())
+    }
+
+    /// Edits the deferred reply to an interaction in place (TS
+    /// `src/commands/discord.ts:1421`).
+    pub async fn update_interaction_response(
+        &self,
+        application: Id<ApplicationMarker>,
+        token: &str,
+        content: &str,
+    ) -> Result<(), RestError> {
+        discord_call!(
+            self.client
+                .interaction(application)
+                .update_response(token)
+                .content(Some(content))
         )?;
         Ok(())
     }
