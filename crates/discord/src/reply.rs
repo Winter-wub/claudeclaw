@@ -5,14 +5,17 @@
 //!
 //! Order of a Turn's end, as in TS: the tool reactions are cleared and the streaming placeholder
 //! is deleted first, then the reply reacts to the origin (`[react:x]`), then the reply itself is
-//! sent — split, with outbox images attached to the last chunk (`src/commands/discord.ts:1339-1362`).
+//! sent — split, with outbox images attached to the last chunk — and the 👀 "thinking" reaction
+//! is removed last of all (`src/commands/discord.ts:1339-1374`).
 //!
-//! Two TS pieces are deliberately not ported:
+//! The 👀 reaction is added as soon as the Turn starts, before the first event: TS adds it at the
+//! top of the run and drops it in its `finally`, however the run ended
+//! (`src/commands/discord.ts:1083-1085`, `:1371-1374`). It is one of the bot's progress reactions,
+//! so [`crate::notifier`] clears it too when a Turn is interrupted or reaped (#29, #79).
 //!
-//! - the 👀 "thinking" reaction, because the seam's fixed reaction set is the eight
-//!   tool-category emoji and `interrupted` removes exactly those (#29);
-//! - an outbound image size cap, because TS has none. A file over 25 MB is skipped with a
-//!   warning rather than read into memory, where TS would let Discord reject the upload.
+//! One TS piece is deliberately not ported: an outbound image size cap, because TS has none. A
+//! file over 25 MB is skipped with a warning rather than read into memory, where TS would let
+//! Discord reject the upload.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -57,7 +60,7 @@ const STREAM_PLACEHOLDER: &str = "⏳";
 const STREAM_CONTENT_MAX: usize = MAX_MESSAGE_LEN - 10;
 
 /// The eight tool-category reactions, in the switch order of `toolReactionEmoji`
-/// (`src/commands/discord.ts:39-65`). `interrupted` removes exactly these (#29, #79).
+/// (`src/commands/discord.ts:39-65`).
 pub(crate) const TOOL_REACTION_EMOJIS: [&str; 8] = [
     "\u{1F50C}",         // mcp__*    🔌
     "\u{1F4D6}",         // Read, Grep, Glob, LS    📖
@@ -68,6 +71,11 @@ pub(crate) const TOOL_REACTION_EMOJIS: [&str; 8] = [
     "\u{1F9E9}",         // Skill    🧩
     "\u{1F6E0}\u{FE0F}", // default    🛠️
 ];
+
+/// The 👀 reaction put on the triggering message while a Turn runs (`THINKING_REACTION`,
+/// `src/commands/discord.ts:36`). Added when the Turn starts, removed last, after the reply
+/// (`:1083-1085`, `:1371-1374`).
+pub const THINKING_REACTION: &str = "\u{1F440}";
 
 /// The reaction emoji for a tool, straight from TS `toolReactionEmoji`
 /// (`src/commands/discord.ts:39-65`).
@@ -188,6 +196,20 @@ impl ReplySink for DiscordReplySink {
     fn deliver(&self, target: ReplyTarget, handle: RunHandle) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             let started_at = SystemTime::now();
+            // TS reacts with 👀 as soon as the run starts — before any work, not on the first
+            // event — and removes it in its `finally`, after the reply (`src/commands/discord.ts:1083-1085`,
+            // `:1371-1374`). A failed add is not removed later.
+            let thinking = match self
+                .rest
+                .add_reaction(target.channel, target.origin, THINKING_REACTION)
+                .await
+            {
+                Ok(()) => true,
+                Err(err) => {
+                    warn_send_failed(&err);
+                    false
+                }
+            };
             let mut stream = self
                 .streaming
                 .then(|| StreamPreview::start(self.rest.clone(), target.channel));
@@ -227,28 +249,37 @@ impl ReplySink for DiscordReplySink {
             if let Some(stream) = stream.take() {
                 stream.finalize().await;
             }
-            let Ok(outcome) = outcome else {
-                // The sender was dropped without an outcome: nothing to reply to.
-                return;
-            };
+            if let Ok(outcome) = outcome {
+                let directive = extract_react_directive(&outcome.text);
+                if let Some(emoji) = directive.emoji.as_deref()
+                    && let Err(err) = self
+                        .rest
+                        .add_reaction(target.channel, target.origin, emoji)
+                        .await
+                {
+                    warn_send_failed(&err);
+                }
 
-            let directive = extract_react_directive(&outcome.text);
-            if let Some(emoji) = directive.emoji.as_deref()
+                let (paths, text) =
+                    extract_image_paths(&directive.text, &self.image_roots, started_at);
+                let text = if text.is_empty() {
+                    "(empty response)".to_owned()
+                } else {
+                    text
+                };
+                self.send_reply(target.channel, &text, &paths).await;
+            }
+            // The sender was dropped without an outcome (nothing to reply to), or the reply is
+            // out: either way the thinking reaction goes last, as in TS's `finally`.
+
+            if thinking
                 && let Err(err) = self
                     .rest
-                    .add_reaction(target.channel, target.origin, emoji)
+                    .remove_reaction(target.channel, target.origin, THINKING_REACTION)
                     .await
             {
                 warn_send_failed(&err);
             }
-
-            let (paths, text) = extract_image_paths(&directive.text, &self.image_roots, started_at);
-            let text = if text.is_empty() {
-                "(empty response)".to_owned()
-            } else {
-                text
-            };
-            self.send_reply(target.channel, &text, &paths).await;
         })
     }
 }
@@ -707,11 +738,17 @@ mod tests {
         run(&sink, &server, vec![], "nice work [react:🔥]").await;
 
         let requests = server.requests();
-        assert_eq!(requests.len(), 2);
+        // The 👀 thinking reaction goes on first, then the origin's 🔥, then the reply, and 👀
+        // comes off last (TS `src/commands/discord.ts:1083-1085`, `:1347`, `:1371-1374`).
+        assert_eq!(requests.len(), 4);
         assert_eq!(requests[0].method, "PUT");
-        assert!(requests[0].path.contains("/reactions/%F0%9F%94%A5/@me"));
-        assert_eq!(requests[1].method, "POST");
-        assert_eq!(requests[1].text(), r#"{"content":"nice work"}"#);
+        assert!(requests[0].path.contains("/reactions/%F0%9F%91%80/@me"));
+        assert_eq!(requests[1].method, "PUT");
+        assert!(requests[1].path.contains("/reactions/%F0%9F%94%A5/@me"));
+        assert_eq!(requests[2].method, "POST");
+        assert_eq!(requests[2].text(), r#"{"content":"nice work"}"#);
+        assert_eq!(requests[3].method, "DELETE");
+        assert!(requests[3].path.contains("/reactions/%F0%9F%91%80/@me"));
     }
 
     #[tokio::test]
@@ -719,10 +756,30 @@ mod tests {
         let server = Server::start().await;
         let sink = sink(&server, false);
         run(&sink, &server, vec![], "   ").await;
-        assert_eq!(
-            server.requests()[0].text(),
-            r#"{"content":"(empty response)"}"#
-        );
+        let reply = server
+            .requests()
+            .into_iter()
+            .find(|request| request.method == "POST" && request.path.ends_with("/messages"))
+            .expect("the reply was posted");
+        assert_eq!(reply.text(), r#"{"content":"(empty response)"}"#);
+    }
+
+    #[tokio::test]
+    async fn thinking_is_removed_when_no_outcome_arrives() {
+        let server = Server::start().await;
+        let sink = sink(&server, false);
+        // The sender is dropped without an outcome: there is nothing to reply to, but the 👀
+        // reaction must still come off (TS's `finally`, `src/commands/discord.ts:1371-1374`).
+        let (sender, handle) = RunHandle::channel(16);
+        drop(sender);
+        sink.deliver(target(), handle).await;
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, "PUT");
+        assert!(requests[0].path.contains("/reactions/%F0%9F%91%80/@me"));
+        assert_eq!(requests[1].method, "DELETE");
+        assert!(requests[1].path.contains("/reactions/%F0%9F%91%80/@me"));
     }
 
     #[tokio::test]
@@ -764,15 +821,30 @@ mod tests {
         .await;
 
         let requests = server.requests();
+        // The 👀 thinking reaction opens the run and closes it; the tool categories go between.
+        assert_eq!(requests[0].method, "PUT");
+        assert!(requests[0].path.contains("/reactions/%F0%9F%91%80/@me"));
+        let last = requests.last().expect("requests were served");
+        assert_eq!(last.method, "DELETE");
+        assert!(last.path.contains("/reactions/%F0%9F%91%80/@me"));
+
         let added: Vec<&Request> = requests
             .iter()
-            .filter(|r| r.method == "PUT" && r.path.contains("/reactions/"))
+            .filter(|r| {
+                r.method == "PUT"
+                    && r.path.contains("/reactions/")
+                    && !r.path.contains("%F0%9F%91%80")
+            })
             .collect();
         // 📖 once (Read and Grep share it) and 💻 once.
         assert_eq!(added.len(), 2);
         let cleared: Vec<&Request> = requests
             .iter()
-            .filter(|r| r.method == "DELETE" && r.path.contains("/reactions/"))
+            .filter(|r| {
+                r.method == "DELETE"
+                    && r.path.contains("/reactions/")
+                    && !r.path.contains("%F0%9F%91%80")
+            })
             .collect();
         assert_eq!(cleared.len(), 2);
     }
@@ -851,8 +923,11 @@ mod tests {
         run(&sink, &server, vec![], &text).await;
 
         let requests = server.requests();
-        assert_eq!(requests.len(), 1);
-        let body = requests[0].text();
+        let upload = requests
+            .iter()
+            .find(|request| request.method == "POST" && request.path.ends_with("/messages"))
+            .expect("the image reply was posted");
+        let body = upload.text();
         assert!(body.contains("here is the chart"), "{body}");
         assert!(body.contains("plot.png"), "{body}");
         assert!(body.contains("payload_json"), "{body}");

@@ -5,8 +5,9 @@
 //! (`src/config.ts` `DiscordConfig.allowedUserIds`, `src/commands/start.ts:656-666`). The
 //! interrupted reply is the Rust rewrite's addition: at shutdown, and after a crash for every run
 //! a Reap proved dead, `core` calls [`Notifier::interrupted`] with the Turn's origin, which
-//! replies to the origin message and clears the bot's own tool-category reactions (#9, #29, #79).
-//! TS had no equivalent; the wording matches `core`'s `ChatOutcome` for an interrupted run.
+//! replies to the origin message and clears every progress reaction the bot added while working —
+//! the 👀 thinking reaction and the tool-category emoji (#9, #29, #79). TS had no equivalent; the
+//! wording matches `core`'s `ChatOutcome` for an interrupted run.
 
 use std::fmt;
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use futures_util::future::BoxFuture;
 use twilight_model::id::Id;
 use twilight_model::id::marker::{ChannelMarker, MessageMarker, UserMarker};
 
-use crate::reply::{TOOL_REACTION_EMOJIS, TOOL_REACTION_SPACING};
+use crate::reply::{THINKING_REACTION, TOOL_REACTION_EMOJIS, TOOL_REACTION_SPACING};
 use crate::rest::{Rest, RestError, parse_owner_ids, send_owner_text, warn_send_failed};
 
 /// What `Notifier::interrupted` sends (#9, #79). The same sentence `core`'s `chat_outcome` uses
@@ -71,9 +72,13 @@ impl DiscordNotifier {
             }
         }
 
-        // Remove the tool-category reactions the run may have left behind, spaced as reactions
-        // are (they are cosmetic, so a failure only logs).
-        for emoji in TOOL_REACTION_EMOJIS {
+        // Remove the progress reactions the run may have left behind — the tool categories and
+        // the 👀 thinking reaction — spaced as reactions are (they are cosmetic, so a failure
+        // only logs). 👀 goes last, as it does at the end of a normal Turn.
+        for emoji in TOOL_REACTION_EMOJIS
+            .into_iter()
+            .chain(std::iter::once(THINKING_REACTION))
+        {
             if let Err(err) = self.rest.remove_reaction(channel, message, emoji).await {
                 tracing::debug!(
                     event = "discord.send_failed",
@@ -204,8 +209,15 @@ mod tests {
         assert_eq!(body["message_reference"]["message_id"], "456");
 
         let removes: Vec<&str> = requests[1..].iter().map(|r| r.method.as_str()).collect();
-        assert_eq!(removes, ["DELETE"; TOOL_REACTION_EMOJIS.len()]);
-        assert_eq!(requests.len(), TOOL_REACTION_EMOJIS.len() + 1);
+        assert_eq!(removes, ["DELETE"; TOOL_REACTION_EMOJIS.len() + 1]);
+        assert_eq!(requests.len(), TOOL_REACTION_EMOJIS.len() + 2);
+        // The 👀 thinking reaction a crashed Turn left behind is cleared too, and last of all.
+        assert!(
+            requests[1..]
+                .iter()
+                .any(|r| r.path.contains("/reactions/%F0%9F%91%80/@me"))
+        );
+        assert!(requests.last().unwrap().path.contains("%F0%9F%91%80"));
     }
 
     #[tokio::test]
