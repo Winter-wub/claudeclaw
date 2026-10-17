@@ -7,20 +7,22 @@
 use axum::Router;
 use axum::extract::Request;
 use axum::middleware::{self, Next};
-use axum::routing::{MethodRouter, get, post};
+use axum::routing::{MethodRouter, delete, get, patch, post};
 
 use claudeclaw_api::routes::{
-    DAEMON_REEXEC, DAEMON_RESTART, DAEMON_STOP, EVENTS_STREAM, HEALTH_GET, HOUSEKEEPING_RUN,
-    OPENAPI_GET, Route, STATUS_GET, UPDATE_CHECK, UPDATE_GET,
+    DAEMON_REEXEC, DAEMON_RESTART, DAEMON_STOP, DEVICES_LIST, DEVICES_REVOKE, DEVICES_UPDATE,
+    EVENTS_STREAM, HEALTH_GET, HOUSEKEEPING_RUN, OPENAPI_GET, PAIR, PAIRING_CANCEL, PAIRING_CREATE,
+    PAIRING_GET, Route, STATUS_GET, TOKENS_CREATE, TOKENS_LIST, TOKENS_REVOKE, UPDATE_CHECK,
+    UPDATE_GET,
 };
 
 use crate::audit::AuditCtx;
 use crate::auth::{AuthCtx, PeerIdentity};
 use crate::deadline::DeadlineCtx;
-use crate::routes::{daemon, events};
+use crate::routes::{daemon, events, pairing};
 use crate::state::AppState;
 
-/// The H1 router: §2.1 and §2.2 routes, with their layers and state.
+/// The router: §2.1, §2.2 and §2.12 routes, with their layers and state.
 pub fn router(state: AppState) -> Router {
     let router = Router::new();
     let router = mount(router, HEALTH_GET, get(daemon::health), &state);
@@ -33,6 +35,41 @@ pub fn router(state: AppState) -> Router {
     let router = mount(router, UPDATE_CHECK, post(daemon::check_update), &state);
     let router = mount(router, HOUSEKEEPING_RUN, post(daemon::housekeeping), &state);
     let router = mount(router, EVENTS_STREAM, get(events::stream), &state);
+    let router = mount(
+        router,
+        PAIRING_CREATE,
+        post(pairing::pairing_create),
+        &state,
+    );
+    let router = mount(router, PAIRING_GET, get(pairing::pairing_get), &state);
+    let router = mount(
+        router,
+        PAIRING_CANCEL,
+        delete(pairing::pairing_cancel),
+        &state,
+    );
+    let router = mount(router, PAIR, post(pairing::pair), &state);
+    let router = mount(router, DEVICES_LIST, get(pairing::devices_list), &state);
+    let router = mount(
+        router,
+        DEVICES_UPDATE,
+        patch(pairing::devices_update),
+        &state,
+    );
+    let router = mount(
+        router,
+        DEVICES_REVOKE,
+        delete(pairing::devices_revoke),
+        &state,
+    );
+    let router = mount(router, TOKENS_LIST, get(pairing::tokens_list), &state);
+    let router = mount(router, TOKENS_CREATE, post(pairing::tokens_create), &state);
+    let router = mount(
+        router,
+        TOKENS_REVOKE,
+        delete(pairing::tokens_revoke),
+        &state,
+    );
     router.with_state(state)
 }
 

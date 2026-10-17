@@ -5,7 +5,10 @@
 
 use std::sync::Arc;
 
+use axum::extract::FromRef;
+
 use crate::auth::TokenStore;
+use crate::backend::pairing::PairingBackend;
 use crate::backend::{AuditBackend, DaemonBackend, EventsBackend, MissingBackend, StatusBackend};
 
 /// Everything the router needs, erased behind `Arc<dyn …>`. Cheap to clone: the router clones it
@@ -17,6 +20,7 @@ pub struct AppState {
     pub events: Arc<dyn EventsBackend>,
     pub audit: Arc<dyn AuditBackend>,
     pub tokens: Arc<dyn TokenStore>,
+    pub pairing: Arc<dyn PairingBackend>,
 }
 
 impl AppState {
@@ -33,6 +37,7 @@ pub struct AppStateBuilder {
     events: Option<Arc<dyn EventsBackend>>,
     audit: Option<Arc<dyn AuditBackend>>,
     tokens: Option<Arc<dyn TokenStore>>,
+    pairing: Option<Arc<dyn PairingBackend>>,
 }
 
 impl AppStateBuilder {
@@ -61,6 +66,11 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_pairing(mut self, backend: impl PairingBackend) -> Self {
+        self.pairing = Some(Arc::new(backend));
+        self
+    }
+
     pub fn build(self) -> AppState {
         AppState {
             status: self.status.unwrap_or_else(missing_status),
@@ -68,6 +78,7 @@ impl AppStateBuilder {
             events: self.events.unwrap_or_else(missing_events),
             audit: self.audit.unwrap_or_else(missing_audit),
             tokens: self.tokens.unwrap_or_else(missing_tokens),
+            pairing: self.pairing.unwrap_or_else(missing_pairing),
         }
     }
 }
@@ -90,4 +101,14 @@ fn missing_audit() -> Arc<dyn AuditBackend> {
 
 fn missing_tokens() -> Arc<dyn TokenStore> {
     Arc::new(MissingBackend::new())
+}
+
+fn missing_pairing() -> Arc<dyn PairingBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+impl FromRef<AppState> for Arc<dyn PairingBackend> {
+    fn from_ref(state: &AppState) -> Self {
+        state.pairing.clone()
+    }
 }

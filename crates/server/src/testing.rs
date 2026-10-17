@@ -25,9 +25,11 @@ use claudeclaw_api::status::{
 use claudeclaw_api::supervisor::DaemonReachability;
 
 use crate::auth::{Principal, TokenRecord, TokenStore, hash_token};
+use crate::backend::pairing::{PairingService, TestClock, TestHooks};
 use crate::backend::{
     AuditBackend, AuditFuture, BackendFuture, DaemonBackend, EventsBackend, StatusBackend,
 };
+use crate::pairing::PairingRegistry;
 use crate::state::AppState;
 
 /// The sample `Health` the read routes return.
@@ -331,12 +333,21 @@ impl Harness {
         let status = FakeStatus::ready();
         let events = FakeEvents::new("boot-1");
         let tokens = FakeTokens::default();
+        // A real §2.12 service over an in-memory store, so the mounted routes are exercised
+        // end to end.
+        let clock = Arc::new(TestClock::at(9));
+        let registry = PairingRegistry::with_clock(clock.clone());
         let state = AppState::builder()
             .status(status.clone())
             .daemon(daemon.clone())
             .events(events.clone())
             .audit(audit.clone())
             .tokens(tokens.clone())
+            .with_pairing(PairingService::for_test(
+                TestHooks::enabled(),
+                registry,
+                clock,
+            ))
             .build();
         Harness {
             state,

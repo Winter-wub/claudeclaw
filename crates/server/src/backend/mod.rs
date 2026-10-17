@@ -25,6 +25,7 @@ use crate::auth::{TokenRecord, TokenStore};
 
 pub mod audit;
 pub mod daemon;
+pub mod pairing;
 pub mod status;
 
 pub use audit::{AuditBackend, AuditError, AuditFuture};
