@@ -370,6 +370,83 @@ mod events {
     }
 }
 
+mod pairing {
+    use super::*;
+    use claudeclaw_api::pairing::{PairRequest, PairingCreate};
+
+    #[tokio::test]
+    async fn pairing_create_is_local_and_returns_a_live_code() {
+        let harness = Harness::new();
+        let response = call(
+            &harness.router(),
+            json_request(
+                Method::POST,
+                "/v1/pairing",
+                LOCAL,
+                &PairingCreate::default(),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["code"].as_str().unwrap().len(), 9); // XXXX-XXXX
+        assert_eq!(body["fingerprint"].as_str().unwrap().len(), 43);
+        let pairing_string = body["pairing_string"].as_str().unwrap();
+        assert!(pairing_string.starts_with("ccpair1."), "{pairing_string}");
+    }
+
+    #[tokio::test]
+    async fn a_device_cannot_create_a_pairing() {
+        let harness = Harness::new();
+        let response = call(
+            &harness.router(),
+            json_request(
+                Method::POST,
+                "/v1/pairing",
+                device("d1"),
+                &PairingCreate::default(),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(code(&body_json(response).await), "local_only");
+    }
+
+    #[tokio::test]
+    async fn pair_needs_an_unpaired_cert() {
+        let harness = Harness::new();
+        let response = call(
+            &harness.router(),
+            json_request(
+                Method::POST,
+                "/v1/pair",
+                LOCAL,
+                &PairRequest {
+                    code: "ABCD-EFGH".into(),
+                    label: "laptop".into(),
+                    platform: "macos".into(),
+                },
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(code(&body_json(response).await), "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn devices_list_serves_an_empty_list_to_admin() {
+        let harness = Harness::new();
+        let response = call(
+            &harness.router(),
+            request(Method::GET, "/v1/devices", LOCAL),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["devices"].as_array().unwrap().len(), 0);
+    }
+}
+
 #[cfg(unix)]
 mod listener {
     use std::path::{Path, PathBuf};

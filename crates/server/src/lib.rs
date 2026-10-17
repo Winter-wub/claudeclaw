@@ -13,11 +13,15 @@ pub mod audit;
 pub mod auth;
 pub mod backend;
 pub mod deadline;
+pub mod devices;
 pub mod error;
 pub mod listener;
+pub mod pairing;
 pub mod router;
 pub mod routes;
 pub mod state;
+pub mod tls;
+pub mod tokens;
 
 #[cfg(test)]
 pub mod testing;
