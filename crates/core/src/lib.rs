@@ -1,8 +1,8 @@
 //! Scopes, Launcher resolution, sessions, Conversations and notifications.
 //!
-//! - [`conversations`]: one serial queue per Scope and the pure prompt shaping each Turn becomes —
-//!   the clock prefix, `<untrusted-…>` wrapping, the System-prompt text, model choice and the
-//!   timeout category ([`conversations::prompt`]) (architecture §4, §5; #8, #25, #33, #37).
+//! - [`conversations`]: the per-Scope serial Turn queues ([`conversations::queue`]), the Run
+//!   pipeline behind them ([`conversations::pipeline`]) and the pure prompt shaping
+//!   ([`conversations::prompt`]) (architecture §4, §5, §6; #8, #9, #25, #29, #33, #37, #79).
 //! - [`disk`]: the free-space guard ([`disk::DiskGuard`]) — probes, warns and gates intake.
 //! - [`events`]: the event bus, a `tokio::sync::broadcast` of `api::DaemonEvent` that feeds SSE
 //!   (management-api §1.6, §2.2).
