@@ -31,10 +31,17 @@ use crate::backend::{
     TranscriptQuery, TurnCreate, TurnHandle, TurnsBackend,
 };
 
+// A Launcher path is absolute on the Daemon's own host, so a Windows build needs a drive.
 /// A Launcher path the scopes fake knows how to run.
+#[cfg(not(windows))]
 pub const WORK_LAUNCHER: &str = "/opt/launchers/work";
+#[cfg(windows)]
+pub const WORK_LAUNCHER: &str = "C:/opt/launchers/work";
 /// A Launcher path the scopes fake refuses to set (`422 launcher_not_runnable`).
+#[cfg(not(windows))]
 pub const BROKEN_LAUNCHER: &str = "/opt/launchers/broken";
+#[cfg(windows)]
+pub const BROKEN_LAUNCHER: &str = "C:/opt/launchers/broken";
 
 fn launcher_row(scope: Scope, set_here: Option<&str>, inherited: InheritedFrom) -> ScopeLauncher {
     ScopeLauncher {
