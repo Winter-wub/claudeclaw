@@ -22,3 +22,8 @@ uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["user"] }
+
+# The `daemon.lock` byte-range lock (#80): `LockFileEx` / `UnlockFileEx`, so the holder record
+# stays readable while the lock is held.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }

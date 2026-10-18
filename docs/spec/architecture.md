@@ -756,7 +756,7 @@ Requirements are caret (`"x.y"`). `Cargo.lock` is committed. Daemon-side feature
 | | `which` | 8.0.6 | `runner`: Launcher, `direct`, interpreter and `locale` resolution on the Run PATH (#26, #43) |
 | | `nix` | 0.31 | Unix only: `signal, process, fs, user` (`killpg`, `setsid`, `fcntl` for the lock fd on re-exec, `getpwuid_r` (#26), `statvfs` (#44)) |
 | | `libc` | | Unix only: the suspend-counting clocks (#38) |
-| | `windows-sys` | 0.61 | Windows only: pipe security descriptor, job objects, `Win32_System_Registry` and `Win32_System_Environment` (#26), `QueryInterruptTime` (#38), `GetDiskFreeSpaceExW` (#44) |
+| | `windows-sys` | 0.61 | Windows only: pipe security descriptor, job objects, `Win32_System_Registry` and `Win32_System_Environment` (#26), `QueryInterruptTime` (#38), `GetDiskFreeSpaceExW` (#44), `LockFileEx` for the `daemon.lock` byte range (#80) |
 | Discord | `twilight-gateway`, `twilight-http`, `twilight-model` | 0.17.1 | `default-features = false`, `rustls-platform-verifier`, `zlib` (gateway) / `decompression` (http) |
 | HTTP client | `reqwest` | 0.13.5 | `default-features = false`, `rustls-no-provider, json, stream, http2` (attachments, update download, `client` crate incl. `unix_socket` / `windows_named_pipe`) |
 | HTTP server | `axum` | 0.8.9 | `macros`; serves `tokio::net::UnixListener` directly (verified) |
@@ -823,7 +823,7 @@ These are #11's own decisions. Later tickets' alternatives are recorded on the t
 | D14 | **App starts the Daemon detached with its own code**, with a scrubbed spawn env (#26) | *`tauri-plugin-shell` sidecar.* Ties the child to the app's lifetime, while #10 wants the Daemon to keep running after the app quits. |
 | D15 | **`ts-compat` as its own crate + `store::rollback` module** | *A `ts_compat` module inside `jobs`.* Deleting it touches `jobs`, and nothing stops other code from calling the oracle. *Everything in one crate.* Mixes the oracle (deleted at the end of 2.x) with drop-in readers (permanent). |
 | D16 | **Polling settings and job reload**, now the Change scan (§7, #46) | *`notify` file watcher.* See §7. |
-| D17 | **std `File::try_lock`** | *`fs4`.* Redundant since Rust 1.89. |
+| D17 | **std `File::try_lock`** (Unix); on Windows a byte-range `LockFileEx` past the holder record (#80) | *`fs4`.* Redundant since Rust 1.89. On Windows std locks the whole file, which also blocks reading the holder record. |
 | D18 | **No self-update crate** | *`self_update`.* It brings its own release discovery and archive handling; #6 needs only download, minisign verify and a rename. |
 
 ## 12. Evidence
