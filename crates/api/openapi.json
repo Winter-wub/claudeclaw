@@ -2110,6 +2110,7 @@
           "plan_changed",
           "use_job_frontmatter",
           "export_busy",
+          "adapter_unavailable",
           "pairing_expired",
           "payload_too_large",
           "job_invalid",

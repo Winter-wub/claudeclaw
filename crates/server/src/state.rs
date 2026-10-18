@@ -10,9 +10,9 @@ use axum::extract::FromRef;
 use crate::auth::TokenStore;
 use crate::backend::pairing::PairingBackend;
 use crate::backend::{
-    AgentsBackend, AuditBackend, DaemonBackend, EventsBackend, ImportBackend, JobsBackend,
-    LogsBackend, MissingBackend, RunsBackend, ScopesBackend, SessionsBackend, SettingsBackend,
-    StatusBackend, TurnsBackend, UsageBackend,
+    AgentsBackend, AuditBackend, DaemonBackend, DiscordBackend, EventsBackend, ImportBackend,
+    JobsBackend, LogsBackend, MissingBackend, RunsBackend, ScopesBackend, SessionsBackend,
+    SettingsBackend, StatusBackend, TurnsBackend, UsageBackend,
 };
 
 /// Everything the router needs, erased behind `Arc<dyn …>`. Cheap to clone: the router clones it
@@ -35,6 +35,7 @@ pub struct AppState {
     pub sessions: Arc<dyn SessionsBackend>,
     pub settings: Arc<dyn SettingsBackend>,
     pub import: Arc<dyn ImportBackend>,
+    pub discord: Arc<dyn DiscordBackend>,
 }
 
 impl AppState {
@@ -62,6 +63,7 @@ pub struct AppStateBuilder {
     sessions: Option<Arc<dyn SessionsBackend>>,
     settings: Option<Arc<dyn SettingsBackend>>,
     import: Option<Arc<dyn ImportBackend>>,
+    discord: Option<Arc<dyn DiscordBackend>>,
 }
 
 impl AppStateBuilder {
@@ -145,6 +147,11 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_discord(mut self, backend: impl DiscordBackend) -> Self {
+        self.discord = Some(Arc::new(backend));
+        self
+    }
+
     pub fn build(self) -> AppState {
         AppState {
             status: self.status.unwrap_or_else(missing_status),
@@ -163,6 +170,7 @@ impl AppStateBuilder {
             sessions: self.sessions.unwrap_or_else(missing_sessions),
             settings: self.settings.unwrap_or_else(missing_settings),
             import: self.import.unwrap_or_else(missing_import),
+            discord: self.discord.unwrap_or_else(missing_discord),
         }
     }
 }
@@ -228,6 +236,10 @@ fn missing_settings() -> Arc<dyn SettingsBackend> {
 }
 
 fn missing_import() -> Arc<dyn ImportBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_discord() -> Arc<dyn DiscordBackend> {
     Arc::new(MissingBackend::new())
 }
 

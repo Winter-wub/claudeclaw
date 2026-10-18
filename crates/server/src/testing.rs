@@ -57,6 +57,7 @@ use crate::backend::{
 use crate::pairing::PairingRegistry;
 use crate::state::AppState;
 use crate::testing_agents::FakeAgents;
+use crate::testing_discord::FakeDiscord;
 use crate::testing_settings_import::{FakeImport, FakeSettings};
 
 mod scopes_sessions;
@@ -1358,6 +1359,7 @@ pub struct Harness {
     pub sessions: FakeSessions,
     pub settings: FakeSettings,
     pub import: FakeImport,
+    pub discord: FakeDiscord,
 }
 
 impl Harness {
@@ -1379,6 +1381,7 @@ impl Harness {
         let sessions = FakeSessions::new(turns.clone());
         let settings = FakeSettings::default();
         let import = FakeImport::default();
+        let discord = FakeDiscord::default();
         // A real §2.12 service over an in-memory store, so the mounted routes are exercised
         // end to end.
         let clock = Arc::new(TestClock::at(9));
@@ -1399,6 +1402,7 @@ impl Harness {
             .with_sessions(sessions.clone())
             .with_settings(settings.clone())
             .with_import(import.clone())
+            .with_discord(discord.clone())
             .with_pairing(PairingService::for_test(
                 TestHooks::enabled(),
                 registry,
@@ -1422,6 +1426,7 @@ impl Harness {
             sessions,
             settings,
             import,
+            discord,
         }
     }
 

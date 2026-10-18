@@ -81,7 +81,7 @@ One envelope, the same as the CLI's `--json` errors (#22 §4):
   - **401** `unauthorized`, `unknown_device`, `device_revoked` (#20), `pairing_code_invalid`
   - **403** `missing_permission`, `local_only`
   - **404** `not_found`, `transcript_not_found` (`details{reason: expired | not_located | unreadable, searched_roots, retention_days}`, #39)
-  - **409** `revision_mismatch` (`details.current`), `job_exists`, `agent_exists`, `session_in_use`, `remote_disabled`, `plan_changed`, `use_job_frontmatter`, `export_busy` (one export at a time, #28)
+  - **409** `revision_mismatch` (`details.current`), `job_exists`, `agent_exists`, `session_in_use`, `remote_disabled`, `plan_changed`, `use_job_frontmatter`, `export_busy` (one export at a time, #28), `adapter_unavailable` (`details{transport, state}`: a chat adapter's control route while the adapter is disabled or not connected, §2.7)
   - **410** `pairing_expired`
   - **413** `payload_too_large`
   - **422** `job_invalid` (`details.diagnostics`), `launcher_not_runnable`, `ts_only_key`, `unknown_key`, `invalid_value`, `invalid_permission_set`, `exe_check_failed`, `invalid_host` (#41)
@@ -260,6 +260,7 @@ Columns: **Op** (operationId and audit action), **Route**, **Request → Respons
 
 - These routes go through the adapter's `chat::AdapterControl` (`overview`, `available_channels`, `hire`, `fire`; architecture §6). Core does the session and `agents/` work; the adapter does the transport calls.
 - **`DiscordChannel`** = `{id, name, guild_id, trigger, allowed_users: {source: global|channel, users: [DiscordUser]}, launcher: ScopeLauncher, threads: [DiscordThread]}`. **`DiscordThread`** = `{id, name, parent_id, agent_dir, last_active_at, session: {launcher, session_id, status}|null}`. **`DiscordUser`** = `{id, name|null}`.
+- Routes other than `discord.get` answer `409 adapter_unavailable` (`details{transport: "discord", state}`) while the adapter is disabled or not connected; `discord.get` still answers, with `state` and empty lists.
 - **Copy ID.** Every object carries its snowflake `id` as a string. The app shows names and copies the `id`; it never renders snowflakes inline (#16). The API doesn't hide them, because the CLI, automation and debugging need them.
 - **Hire** does what the TS classifier's `hire` did: one public thread per name under the channel (auto-archive 3 days), a confirmation post, and an agent dir `agents/<slug>-<thread id>/`.
 - **Fire** deletes the Discord thread and removes its session (as TS did), then **moves `agents/<slug>-<id>/` to `agents/.archive/<slug>-<id>-<UTC stamp>/`** (#16). The archived dir is listed and restorable in §2.8. The Discord-side classifier `fire` does the same, which is a `divergences.toml` entry citing #16 and #21 in [#18](https://github.com/Winter-wub/claudeclaw/issues/18)'s registry.
