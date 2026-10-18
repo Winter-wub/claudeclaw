@@ -10,8 +10,8 @@ use axum::extract::FromRef;
 use crate::auth::TokenStore;
 use crate::backend::pairing::PairingBackend;
 use crate::backend::{
-    AuditBackend, DaemonBackend, EventsBackend, JobsBackend, LogsBackend, MissingBackend,
-    RunsBackend, StatusBackend, TurnsBackend, UsageBackend,
+    AuditBackend, DaemonBackend, EventsBackend, ImportBackend, JobsBackend, LogsBackend,
+    MissingBackend, RunsBackend, SettingsBackend, StatusBackend, TurnsBackend, UsageBackend,
 };
 
 /// Everything the router needs, erased behind `Arc<dyn …>`. Cheap to clone: the router clones it
@@ -29,6 +29,8 @@ pub struct AppState {
     pub logs: Arc<dyn LogsBackend>,
     pub runs: Arc<dyn RunsBackend>,
     pub usage: Arc<dyn UsageBackend>,
+    pub settings: Arc<dyn SettingsBackend>,
+    pub import: Arc<dyn ImportBackend>,
 }
 
 impl AppState {
@@ -51,6 +53,8 @@ pub struct AppStateBuilder {
     logs: Option<Arc<dyn LogsBackend>>,
     runs: Option<Arc<dyn RunsBackend>>,
     usage: Option<Arc<dyn UsageBackend>>,
+    settings: Option<Arc<dyn SettingsBackend>>,
+    import: Option<Arc<dyn ImportBackend>>,
 }
 
 impl AppStateBuilder {
@@ -109,6 +113,16 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_settings(mut self, backend: impl SettingsBackend) -> Self {
+        self.settings = Some(Arc::new(backend));
+        self
+    }
+
+    pub fn with_import(mut self, backend: impl ImportBackend) -> Self {
+        self.import = Some(Arc::new(backend));
+        self
+    }
+
     pub fn build(self) -> AppState {
         AppState {
             status: self.status.unwrap_or_else(missing_status),
@@ -122,6 +136,8 @@ impl AppStateBuilder {
             logs: self.logs.unwrap_or_else(missing_logs),
             runs: self.runs.unwrap_or_else(missing_runs),
             usage: self.usage.unwrap_or_else(missing_usage),
+            settings: self.settings.unwrap_or_else(missing_settings),
+            import: self.import.unwrap_or_else(missing_import),
         }
     }
 }
@@ -167,6 +183,14 @@ fn missing_runs() -> Arc<dyn RunsBackend> {
 }
 
 fn missing_usage() -> Arc<dyn UsageBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_settings() -> Arc<dyn SettingsBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_import() -> Arc<dyn ImportBackend> {
     Arc::new(MissingBackend::new())
 }
 

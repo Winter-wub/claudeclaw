@@ -210,7 +210,7 @@ fn run_body(body: &[u8]) -> Result<(), ApiFailure> {
 
 /// The request's `If-Match` (§1.5): absent is `None`, and anything that is not `Revision`'s own
 /// shape is `400 bad_request`, never a silently ignored header.
-fn if_match(headers: &HeaderMap) -> Result<Option<Revision>, ApiFailure> {
+pub(crate) fn if_match(headers: &HeaderMap) -> Result<Option<Revision>, ApiFailure> {
     const EXPECTED: &str = "If-Match must be 16 lowercase hex digits";
     let Some(value) = headers.get(IF_MATCH) else {
         return Ok(None);
