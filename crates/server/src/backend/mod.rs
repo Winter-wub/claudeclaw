@@ -7,7 +7,7 @@
 //! panicking.
 //!
 //! The traits live one per submodule — [`status`], [`daemon`], [`audit`], [`turns`], [`jobs`],
-//! [`settings`], [`discord`], [`import`], [`logs`], [`runs`] and [`usage`] — and are re-exported here, so callers use
+//! [`settings`], [`discord`], [`import`], [`logs`], [`runs`], [`usage`], [`agents`], [`scopes`] and [`sessions`] — and are re-exported here, so callers use
 //! `backend::StatusBackend` regardless of where it is defined.
 
 use std::sync::Arc;
@@ -16,6 +16,9 @@ use futures_util::future::BoxFuture;
 use tokio::sync::broadcast;
 
 use claudeclaw_api::DaemonEvent;
+use claudeclaw_api::agents::{
+    AgentArchived, AgentCreate, AgentInfo, AgentList, AgentPersona, AgentPurged, ArchivedAgentList,
+};
 use claudeclaw_api::discord::{
     AvailableChannelList, DiscordChannel, DiscordChannelPatch, DiscordChannelRemoved,
     DiscordOverview, FireResult, HireResult,
@@ -30,6 +33,14 @@ use claudeclaw_api::jobs::{
 use claudeclaw_api::logs::{AuditEntry, AuditPage, LogPage, LogSummary};
 use claudeclaw_api::revision::Revision;
 use claudeclaw_api::runs::{RunPage, RunRecord};
+use claudeclaw_api::scope::Scope;
+use claudeclaw_api::scopes::{
+    LauncherOverview, LauncherSetResult, LauncherTestRequest, LauncherTestResult, LauncherUnset,
+    ScopeList,
+};
+use claudeclaw_api::sessions::{
+    SessionDeleted, SessionDetail, SessionList, SessionReset, SessionResetRequest, TranscriptPage,
+};
 use claudeclaw_api::settings::{SettingsApplied, SettingsPatch, SettingsView};
 use claudeclaw_api::status::{
     DaemonStatus, Health, HealthState, HousekeepingReport, HousekeepingRequest, ReexecAccepted,
@@ -39,6 +50,7 @@ use claudeclaw_api::usage::UsageReport;
 
 use crate::auth::{TokenRecord, TokenStore};
 
+pub mod agents;
 pub mod audit;
 pub mod daemon;
 pub mod discord;
@@ -47,11 +59,14 @@ pub mod jobs;
 pub mod logs;
 pub mod pairing;
 pub mod runs;
+pub mod scopes;
+pub mod sessions;
 pub mod settings;
 pub mod status;
 pub mod turns;
 pub mod usage;
 
+pub use agents::AgentsBackend;
 pub use audit::{AuditBackend, AuditError, AuditFuture, AuditQuery};
 pub use daemon::{DaemonBackend, EventsBackend};
 pub use discord::DiscordBackend;
@@ -62,6 +77,8 @@ pub use logs::{
     LogsBackend, SequencedLog,
 };
 pub use runs::{RunQuery, RunsBackend};
+pub use scopes::{ScopeListQuery, ScopesBackend};
+pub use sessions::{SessionListQuery, SessionsBackend, TranscriptQuery};
 pub use settings::SettingsBackend;
 pub use status::StatusBackend;
 pub use turns::{TurnAttachment, TurnCreate, TurnFeed, TurnHandle, TurnsBackend};
@@ -260,6 +277,112 @@ impl JobsBackend for MissingBackend {
     }
 }
 
+impl AgentsBackend for MissingBackend {
+    fn list(&self) -> BackendFuture<'_, AgentList> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn archived(&self) -> BackendFuture<'_, ArchivedAgentList> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn create(&self, _create: AgentCreate) -> BackendFuture<'_, AgentInfo> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn persona_get(&self, _name: &str) -> BackendFuture<'_, AgentPersona> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn persona_put(
+        &self,
+        _name: &str,
+        _text: String,
+        _expected: Revision,
+    ) -> BackendFuture<'_, AgentPersona> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn archive(&self, _name: &str) -> BackendFuture<'_, AgentArchived> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn restore(&self, _entry: &str) -> BackendFuture<'_, AgentInfo> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn purge(&self, _entry: &str) -> BackendFuture<'_, AgentPurged> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+}
+
+impl ScopesBackend for MissingBackend {
+    fn list(&self, _query: ScopeListQuery) -> BackendFuture<'_, ScopeList> {
+        Box::pin(async { Err(missing("scopes")) })
+    }
+
+    fn launchers(&self) -> BackendFuture<'_, LauncherOverview> {
+        Box::pin(async { Err(missing("scopes")) })
+    }
+
+    fn set_launcher(
+        &self,
+        _scope: Scope,
+        _launcher: String,
+    ) -> BackendFuture<'_, LauncherSetResult> {
+        Box::pin(async { Err(missing("scopes")) })
+    }
+
+    fn unset_launcher(&self, _scope: Scope) -> BackendFuture<'_, LauncherUnset> {
+        Box::pin(async { Err(missing("scopes")) })
+    }
+
+    fn test_launcher(
+        &self,
+        _request: LauncherTestRequest,
+    ) -> BackendFuture<'_, LauncherTestResult> {
+        Box::pin(async { Err(missing("scopes")) })
+    }
+}
+
+impl SessionsBackend for MissingBackend {
+    fn list(&self, _query: SessionListQuery) -> BackendFuture<'_, SessionList> {
+        Box::pin(async { Err(missing("sessions")) })
+    }
+
+    fn get(&self, _session_id: &str) -> BackendFuture<'_, SessionDetail> {
+        Box::pin(async { Err(missing("sessions")) })
+    }
+
+    fn messages(
+        &self,
+        _session_id: &str,
+        _query: TranscriptQuery,
+    ) -> BackendFuture<'_, TranscriptPage> {
+        Box::pin(async { Err(missing("sessions")) })
+    }
+
+    fn reset(
+        &self,
+        _scope: Scope,
+        _request: SessionResetRequest,
+    ) -> BackendFuture<'_, SessionReset> {
+        Box::pin(async { Err(missing("sessions")) })
+    }
+
+    fn compact(&self, _scope: Scope, _principal: String) -> BackendFuture<'_, TurnHandle> {
+        Box::pin(async { Err(missing("sessions")) })
+    }
+
+    fn delete(
+        &self,
+        _scope: Scope,
+        _launcher: Option<String>,
+    ) -> BackendFuture<'_, SessionDeleted> {
+        Box::pin(async { Err(missing("sessions")) })
+    }
+}
+
 impl SettingsBackend for MissingBackend {
     fn get(&self) -> BackendFuture<'_, SettingsView> {
         Box::pin(async { Err(missing("settings")) })
@@ -382,6 +505,97 @@ mod tests {
                     },
                     count: 5,
                 })
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_unwired_agents_calls_fail_loudly() {
+        let backend = MissingBackend::new();
+        assert!(AgentsBackend::list(&backend).await.is_err());
+        assert!(backend.archived().await.is_err());
+        assert!(
+            AgentsBackend::create(
+                &backend,
+                AgentCreate {
+                    name: "scribe".into(),
+                    persona: None,
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert!(backend.persona_get("scribe").await.is_err());
+        assert!(
+            backend
+                .persona_put("scribe", String::new(), Revision::of(b""))
+                .await
+                .is_err()
+        );
+        assert!(backend.archive("scribe").await.is_err());
+        assert!(backend.restore("scribe-20261014T090000Z").await.is_err());
+        assert!(backend.purge("scribe-20261014T090000Z").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_unwired_scopes_and_sessions_reads_and_writes_fail_loudly() {
+        let backend = MissingBackend::new();
+        assert!(
+            ScopesBackend::list(&backend, ScopeListQuery::default())
+                .await
+                .is_err()
+        );
+        assert!(backend.launchers().await.is_err());
+        assert!(
+            backend
+                .set_launcher(Scope::Global, "direct".into())
+                .await
+                .is_err()
+        );
+        assert!(
+            backend
+                .unset_launcher(Scope::Discord("1".into()))
+                .await
+                .is_err()
+        );
+        assert!(
+            backend
+                .test_launcher(LauncherTestRequest::default())
+                .await
+                .is_err()
+        );
+        assert!(
+            SessionsBackend::list(&backend, SessionListQuery::default())
+                .await
+                .is_err()
+        );
+        assert!(SessionsBackend::get(&backend, "s-1").await.is_err());
+        assert!(
+            backend
+                .messages(
+                    "s-1",
+                    TranscriptQuery {
+                        limit: 10,
+                        before: None
+                    }
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            SessionsBackend::reset(&backend, Scope::Global, SessionResetRequest::default())
+                .await
+                .is_err()
+        );
+        assert!(
+            backend
+                .compact(Scope::Global, "local".into())
+                .await
+                .is_err()
+        );
+        assert!(
+            SessionsBackend::delete(&backend, Scope::Global, None)
                 .await
                 .is_err()
         );

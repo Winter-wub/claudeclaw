@@ -1,10 +1,11 @@
-//! The route handlers (management-api §2.1–§2.4, §2.6, §2.7, §2.9–§2.11).
+//! The route handlers (management-api §2.1–§2.6, §2.7, §2.9–§2.11).
 //!
 //! [`Params`] reads the query string every list and filter route shares. axum hands it the pairs
 //! already percent-decoded; the helpers here apply §1 on top of that — cursors stay opaque, a
 //! whole number of pages is 1..=[`MAX_PAGE_LIMIT`], a closed wire set takes only the values
 //! §1.1 lists — and each refusal is the §1.4 envelope, not a plain-text rejection.
 
+pub mod agents;
 pub mod audit;
 pub mod daemon;
 pub mod discord;
@@ -14,6 +15,8 @@ pub mod jobs;
 pub mod logs;
 pub mod pairing;
 pub mod runs;
+pub mod scopes;
+pub mod sessions;
 pub mod settings;
 pub mod turns;
 pub mod usage;

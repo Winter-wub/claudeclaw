@@ -10,9 +10,9 @@ use axum::extract::FromRef;
 use crate::auth::TokenStore;
 use crate::backend::pairing::PairingBackend;
 use crate::backend::{
-    AuditBackend, DaemonBackend, DiscordBackend, EventsBackend, ImportBackend, JobsBackend,
-    LogsBackend, MissingBackend, RunsBackend, SettingsBackend, StatusBackend, TurnsBackend,
-    UsageBackend,
+    AgentsBackend, AuditBackend, DaemonBackend, DiscordBackend, EventsBackend, ImportBackend,
+    JobsBackend, LogsBackend, MissingBackend, RunsBackend, ScopesBackend, SessionsBackend,
+    SettingsBackend, StatusBackend, TurnsBackend, UsageBackend,
 };
 
 /// Everything the router needs, erased behind `Arc<dyn …>`. Cheap to clone: the router clones it
@@ -27,9 +27,12 @@ pub struct AppState {
     pub pairing: Arc<dyn PairingBackend>,
     pub turns: Arc<dyn TurnsBackend>,
     pub jobs: Arc<dyn JobsBackend>,
+    pub agents: Arc<dyn AgentsBackend>,
     pub logs: Arc<dyn LogsBackend>,
     pub runs: Arc<dyn RunsBackend>,
     pub usage: Arc<dyn UsageBackend>,
+    pub scopes: Arc<dyn ScopesBackend>,
+    pub sessions: Arc<dyn SessionsBackend>,
     pub settings: Arc<dyn SettingsBackend>,
     pub import: Arc<dyn ImportBackend>,
     pub discord: Arc<dyn DiscordBackend>,
@@ -52,9 +55,12 @@ pub struct AppStateBuilder {
     pairing: Option<Arc<dyn PairingBackend>>,
     turns: Option<Arc<dyn TurnsBackend>>,
     jobs: Option<Arc<dyn JobsBackend>>,
+    agents: Option<Arc<dyn AgentsBackend>>,
     logs: Option<Arc<dyn LogsBackend>>,
     runs: Option<Arc<dyn RunsBackend>>,
     usage: Option<Arc<dyn UsageBackend>>,
+    scopes: Option<Arc<dyn ScopesBackend>>,
+    sessions: Option<Arc<dyn SessionsBackend>>,
     settings: Option<Arc<dyn SettingsBackend>>,
     import: Option<Arc<dyn ImportBackend>>,
     discord: Option<Arc<dyn DiscordBackend>>,
@@ -101,6 +107,11 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_agents(mut self, backend: impl AgentsBackend) -> Self {
+        self.agents = Some(Arc::new(backend));
+        self
+    }
+
     pub fn with_logs(mut self, backend: impl LogsBackend) -> Self {
         self.logs = Some(Arc::new(backend));
         self
@@ -113,6 +124,16 @@ impl AppStateBuilder {
 
     pub fn with_usage(mut self, backend: impl UsageBackend) -> Self {
         self.usage = Some(Arc::new(backend));
+        self
+    }
+
+    pub fn with_scopes(mut self, backend: impl ScopesBackend) -> Self {
+        self.scopes = Some(Arc::new(backend));
+        self
+    }
+
+    pub fn with_sessions(mut self, backend: impl SessionsBackend) -> Self {
+        self.sessions = Some(Arc::new(backend));
         self
     }
 
@@ -141,9 +162,12 @@ impl AppStateBuilder {
             pairing: self.pairing.unwrap_or_else(missing_pairing),
             turns: self.turns.unwrap_or_else(missing_turns),
             jobs: self.jobs.unwrap_or_else(missing_jobs),
+            agents: self.agents.unwrap_or_else(missing_agents),
             logs: self.logs.unwrap_or_else(missing_logs),
             runs: self.runs.unwrap_or_else(missing_runs),
             usage: self.usage.unwrap_or_else(missing_usage),
+            scopes: self.scopes.unwrap_or_else(missing_scopes),
+            sessions: self.sessions.unwrap_or_else(missing_sessions),
             settings: self.settings.unwrap_or_else(missing_settings),
             import: self.import.unwrap_or_else(missing_import),
             discord: self.discord.unwrap_or_else(missing_discord),
@@ -160,6 +184,10 @@ fn missing_turns() -> Arc<dyn TurnsBackend> {
 }
 
 fn missing_jobs() -> Arc<dyn JobsBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_agents() -> Arc<dyn AgentsBackend> {
     Arc::new(MissingBackend::new())
 }
 
@@ -192,6 +220,14 @@ fn missing_runs() -> Arc<dyn RunsBackend> {
 }
 
 fn missing_usage() -> Arc<dyn UsageBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_scopes() -> Arc<dyn ScopesBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_sessions() -> Arc<dyn SessionsBackend> {
     Arc::new(MissingBackend::new())
 }
 
