@@ -56,6 +56,7 @@ use crate::backend::{
 };
 use crate::pairing::PairingRegistry;
 use crate::state::AppState;
+use crate::testing_settings_import::{FakeImport, FakeSettings};
 
 mod scopes_sessions;
 pub use scopes_sessions::*;
@@ -1353,6 +1354,8 @@ pub struct Harness {
     pub jobs: FakeJobs,
     pub scopes: FakeScopes,
     pub sessions: FakeSessions,
+    pub settings: FakeSettings,
+    pub import: FakeImport,
 }
 
 impl Harness {
@@ -1371,6 +1374,8 @@ impl Harness {
         let scopes = FakeScopes::default();
         // `sessions.compact` starts its Turn on the same bus as well.
         let sessions = FakeSessions::new(turns.clone());
+        let settings = FakeSettings::default();
+        let import = FakeImport::default();
         // A real §2.12 service over an in-memory store, so the mounted routes are exercised
         // end to end.
         let clock = Arc::new(TestClock::at(9));
@@ -1388,6 +1393,8 @@ impl Harness {
             .with_jobs(jobs.clone())
             .with_scopes(scopes.clone())
             .with_sessions(sessions.clone())
+            .with_settings(settings.clone())
+            .with_import(import.clone())
             .with_pairing(PairingService::for_test(
                 TestHooks::enabled(),
                 registry,
@@ -1408,6 +1415,8 @@ impl Harness {
             jobs,
             scopes,
             sessions,
+            settings,
+            import,
         }
     }
 

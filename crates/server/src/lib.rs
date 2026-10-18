@@ -28,7 +28,13 @@ pub mod tokens;
 pub mod testing;
 
 #[cfg(test)]
+mod testing_settings_import;
+
+#[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_settings_import;
 
 pub use audit::REQUEST_ID;
 pub use auth::{PeerIdentity, Principal, TokenRecord, TokenStore, hash_token};

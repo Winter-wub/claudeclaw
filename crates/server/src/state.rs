@@ -10,8 +10,9 @@ use axum::extract::FromRef;
 use crate::auth::TokenStore;
 use crate::backend::pairing::PairingBackend;
 use crate::backend::{
-    AuditBackend, DaemonBackend, EventsBackend, JobsBackend, LogsBackend, MissingBackend,
-    RunsBackend, ScopesBackend, SessionsBackend, StatusBackend, TurnsBackend, UsageBackend,
+    AuditBackend, DaemonBackend, EventsBackend, ImportBackend, JobsBackend, LogsBackend,
+    MissingBackend, RunsBackend, ScopesBackend, SessionsBackend, SettingsBackend, StatusBackend,
+    TurnsBackend, UsageBackend,
 };
 
 /// Everything the router needs, erased behind `Arc<dyn …>`. Cheap to clone: the router clones it
@@ -31,6 +32,8 @@ pub struct AppState {
     pub usage: Arc<dyn UsageBackend>,
     pub scopes: Arc<dyn ScopesBackend>,
     pub sessions: Arc<dyn SessionsBackend>,
+    pub settings: Arc<dyn SettingsBackend>,
+    pub import: Arc<dyn ImportBackend>,
 }
 
 impl AppState {
@@ -55,6 +58,8 @@ pub struct AppStateBuilder {
     usage: Option<Arc<dyn UsageBackend>>,
     scopes: Option<Arc<dyn ScopesBackend>>,
     sessions: Option<Arc<dyn SessionsBackend>>,
+    settings: Option<Arc<dyn SettingsBackend>>,
+    import: Option<Arc<dyn ImportBackend>>,
 }
 
 impl AppStateBuilder {
@@ -123,6 +128,16 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_settings(mut self, backend: impl SettingsBackend) -> Self {
+        self.settings = Some(Arc::new(backend));
+        self
+    }
+
+    pub fn with_import(mut self, backend: impl ImportBackend) -> Self {
+        self.import = Some(Arc::new(backend));
+        self
+    }
+
     pub fn build(self) -> AppState {
         AppState {
             status: self.status.unwrap_or_else(missing_status),
@@ -138,6 +153,8 @@ impl AppStateBuilder {
             usage: self.usage.unwrap_or_else(missing_usage),
             scopes: self.scopes.unwrap_or_else(missing_scopes),
             sessions: self.sessions.unwrap_or_else(missing_sessions),
+            settings: self.settings.unwrap_or_else(missing_settings),
+            import: self.import.unwrap_or_else(missing_import),
         }
     }
 }
@@ -191,6 +208,14 @@ fn missing_scopes() -> Arc<dyn ScopesBackend> {
 }
 
 fn missing_sessions() -> Arc<dyn SessionsBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_settings() -> Arc<dyn SettingsBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_import() -> Arc<dyn ImportBackend> {
     Arc::new(MissingBackend::new())
 }
 

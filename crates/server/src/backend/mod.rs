@@ -7,7 +7,7 @@
 //! panicking.
 //!
 //! The traits live one per submodule — [`status`], [`daemon`], [`audit`], [`turns`], [`jobs`],
-//! [`logs`], [`runs`], [`usage`], [`scopes`] and [`sessions`] — and are re-exported here, so callers use
+//! [`logs`], [`runs`], [`usage`], [`settings`], [`import`], [`scopes`] and [`sessions`] — and are re-exported here, so callers use
 //! `backend::StatusBackend` regardless of where it is defined.
 
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use tokio::sync::broadcast;
 use claudeclaw_api::DaemonEvent;
 use claudeclaw_api::error::{ApiError, ErrorCode};
 use claudeclaw_api::export::LogExport;
+use claudeclaw_api::import::{ImportApplyRequest, ImportPlan, ImportRecord, ImportResult};
 use claudeclaw_api::jobs::{
     JobCreate, JobDeleted, JobDetail, JobList, JobPatch, JobPreview, JobPreviewRequest, JobRaw,
     JobsAudit, JobsCheck,
@@ -33,6 +34,7 @@ use claudeclaw_api::scopes::{
 use claudeclaw_api::sessions::{
     SessionDeleted, SessionDetail, SessionList, SessionReset, SessionResetRequest, TranscriptPage,
 };
+use claudeclaw_api::settings::{SettingsApplied, SettingsPatch, SettingsView};
 use claudeclaw_api::status::{
     DaemonStatus, Health, HealthState, HousekeepingReport, HousekeepingRequest, ReexecAccepted,
     ReexecRequest, RestartAccepted, StopAccepted, UpdateInfo,
@@ -43,18 +45,21 @@ use crate::auth::{TokenRecord, TokenStore};
 
 pub mod audit;
 pub mod daemon;
+pub mod import;
 pub mod jobs;
 pub mod logs;
 pub mod pairing;
 pub mod runs;
 pub mod scopes;
 pub mod sessions;
+pub mod settings;
 pub mod status;
 pub mod turns;
 pub mod usage;
 
 pub use audit::{AuditBackend, AuditError, AuditFuture, AuditQuery};
 pub use daemon::{DaemonBackend, EventsBackend};
+pub use import::{ImportBackend, ImportPlanQuery};
 pub use jobs::{JobAuditQuery, JobCheckQuery, JobListQuery, JobsBackend};
 pub use logs::{
     LogCursor, LogExportQuery, LogPosition, LogSource, LogStream, LogStreamQuery, LogTailQuery,
@@ -63,6 +68,7 @@ pub use logs::{
 pub use runs::{RunQuery, RunsBackend};
 pub use scopes::{ScopeListQuery, ScopesBackend};
 pub use sessions::{SessionListQuery, SessionsBackend, TranscriptQuery};
+pub use settings::SettingsBackend;
 pub use status::StatusBackend;
 pub use turns::{TurnAttachment, TurnCreate, TurnFeed, TurnHandle, TurnsBackend};
 pub use usage::{UsageBackend, UsageQuery};
@@ -327,6 +333,34 @@ impl SessionsBackend for MissingBackend {
     }
 }
 
+impl SettingsBackend for MissingBackend {
+    fn get(&self) -> BackendFuture<'_, SettingsView> {
+        Box::pin(async { Err(missing("settings")) })
+    }
+
+    fn update(
+        &self,
+        _patch: SettingsPatch,
+        _expected: Option<Revision>,
+    ) -> BackendFuture<'_, SettingsApplied> {
+        Box::pin(async { Err(missing("settings")) })
+    }
+}
+
+impl ImportBackend for MissingBackend {
+    fn get(&self) -> BackendFuture<'_, ImportRecord> {
+        Box::pin(async { Err(missing("import")) })
+    }
+
+    fn plan(&self, _query: ImportPlanQuery) -> BackendFuture<'_, ImportPlan> {
+        Box::pin(async { Err(missing("import")) })
+    }
+
+    fn apply(&self, _request: ImportApplyRequest) -> BackendFuture<'_, ImportResult> {
+        Box::pin(async { Err(missing("import")) })
+    }
+}
+
 impl TokenStore for MissingBackend {
     fn lookup(&self, _hash: &[u8; 32]) -> Option<TokenRecord> {
         None
@@ -457,6 +491,20 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn the_unwired_settings_and_import_calls_fail_loudly() {
+        let backend = MissingBackend::new();
+        assert!(SettingsBackend::get(&backend).await.is_err());
+        assert!(
+            SettingsBackend::update(&backend, SettingsPatch::default(), None)
+                .await
+                .is_err()
+        );
+        assert!(ImportBackend::get(&backend).await.is_err());
+        assert!(backend.plan(ImportPlanQuery::default()).await.is_err());
+        assert!(backend.apply(ImportApplyRequest::default()).await.is_err());
     }
 
     #[tokio::test]
