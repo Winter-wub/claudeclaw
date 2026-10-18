@@ -10,7 +10,8 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::{Extension, Path, Query, Request, State};
+use axum::body::Bytes;
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -33,8 +34,6 @@ use crate::error::ApiFailure;
 use crate::routes::{Params, bad_request};
 use crate::state::AppState;
 
-/// §1.6: `turns.create` takes a 64 MiB body (the attachments), everything else 1 MiB.
-const MAX_BODY: usize = 64 * 1024 * 1024;
 /// §2.3: at most 5 attachments, 10 MB each (the TS Web UI's limits).
 const MAX_ATTACHMENTS: usize = 5;
 const MAX_ATTACHMENT: usize = 10 * 1024 * 1024;
@@ -52,13 +51,9 @@ pub async fn create(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     Query(pairs): Query<Vec<(String, String)>>,
-    request: Request,
+    body: Bytes,
 ) -> Result<Response, ApiFailure> {
-    // The body is read by hand so an oversized one is §1.4's envelope with `payload_too_large`,
-    // which axum's `Json` extractor would replace with a plain-text rejection.
-    let body = axum::body::to_bytes(request.into_body(), MAX_BODY)
-        .await
-        .map_err(|_| too_large("the turn request is larger than 64 MiB"))?;
+    // The total size (64 MiB, §1.6) is the router's limit; the rules below are per attachment.
     let request: TurnRequest =
         serde_json::from_slice(&body).map_err(|_| bad_request("the body is not a TurnRequest"))?;
     if !principal.is_admin() && request.scope != claudeclaw_api::Scope::Global {

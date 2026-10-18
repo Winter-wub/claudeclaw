@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::header::IF_MATCH;
 use axum::http::{HeaderMap, StatusCode};
@@ -28,8 +29,6 @@ use crate::routes::turns;
 use crate::routes::{Params, bad_request, number};
 use crate::state::AppState;
 
-/// §1.6: `jobs.run` carries `{}`, so 1 MiB is room to spare for everything but `turns.create`.
-const MAX_BODY: usize = 1024 * 1024;
 /// §2.4: `?next=` defaults to 5 and must count at least one fire.
 const DEFAULT_CHECK_NEXT: u32 = 5;
 /// §2.4: `?late=` defaults to the CLI's 2 minutes.
@@ -124,9 +123,9 @@ pub async fn run(
     Extension(principal): Extension<Principal>,
     Path(job): Path<String>,
     Query(pairs): Query<Vec<(String, String)>>,
-    request: axum::extract::Request,
+    body: Bytes,
 ) -> Result<Response, ApiFailure> {
-    run_body(request.into_body()).await?;
+    run_body(&body)?;
     let wait = turns::wait_seconds(&pairs);
     let owner = principal.audit_name();
     let target = job.clone();
@@ -197,18 +196,12 @@ pub async fn audit(
 
 /// `jobs.run`'s body: `{}` (§2.4). An empty body is accepted too, so a bare `POST` works;
 /// anything that is not a JSON object is `400 bad_request`.
-async fn run_body(body: axum::body::Body) -> Result<(), ApiFailure> {
-    let bytes = axum::body::to_bytes(body, MAX_BODY).await.map_err(|_| {
-        ApiFailure::new(
-            ErrorCode::PayloadTooLarge,
-            "the request is larger than 1 MiB",
-        )
-    })?;
-    if bytes.is_empty() {
+fn run_body(body: &[u8]) -> Result<(), ApiFailure> {
+    if body.is_empty() {
         return Ok(());
     }
     let value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|_| bad_request("the body must be {}"))?;
+        serde_json::from_slice(body).map_err(|_| bad_request("the body must be {}"))?;
     if !value.is_object() {
         return Err(bad_request("the body must be {}"));
     }
@@ -239,8 +232,6 @@ fn revision_required() -> ApiFailure {
 
 #[cfg(test)]
 mod tests {
-    use axum::body::Body;
-
     use super::*;
 
     fn headers(raw: Option<&str>) -> HeaderMap {
@@ -275,24 +266,14 @@ mod tests {
         assert_eq!(revision_required().code(), ErrorCode::RevisionRequired);
     }
 
-    #[tokio::test]
-    async fn a_run_body_is_an_object_or_nothing() {
-        assert!(run_body(Body::empty()).await.is_ok());
-        assert!(run_body(Body::from("{}")).await.is_ok());
+    #[test]
+    fn a_run_body_is_an_object_or_nothing() {
+        assert!(run_body(b"").is_ok());
+        assert!(run_body(b"{}").is_ok());
+        assert_eq!(run_body(b"[]").unwrap_err().code(), ErrorCode::BadRequest);
         assert_eq!(
-            run_body(Body::from("[]")).await.unwrap_err().code(),
+            run_body(b"not json").unwrap_err().code(),
             ErrorCode::BadRequest
-        );
-        assert_eq!(
-            run_body(Body::from("not json")).await.unwrap_err().code(),
-            ErrorCode::BadRequest
-        );
-        assert_eq!(
-            run_body(Body::from(vec![b'x'; MAX_BODY + 1]))
-                .await
-                .unwrap_err()
-                .code(),
-            ErrorCode::PayloadTooLarge
         );
     }
 }

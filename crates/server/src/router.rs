@@ -2,10 +2,13 @@
 //!
 //! One router serves every listener; the only per-listener difference is the [`PeerIdentity`]
 //! stamped onto each request by [`with_peer_identity`]. Each route is wrapped by three layers,
-//! outermost first: auth, then audit, then the deadline backstop.
+//! outermost first: auth, then audit, then the deadline backstop. Innermost sit the route's body
+//! limit (§1.6) and the mapping that renders an oversized body as §1.4's envelope.
+
+use std::convert::Infallible;
 
 use axum::Router;
-use axum::extract::Request;
+use axum::extract::{DefaultBodyLimit, Request};
 use axum::middleware::{self, Next};
 use axum::routing::{MethodRouter, delete, get, patch, post, put};
 
@@ -22,6 +25,7 @@ use claudeclaw_api::routes::{
 use crate::audit::AuditCtx;
 use crate::auth::{AuthCtx, PeerIdentity};
 use crate::deadline::DeadlineCtx;
+use crate::error::BodyLimit;
 use crate::routes::{audit, daemon, events, jobs, logs, pairing, runs, turns, usage};
 use crate::state::AppState;
 
@@ -116,14 +120,32 @@ pub fn with_peer_identity(router: Router, identity: PeerIdentity) -> Router {
     ))
 }
 
-/// Registers one route, applying auth, audit and deadline (outermost first).
+/// §1.6: `turns.create` takes a 64 MiB body (the attachments), every other route 1 MiB.
+fn body_limit(route: Route) -> usize {
+    if route == TURNS_CREATE {
+        64 * 1024 * 1024
+    } else {
+        1024 * 1024
+    }
+}
+
+/// Registers one route, applying auth, audit and deadline (outermost first), then the body
+/// limit around the handler.
 fn mount(
     router: Router<AppState>,
     route: Route,
     method: MethodRouter<AppState>,
     state: &AppState,
 ) -> Router<AppState> {
+    let limit = body_limit(route);
     let method = method
+        // Innermost: the limit is enforced by the extractors that read the body, and an
+        // oversized one comes back as §1.4's envelope, so audit still sees the final response.
+        .layer::<_, Infallible>(middleware::from_fn_with_state(
+            BodyLimit(limit),
+            crate::error::payload_too_large_envelope,
+        ))
+        .layer(DefaultBodyLimit::max(limit))
         .layer(middleware::from_fn_with_state(
             DeadlineCtx {
                 deadline: route.deadline,

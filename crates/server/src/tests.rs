@@ -1428,6 +1428,90 @@ mod turns {
     }
 }
 
+mod body_limits {
+    use axum::body::Body;
+    use axum::http::Request;
+
+    use claudeclaw_api::jobs::{JobContent, JobCreate};
+    use claudeclaw_api::scope::Scope;
+    use claudeclaw_api::turns::TurnRequest;
+
+    use super::*;
+
+    const MIB: usize = 1024 * 1024;
+
+    /// A valid `jobs.create` body of `len` bytes or a little over, so only its size is in question.
+    fn job_of(len: usize) -> Request<Body> {
+        let create = JobCreate {
+            name: "weekly".into(),
+            agent: None,
+            content: JobContent::Raw {
+                raw: format!("---\nschedule: \"0 9 * * *\"\n---\n{}\n", "x".repeat(len)),
+            },
+        };
+        json_request(Method::POST, "/v1/jobs", LOCAL, &create)
+    }
+
+    /// A valid `turns.create` body of `len` bytes or a little over.
+    fn turn_of(len: usize) -> Request<Body> {
+        let turn = TurnRequest {
+            scope: Scope::Global,
+            text: "x".repeat(len),
+            attachments: None,
+            notify: false,
+        };
+        json_request(Method::POST, "/v1/turns", LOCAL, &turn)
+    }
+
+    async fn assert_payload_too_large(response: axum::response::Response) {
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let content_type = response.headers()[header::CONTENT_TYPE].to_str().unwrap();
+        assert!(
+            content_type.starts_with("application/json"),
+            "{content_type}"
+        );
+        assert_eq!(code(&body_json(response).await), "payload_too_large");
+    }
+
+    #[tokio::test]
+    async fn a_normal_route_refuses_a_body_over_1_mib_with_the_envelope() {
+        let harness = Harness::new();
+        let response = call(&harness.router(), job_of(MIB)).await;
+        assert_payload_too_large(response).await;
+
+        // A body with no declared length is cut off while it streams, and is the same envelope.
+        let chunks = futures_util::stream::iter([
+            Ok::<_, std::io::Error>(vec![b' '; MIB]),
+            Ok(vec![b' '; 1]),
+        ]);
+        let mut streamed = request(Method::POST, "/v1/jobs/weekly/run", LOCAL);
+        *streamed.body_mut() = Body::from_stream(chunks);
+        assert_payload_too_large(call(&harness.router(), streamed).await).await;
+    }
+
+    #[tokio::test]
+    async fn a_normal_route_still_takes_a_body_under_1_mib() {
+        let harness = Harness::new();
+        let response = call(&harness.router(), job_of(MIB - 1024)).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn turns_create_takes_what_other_routes_refuse_up_to_64_mib() {
+        let harness = Harness::new();
+        let response = call(&harness.router(), turn_of(MIB + 1)).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let response = call(&harness.router(), turn_of(64 * MIB)).await;
+        assert_payload_too_large(response).await;
+        assert_eq!(
+            harness.turns.create_calls().len(),
+            1,
+            "the oversized one never reached the backend"
+        );
+    }
+}
+
 mod jobs {
     use std::time::Duration;
 
