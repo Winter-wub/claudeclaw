@@ -14,7 +14,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use axum::response::Response;
 use chrono::{DateTime, Utc};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use claudeclaw_api::DaemonEvent;
 use claudeclaw_api::error::{ApiError, ErrorCode};
@@ -22,10 +22,15 @@ use claudeclaw_api::events::{LogStreamHello, StreamGap};
 use claudeclaw_api::export::{
     ExportManifest, ExportTrimmed, ExportVersions, ExportWindow, LogExport,
 };
+use claudeclaw_api::jobs::{
+    JobCheck, JobCreate, JobDeleted, JobDetail, JobFields, JobLastRun, JobList, JobNotify,
+    JobPatch, JobPreview, JobPreviewRequest, JobRaw, JobStatus, JobSummary, JobsAudit, JobsCheck,
+};
 use claudeclaw_api::logs::{
     AuditEntry, AuditPage, DiskHousekeeping, LogCounts, LogDisk, LogEntry, LogPage, LogSummary,
 };
 use claudeclaw_api::permission::TokenPermission;
+use claudeclaw_api::revision::Revision;
 use claudeclaw_api::runs::{
     CostBasis, CostStatus, RunIndexPhase, RunIndexState, RunModelUsage, RunOrigin, RunOutcome,
     RunPage, RunPurpose, RunRecord, RunSession, RunSettle, SettleOutcome,
@@ -36,6 +41,7 @@ use claudeclaw_api::status::{
     RestartAccepted, StatusSource, StatusVersion, StopAccepted, UpdateInfo, UpdateStatus,
 };
 use claudeclaw_api::supervisor::DaemonReachability;
+use claudeclaw_api::turns::{TurnEvent, TurnOutcome, TurnPurpose, TurnRecord, TurnState};
 use claudeclaw_api::usage::{
     CostTrust, UsageCoverage, UsageDay, UsageGroup, UsageReport, UsageRow, UsageTotals,
 };
@@ -44,8 +50,9 @@ use crate::auth::{Principal, TokenRecord, TokenStore, hash_token};
 use crate::backend::pairing::{PairingService, TestClock, TestHooks};
 use crate::backend::{
     AuditBackend, AuditFuture, AuditQuery, BackendFuture, DaemonBackend, EventsBackend,
-    LogExportQuery, LogSource, LogStream, LogStreamQuery, LogTailQuery, LogsBackend, RunQuery,
-    RunsBackend, SequencedLog, StatusBackend, UsageBackend, UsageQuery,
+    JobAuditQuery, JobCheckQuery, JobListQuery, JobsBackend, LogExportQuery, LogSource, LogStream,
+    LogStreamQuery, LogTailQuery, LogsBackend, RunQuery, RunsBackend, SequencedLog, StatusBackend,
+    TurnCreate, TurnFeed, TurnHandle, TurnsBackend, UsageBackend, UsageQuery,
 };
 use crate::pairing::PairingRegistry;
 use crate::state::AppState;
@@ -690,6 +697,542 @@ impl UsageBackend for FakeUsage {
     }
 }
 
+/// The job file the jobs fakes serve, so its revision is the one `If-Match` has to send back.
+const JOB_FILE: &[u8] =
+    b"---\nschedule: \"0 9 * * *\"\nrecurring: true\n---\nSummarise yesterday.\n";
+
+/// The sample job every jobs route serves (§2.4, content-free like `jobs list`).
+pub fn sample_job_summary() -> JobSummary {
+    JobSummary {
+        name: "daily-report".into(),
+        agent: None,
+        path: ".claude/claudeclaw/jobs/daily-report.md".into(),
+        status: JobStatus::Valid,
+        schedule: Some("0 9 * * *".into()),
+        recurring: Some(true),
+        enabled: true,
+        notify: JobNotify::Bool(true),
+        launcher: None,
+        model: None,
+        next_at: Some(at("2026-10-15T09:00:00Z")),
+        last_run: Some(JobLastRun {
+            at: at("2026-10-14T09:00:02Z"),
+            outcome: RunOutcome::Ok,
+        }),
+        in_flight: Some(false),
+        retry_at: None,
+        revision: Revision::of(JOB_FILE),
+    }
+}
+
+/// The sample job read fresh, for `jobs.get` and every write's answer.
+pub fn sample_job_detail() -> JobDetail {
+    JobDetail {
+        summary: sample_job_summary(),
+        fields: JobFields {
+            schedule: Some("0 9 * * *".into()),
+            recurring: Some(true),
+            ..JobFields::default()
+        },
+        prompt: "Summarise yesterday.\n".into(),
+        raw: std::str::from_utf8(JOB_FILE).unwrap().to_owned(),
+        diagnostics: vec![],
+        import_findings: vec![],
+        next_fires: vec![at("2026-10-15T09:00:00Z"), at("2026-10-16T09:00:00Z")],
+    }
+}
+
+/// The preview `jobs.preview` answers with, carrying as many fires as were asked for (§2.4).
+pub fn sample_job_preview(count: u32) -> JobPreview {
+    JobPreview {
+        fields: JobFields {
+            schedule: Some("0 9 * * *".into()),
+            ..JobFields::default()
+        },
+        prompt: String::new(),
+        raw: "---\nschedule: \"0 9 * * *\"\n---\n".into(),
+        diagnostics: vec![],
+        next_fires: future_fires(count),
+        timezone: "Asia/Bangkok".into(),
+        notes: vec!["day-of-month and day-of-week match with OR".into()],
+    }
+}
+
+/// `jobs.check`'s sample: one job with exactly `next` future fires (§2.4).
+pub fn sample_jobs_check(next: u32) -> JobsCheck {
+    JobsCheck {
+        daemon_running: true,
+        jobs: vec![JobCheck {
+            name: "daily-report".into(),
+            path: ".claude/claudeclaw/jobs/daily-report.md".into(),
+            status: JobStatus::Valid,
+            diagnostics: vec![],
+            next_fires: future_fires(next),
+            last_run: None,
+            catch_up: None,
+            import: vec![],
+        }],
+    }
+}
+
+/// `jobs.audit`'s sample window, with nothing wrong in it (§2.4).
+pub fn sample_jobs_audit() -> JobsAudit {
+    JobsAudit {
+        window: claudeclaw_api::jobs::AuditWindow {
+            from: at("2026-10-13T10:00:00Z"),
+            to: at("2026-10-14T10:00:00Z"),
+        },
+        jobs: vec![],
+        ok: true,
+        index: RunIndexState {
+            state: RunIndexPhase::Ready,
+            done: 0,
+            total: 0,
+            since: at("2026-10-13T08:00:00Z"),
+        },
+    }
+}
+
+fn future_fires(count: u32) -> Vec<DateTime<Utc>> {
+    (0..count)
+        .map(|offset| at("2026-10-15T09:00:00Z") + chrono::Duration::days(i64::from(offset)))
+        .collect()
+}
+
+/// One Turn the fake holds: its record, its history for the replay, and its live feed.
+#[derive(Clone)]
+struct LiveTurn {
+    principal: Option<String>,
+    record: watch::Sender<TurnRecord>,
+    history: Arc<Mutex<Vec<TurnEvent>>>,
+    live: broadcast::Sender<TurnEvent>,
+}
+
+/// The turns seam: it registers each Turn, records what the routes asked for, and lets a test
+/// publish events and finish the Turn on its own schedule.
+#[derive(Clone, Default)]
+pub struct FakeTurns {
+    create_calls: Arc<Mutex<Vec<TurnCreate>>>,
+    get_calls: Arc<Mutex<Vec<String>>>,
+    delay: Arc<Mutex<Option<Duration>>>,
+    finish_after: Arc<Mutex<Option<Duration>>>,
+    create_error: Arc<Mutex<Option<ApiError>>>,
+    turns: Arc<Mutex<BTreeMap<String, LiveTurn>>>,
+    created: Arc<Mutex<u32>>,
+}
+
+impl FakeTurns {
+    /// The Turns `turns.create` and `jobs.run` started, in order.
+    pub fn create_calls(&self) -> Vec<TurnCreate> {
+        self.create_calls.lock().unwrap().clone()
+    }
+
+    /// The turn ids `turns.get` and `turns.events` asked for.
+    pub fn get_calls(&self) -> Vec<String> {
+        self.get_calls.lock().unwrap().clone()
+    }
+
+    /// How long `create` itself takes, for the detach test (§1.9).
+    pub fn set_delay(&self, delay: Duration) {
+        *self.delay.lock().unwrap() = Some(delay);
+    }
+
+    /// How long after `create` the Turn finishes on its own.
+    pub fn set_finish_after(&self, delay: Duration) {
+        *self.finish_after.lock().unwrap() = Some(delay);
+    }
+
+    /// What the next `create` answers instead, e.g. `507 insufficient_storage`.
+    pub fn fail_create_with(&self, error: ApiError) {
+        *self.create_error.lock().unwrap() = Some(error);
+    }
+
+    /// The Turn's record as it stands.
+    pub fn record(&self, turn_id: &str) -> Option<TurnRecord> {
+        self.turns
+            .lock()
+            .unwrap()
+            .get(turn_id)
+            .map(|live| live.record.borrow().clone())
+    }
+
+    /// Whether the Turn reached `done` (§2.3).
+    pub fn finished(&self, turn_id: &str) -> bool {
+        self.record(turn_id)
+            .is_some_and(|record| record.state == TurnState::Done)
+    }
+
+    /// Publishes one event to the Turn's history and every open feed. An `outcome` finishes the
+    /// Turn, so calling it twice changes nothing (§2.3).
+    pub fn publish(&self, turn_id: &str, event: TurnEvent) {
+        let Some(live) = self.turns.lock().unwrap().get(turn_id).cloned() else {
+            return;
+        };
+        if let TurnEvent::Outcome { record } = &event {
+            let _ = live.record.send_replace(record.as_ref().clone());
+        }
+        live.history.lock().unwrap().push(event.clone());
+        let _ = live.live.send(event);
+    }
+
+    /// Ends the Turn with an `outcome`, which is what closes `turns.events` (§2.3).
+    pub fn finish(&self, turn_id: &str, outcome: TurnOutcome, text: &str) {
+        let Some(current) = self.record(turn_id) else {
+            return;
+        };
+        if current.state == TurnState::Done {
+            return;
+        }
+        let record = TurnRecord {
+            state: TurnState::Done,
+            outcome: Some(outcome),
+            text: Some(text.to_owned()),
+            finished_at: Some(crate::audit::now()),
+            duration_ms: Some(0),
+            ..current
+        };
+        self.publish(
+            turn_id,
+            TurnEvent::Outcome {
+                record: Box::new(record),
+            },
+        );
+    }
+
+    /// Registers a queued Turn and answers with the handle its feed replays from (§2.3).
+    fn register(&self, request: &TurnCreate) -> TurnHandle {
+        let mut created = self.created.lock().unwrap();
+        *created += 1;
+        let queue_position = *created;
+        let turn_id = format!("turn-{queue_position}");
+        self.create_calls.lock().unwrap().push(request.clone());
+        let record = TurnRecord {
+            turn_id: turn_id.clone(),
+            scope: request.scope.clone(),
+            origin: "api".into(),
+            principal: Some(request.principal.clone()),
+            purpose: TurnPurpose::Prompt,
+            state: TurnState::Queued,
+            outcome: None,
+            text: None,
+            compact: None,
+            session_id: None,
+            launcher: None,
+            run_ids: vec![],
+            created_at: crate::audit::now(),
+            finished_at: None,
+            duration_ms: None,
+        };
+        let (live, receiver) = broadcast::channel(64);
+        let (record, record_receiver) = watch::channel(record);
+        let history = Arc::new(Mutex::new(vec![TurnEvent::Queued {
+            position: queue_position,
+        }]));
+        // Subscribe before the snapshot, so an event is in exactly one of the two (§2.3).
+        let replay = history.lock().unwrap().clone();
+        self.turns.lock().unwrap().insert(
+            turn_id.clone(),
+            LiveTurn {
+                principal: Some(request.principal.clone()),
+                record,
+                history,
+                live,
+            },
+        );
+        TurnHandle {
+            turn_id: turn_id.clone(),
+            scope: request.scope.clone(),
+            queue_position,
+            feed: TurnFeed {
+                principal: Some(request.principal.clone()),
+                record: record_receiver,
+                replay,
+                live: receiver,
+            },
+        }
+    }
+}
+
+impl TurnsBackend for FakeTurns {
+    fn create(&self, request: TurnCreate) -> BackendFuture<'_, TurnHandle> {
+        let this = self.clone();
+        let delay = *self.delay.lock().unwrap();
+        let finish_after = *self.finish_after.lock().unwrap();
+        let error = self.create_error.lock().unwrap().clone();
+        Box::pin(async move {
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
+            if let Some(error) = error {
+                return Err(error);
+            }
+            let handle = this.register(&request);
+            if let Some(after) = finish_after {
+                let turn_id = handle.turn_id.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(after).await;
+                    this.finish(&turn_id, TurnOutcome::Ok, "the reply");
+                });
+            }
+            Ok(handle)
+        })
+    }
+
+    fn get(&self, turn_id: &str) -> BackendFuture<'_, TurnFeed> {
+        self.get_calls.lock().unwrap().push(turn_id.to_owned());
+        let found = self.turns.lock().unwrap().get(turn_id).cloned();
+        Box::pin(async move {
+            let Some(live) = found else {
+                return Err(ApiError::new(ErrorCode::NotFound, "no such turn"));
+            };
+            // Subscribe before the snapshot (§2.3): the receiver above only sees what follows.
+            let live_receiver = live.live.subscribe();
+            let replay = live.history.lock().unwrap().clone();
+            Ok(TurnFeed {
+                principal: live.principal.clone(),
+                record: live.record.subscribe(),
+                replay,
+                live: live_receiver,
+            })
+        })
+    }
+}
+
+/// What one write was given: the job's name and the revision its `If-Match` carried (§1.5).
+type JobWrite = (String, Option<Revision>);
+
+/// The jobs seam: it serves the samples above, records what the routes asked for, and refuses a
+/// stale revision the way the store does (§1.5).
+#[derive(Clone, Default)]
+pub struct FakeJobs {
+    list_calls: Arc<Mutex<Vec<JobListQuery>>>,
+    get_calls: Arc<Mutex<Vec<String>>>,
+    create_calls: Arc<Mutex<Vec<JobCreate>>>,
+    update_calls: Arc<Mutex<Vec<JobWrite>>>,
+    replace_calls: Arc<Mutex<Vec<(String, Revision)>>>,
+    delete_calls: Arc<Mutex<Vec<JobWrite>>>,
+    run_calls: Arc<Mutex<Vec<(String, String)>>>,
+    preview_calls: Arc<Mutex<Vec<JobPreviewRequest>>>,
+    check_calls: Arc<Mutex<Vec<JobCheckQuery>>>,
+    audit_calls: Arc<Mutex<Vec<JobAuditQuery>>>,
+    create_error: Arc<Mutex<Option<ApiError>>>,
+    pub turns: FakeTurns,
+}
+
+impl FakeJobs {
+    /// A jobs fake whose `run` starts Turns on the given turns fake (§2.4), so a test sees the
+    /// same Turn bus `turns.create` writes to.
+    pub fn new(turns: FakeTurns) -> Self {
+        FakeJobs {
+            turns,
+            ..FakeJobs::default()
+        }
+    }
+
+    /// The queries `jobs.list` served.
+    pub fn list_calls(&self) -> Vec<JobListQuery> {
+        self.list_calls.lock().unwrap().clone()
+    }
+
+    /// The job names `jobs.get` served.
+    pub fn get_calls(&self) -> Vec<String> {
+        self.get_calls.lock().unwrap().clone()
+    }
+
+    /// The `(job, revision)` pairs `jobs.update` and `jobs.delete` were given.
+    pub fn update_calls(&self) -> Vec<(String, Option<Revision>)> {
+        self.update_calls.lock().unwrap().clone()
+    }
+
+    /// The `(job, revision)` pairs `jobs.replace` was given.
+    pub fn replace_calls(&self) -> Vec<(String, Revision)> {
+        self.replace_calls.lock().unwrap().clone()
+    }
+
+    /// The `(job, revision)` pairs `jobs.delete` was given.
+    pub fn delete_calls(&self) -> Vec<(String, Option<Revision>)> {
+        self.delete_calls.lock().unwrap().clone()
+    }
+
+    /// The `(job, principal)` pairs `jobs.run` started.
+    pub fn run_calls(&self) -> Vec<(String, String)> {
+        self.run_calls.lock().unwrap().clone()
+    }
+
+    /// The requests `jobs.preview` served.
+    pub fn preview_calls(&self) -> Vec<JobPreviewRequest> {
+        self.preview_calls.lock().unwrap().clone()
+    }
+
+    /// The queries `jobs.check` and `jobs.audit` served.
+    pub fn check_calls(&self) -> Vec<JobCheckQuery> {
+        self.check_calls.lock().unwrap().clone()
+    }
+
+    pub fn audit_calls(&self) -> Vec<JobAuditQuery> {
+        self.audit_calls.lock().unwrap().clone()
+    }
+
+    /// What the next `jobs.create` answers instead, e.g. `422 job_invalid`.
+    pub fn fail_create_with(&self, error: ApiError) {
+        *self.create_error.lock().unwrap() = Some(error);
+    }
+}
+
+/// §1.5: a revision that is not the one the file now has is `409 revision_mismatch` with the
+/// current one in `details.current`; no `If-Match` at all is a patch over a fresh read. Boxed so
+/// the refusal fits the clippy `result_large_err` bound on a plain `fn`.
+fn check_revision(expected: Option<Revision>, current: Revision) -> Result<(), Box<ApiError>> {
+    match expected {
+        None => Ok(()),
+        Some(expected) if expected == current => Ok(()),
+        Some(_) => Err(Box::new(
+            ApiError::new(
+                ErrorCode::RevisionMismatch,
+                "the file changed on disk since it was read",
+            )
+            .with_detail("current", current.to_string()),
+        )),
+    }
+}
+
+impl JobsBackend for FakeJobs {
+    fn list(&self, query: JobListQuery) -> BackendFuture<'_, JobList> {
+        self.list_calls.lock().unwrap().push(query.clone());
+        let jobs = match query.agent {
+            None => vec![sample_job_summary()],
+            Some(_) => vec![],
+        };
+        Box::pin(async move { Ok(JobList { jobs }) })
+    }
+
+    fn get(&self, job: &str) -> BackendFuture<'_, JobDetail> {
+        let job = job.to_owned();
+        self.get_calls.lock().unwrap().push(job.clone());
+        Box::pin(async move {
+            if job == "daily-report" {
+                Ok(sample_job_detail())
+            } else {
+                Err(ApiError::new(ErrorCode::NotFound, "no such job"))
+            }
+        })
+    }
+
+    fn create(&self, create: JobCreate) -> BackendFuture<'_, JobDetail> {
+        self.create_calls.lock().unwrap().push(create.clone());
+        let error = self.create_error.lock().unwrap().clone();
+        let taken = create.name == "daily-report";
+        Box::pin(async move {
+            if let Some(error) = error {
+                return Err(error);
+            }
+            if taken {
+                return Err(ApiError::new(
+                    ErrorCode::JobExists,
+                    "a job with this name already exists",
+                ));
+            }
+            let mut detail = sample_job_detail();
+            detail.summary.name = create.name;
+            detail.summary.agent = create.agent;
+            Ok(detail)
+        })
+    }
+
+    fn update(
+        &self,
+        job: &str,
+        patch: JobPatch,
+        expected: Option<Revision>,
+    ) -> BackendFuture<'_, JobDetail> {
+        let job = job.to_owned();
+        self.update_calls
+            .lock()
+            .unwrap()
+            .push((job.clone(), expected));
+        let current = sample_job_summary().revision;
+        Box::pin(async move {
+            check_revision(expected, current).map_err(|failure| *failure)?;
+            let mut detail = sample_job_detail();
+            detail.summary.name = job;
+            if let Some(prompt) = patch.prompt {
+                detail.prompt = prompt;
+            }
+            Ok(detail)
+        })
+    }
+
+    fn replace(&self, job: &str, raw: JobRaw, expected: Revision) -> BackendFuture<'_, JobDetail> {
+        let job = job.to_owned();
+        self.replace_calls
+            .lock()
+            .unwrap()
+            .push((job.clone(), expected));
+        let current = sample_job_summary().revision;
+        Box::pin(async move {
+            check_revision(Some(expected), current).map_err(|failure| *failure)?;
+            let mut detail = sample_job_detail();
+            detail.summary.name = job;
+            detail.raw = raw.raw;
+            Ok(detail)
+        })
+    }
+
+    fn delete(&self, job: &str, expected: Option<Revision>) -> BackendFuture<'_, JobDeleted> {
+        self.delete_calls
+            .lock()
+            .unwrap()
+            .push((job.to_owned(), expected));
+        let current = sample_job_summary().revision;
+        Box::pin(async move {
+            check_revision(expected, current).map_err(|failure| *failure)?;
+            Ok(JobDeleted {
+                deleted: true,
+                sessions_removed: 1,
+                state_removed: true,
+            })
+        })
+    }
+
+    fn run(&self, job: &str, principal: String) -> BackendFuture<'_, TurnHandle> {
+        self.run_calls
+            .lock()
+            .unwrap()
+            .push((job.to_owned(), principal.clone()));
+        // The same Turn bus `turns.create` writes to (§2.4), so the Turn it starts reads back.
+        self.turns.create(TurnCreate {
+            scope: claudeclaw_api::Scope::Job(job.to_owned()),
+            text: format!("run {job}"),
+            attachments: Vec::new(),
+            notify: false,
+            principal,
+        })
+    }
+
+    fn preview(&self, request: JobPreviewRequest) -> BackendFuture<'_, JobPreview> {
+        let count = request.count;
+        self.preview_calls.lock().unwrap().push(request);
+        Box::pin(async move { Ok(sample_job_preview(count)) })
+    }
+
+    fn check(&self, query: JobCheckQuery) -> BackendFuture<'_, JobsCheck> {
+        self.check_calls.lock().unwrap().push(query.clone());
+        let check = match query.job.as_deref() {
+            None | Some("daily-report") => sample_jobs_check(query.next),
+            Some(_) => JobsCheck {
+                daemon_running: true,
+                jobs: vec![],
+            },
+        };
+        Box::pin(async move { Ok(check) })
+    }
+
+    fn audit(&self, query: JobAuditQuery) -> BackendFuture<'_, JobsAudit> {
+        self.audit_calls.lock().unwrap().push(query);
+        Box::pin(async { Ok(sample_jobs_audit()) })
+    }
+}
+
 /// An audit backend that keeps every entry it is handed. Its `audit.list` pages those entries
 /// newest first; like the store's audit log, a `before` is refused (`400 invalid_cursor`) because
 /// these pages always end.
@@ -803,6 +1346,8 @@ pub struct Harness {
     pub logs: FakeLogs,
     pub runs: FakeRuns,
     pub usage: FakeUsage,
+    pub turns: FakeTurns,
+    pub jobs: FakeJobs,
 }
 
 impl Harness {
@@ -815,6 +1360,9 @@ impl Harness {
         let logs = FakeLogs::default();
         let runs = FakeRuns::default();
         let usage = FakeUsage::default();
+        let turns = FakeTurns::default();
+        // `jobs.run` must reach the same Turn as `turns.create`, so one fake serves both.
+        let jobs = FakeJobs::new(turns.clone());
         // A real §2.12 service over an in-memory store, so the mounted routes are exercised
         // end to end.
         let clock = Arc::new(TestClock::at(9));
@@ -828,6 +1376,8 @@ impl Harness {
             .with_logs(logs.clone())
             .with_runs(runs.clone())
             .with_usage(usage.clone())
+            .with_turns(turns.clone())
+            .with_jobs(jobs.clone())
             .with_pairing(PairingService::for_test(
                 TestHooks::enabled(),
                 registry,
@@ -844,6 +1394,8 @@ impl Harness {
             logs,
             runs,
             usage,
+            turns,
+            jobs,
         }
     }
 
@@ -897,6 +1449,21 @@ pub fn json_request<T: serde::Serialize>(
         .body(Body::from(serde_json::to_vec(body).unwrap()))
         .unwrap();
     request.extensions_mut().insert(identity);
+    request
+}
+
+/// An unpaired-remote request with a bearer token and a JSON body, for the §2.3/§2.4 writes.
+pub fn bearer_json_request<T: serde::Serialize>(
+    method: Method,
+    uri: &str,
+    secret: &str,
+    body: &T,
+) -> Request<Body> {
+    let mut request = bearer_request(method, uri, secret);
+    request
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    *request.body_mut() = Body::from(serde_json::to_vec(body).unwrap());
     request
 }
 

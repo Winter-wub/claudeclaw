@@ -7,23 +7,25 @@
 use axum::Router;
 use axum::extract::Request;
 use axum::middleware::{self, Next};
-use axum::routing::{MethodRouter, delete, get, patch, post};
+use axum::routing::{MethodRouter, delete, get, patch, post, put};
 
 use claudeclaw_api::routes::{
     AUDIT_LIST, DAEMON_REEXEC, DAEMON_RESTART, DAEMON_STOP, DEVICES_LIST, DEVICES_REVOKE,
-    DEVICES_UPDATE, EVENTS_STREAM, HEALTH_GET, HOUSEKEEPING_RUN, LOGS_EXPORT, LOGS_STREAM,
-    LOGS_SUMMARY, LOGS_TAIL, OPENAPI_GET, PAIR, PAIRING_CANCEL, PAIRING_CREATE, PAIRING_GET,
-    RUNS_GET, RUNS_LIST, RUNS_LOG, Route, STATUS_GET, TOKENS_CREATE, TOKENS_LIST, TOKENS_REVOKE,
-    UPDATE_CHECK, UPDATE_GET, USAGE_GET,
+    DEVICES_UPDATE, EVENTS_STREAM, HEALTH_GET, HOUSEKEEPING_RUN, JOBS_AUDIT, JOBS_CHECK,
+    JOBS_CREATE, JOBS_DELETE, JOBS_GET, JOBS_LIST, JOBS_PREVIEW, JOBS_REPLACE, JOBS_RUN,
+    JOBS_UPDATE, LOGS_EXPORT, LOGS_STREAM, LOGS_SUMMARY, LOGS_TAIL, OPENAPI_GET, PAIR,
+    PAIRING_CANCEL, PAIRING_CREATE, PAIRING_GET, RUNS_GET, RUNS_LIST, RUNS_LOG, Route, STATUS_GET,
+    TOKENS_CREATE, TOKENS_LIST, TOKENS_REVOKE, TURNS_CREATE, TURNS_EVENTS, TURNS_GET, UPDATE_CHECK,
+    UPDATE_GET, USAGE_GET,
 };
 
 use crate::audit::AuditCtx;
 use crate::auth::{AuthCtx, PeerIdentity};
 use crate::deadline::DeadlineCtx;
-use crate::routes::{audit, daemon, events, logs, pairing, runs, usage};
+use crate::routes::{audit, daemon, events, jobs, logs, pairing, runs, turns, usage};
 use crate::state::AppState;
 
-/// The router: the §2.1, §2.2, §2.9, §2.10 and §2.12 routes, with their layers and state.
+/// The router: the §2.1–§2.4, §2.9, §2.10 and §2.12 routes, with their layers and state.
 pub fn router(state: AppState) -> Router {
     let router = Router::new();
     let router = mount(router, HEALTH_GET, get(daemon::health), &state);
@@ -36,6 +38,19 @@ pub fn router(state: AppState) -> Router {
     let router = mount(router, UPDATE_CHECK, post(daemon::check_update), &state);
     let router = mount(router, HOUSEKEEPING_RUN, post(daemon::housekeeping), &state);
     let router = mount(router, EVENTS_STREAM, get(events::stream), &state);
+    let router = mount(router, TURNS_CREATE, post(turns::create), &state);
+    let router = mount(router, TURNS_GET, get(turns::get), &state);
+    let router = mount(router, TURNS_EVENTS, get(turns::events), &state);
+    let router = mount(router, JOBS_LIST, get(jobs::list), &state);
+    let router = mount(router, JOBS_GET, get(jobs::get), &state);
+    let router = mount(router, JOBS_CREATE, post(jobs::create), &state);
+    let router = mount(router, JOBS_UPDATE, patch(jobs::update), &state);
+    let router = mount(router, JOBS_REPLACE, put(jobs::replace), &state);
+    let router = mount(router, JOBS_DELETE, delete(jobs::delete), &state);
+    let router = mount(router, JOBS_RUN, post(jobs::run), &state);
+    let router = mount(router, JOBS_PREVIEW, post(jobs::preview), &state);
+    let router = mount(router, JOBS_CHECK, get(jobs::check), &state);
+    let router = mount(router, JOBS_AUDIT, get(jobs::audit), &state);
     let router = mount(router, LOGS_TAIL, get(logs::tail), &state);
     let router = mount(router, LOGS_STREAM, get(logs::stream), &state);
     let router = mount(router, LOGS_SUMMARY, get(logs::summary), &state);

@@ -10,8 +10,8 @@ use axum::extract::FromRef;
 use crate::auth::TokenStore;
 use crate::backend::pairing::PairingBackend;
 use crate::backend::{
-    AuditBackend, DaemonBackend, EventsBackend, LogsBackend, MissingBackend, RunsBackend,
-    StatusBackend, UsageBackend,
+    AuditBackend, DaemonBackend, EventsBackend, JobsBackend, LogsBackend, MissingBackend,
+    RunsBackend, StatusBackend, TurnsBackend, UsageBackend,
 };
 
 /// Everything the router needs, erased behind `Arc<dyn …>`. Cheap to clone: the router clones it
@@ -24,6 +24,8 @@ pub struct AppState {
     pub audit: Arc<dyn AuditBackend>,
     pub tokens: Arc<dyn TokenStore>,
     pub pairing: Arc<dyn PairingBackend>,
+    pub turns: Arc<dyn TurnsBackend>,
+    pub jobs: Arc<dyn JobsBackend>,
     pub logs: Arc<dyn LogsBackend>,
     pub runs: Arc<dyn RunsBackend>,
     pub usage: Arc<dyn UsageBackend>,
@@ -44,6 +46,8 @@ pub struct AppStateBuilder {
     audit: Option<Arc<dyn AuditBackend>>,
     tokens: Option<Arc<dyn TokenStore>>,
     pairing: Option<Arc<dyn PairingBackend>>,
+    turns: Option<Arc<dyn TurnsBackend>>,
+    jobs: Option<Arc<dyn JobsBackend>>,
     logs: Option<Arc<dyn LogsBackend>>,
     runs: Option<Arc<dyn RunsBackend>>,
     usage: Option<Arc<dyn UsageBackend>>,
@@ -80,6 +84,16 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_turns(mut self, backend: impl TurnsBackend) -> Self {
+        self.turns = Some(Arc::new(backend));
+        self
+    }
+
+    pub fn with_jobs(mut self, backend: impl JobsBackend) -> Self {
+        self.jobs = Some(Arc::new(backend));
+        self
+    }
+
     pub fn with_logs(mut self, backend: impl LogsBackend) -> Self {
         self.logs = Some(Arc::new(backend));
         self
@@ -103,6 +117,8 @@ impl AppStateBuilder {
             audit: self.audit.unwrap_or_else(missing_audit),
             tokens: self.tokens.unwrap_or_else(missing_tokens),
             pairing: self.pairing.unwrap_or_else(missing_pairing),
+            turns: self.turns.unwrap_or_else(missing_turns),
+            jobs: self.jobs.unwrap_or_else(missing_jobs),
             logs: self.logs.unwrap_or_else(missing_logs),
             runs: self.runs.unwrap_or_else(missing_runs),
             usage: self.usage.unwrap_or_else(missing_usage),
@@ -111,6 +127,14 @@ impl AppStateBuilder {
 }
 
 fn missing_status() -> Arc<dyn StatusBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_turns() -> Arc<dyn TurnsBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_jobs() -> Arc<dyn JobsBackend> {
     Arc::new(MissingBackend::new())
 }
 
