@@ -14,12 +14,14 @@ use axum::routing::{MethodRouter, delete, get, patch, post, put};
 
 use claudeclaw_api::routes::{
     AUDIT_LIST, DAEMON_REEXEC, DAEMON_RESTART, DAEMON_STOP, DEVICES_LIST, DEVICES_REVOKE,
-    DEVICES_UPDATE, EVENTS_STREAM, HEALTH_GET, HOUSEKEEPING_RUN, IMPORT_APPLY, IMPORT_GET,
-    IMPORT_PLAN, JOBS_AUDIT, JOBS_CHECK, JOBS_CREATE, JOBS_DELETE, JOBS_GET, JOBS_LIST,
-    JOBS_PREVIEW, JOBS_REPLACE, JOBS_RUN, JOBS_UPDATE, LOGS_EXPORT, LOGS_STREAM, LOGS_SUMMARY,
-    LOGS_TAIL, OPENAPI_GET, PAIR, PAIRING_CANCEL, PAIRING_CREATE, PAIRING_GET, RUNS_GET, RUNS_LIST,
-    RUNS_LOG, Route, SETTINGS_GET, SETTINGS_UPDATE, STATUS_GET, TOKENS_CREATE, TOKENS_LIST,
-    TOKENS_REVOKE, TURNS_CREATE, TURNS_EVENTS, TURNS_GET, UPDATE_CHECK, UPDATE_GET, USAGE_GET,
+    DEVICES_UPDATE, DISCORD_AVAILABLE, DISCORD_CHANNELS_REMOVE, DISCORD_CHANNELS_UPDATE,
+    DISCORD_FIRE, DISCORD_GET, DISCORD_HIRE, EVENTS_STREAM, HEALTH_GET, HOUSEKEEPING_RUN,
+    IMPORT_APPLY, IMPORT_GET, IMPORT_PLAN, JOBS_AUDIT, JOBS_CHECK, JOBS_CREATE, JOBS_DELETE,
+    JOBS_GET, JOBS_LIST, JOBS_PREVIEW, JOBS_REPLACE, JOBS_RUN, JOBS_UPDATE, LOGS_EXPORT,
+    LOGS_STREAM, LOGS_SUMMARY, LOGS_TAIL, OPENAPI_GET, PAIR, PAIRING_CANCEL, PAIRING_CREATE,
+    PAIRING_GET, RUNS_GET, RUNS_LIST, RUNS_LOG, Route, SETTINGS_GET, SETTINGS_UPDATE, STATUS_GET,
+    TOKENS_CREATE, TOKENS_LIST, TOKENS_REVOKE, TURNS_CREATE, TURNS_EVENTS, TURNS_GET, UPDATE_CHECK,
+    UPDATE_GET, USAGE_GET,
 };
 
 use crate::audit::AuditCtx;
@@ -27,11 +29,11 @@ use crate::auth::{AuthCtx, PeerIdentity};
 use crate::deadline::DeadlineCtx;
 use crate::error::BodyLimit;
 use crate::routes::{
-    audit, daemon, events, import, jobs, logs, pairing, runs, settings, turns, usage,
+    audit, daemon, discord, events, import, jobs, logs, pairing, runs, settings, turns, usage,
 };
 use crate::state::AppState;
 
-/// The router: the §2.1–§2.4, §2.6, §2.9–§2.12 routes, with their layers and state.
+/// The router: the §2.1–§2.4, §2.6, §2.7, §2.9–§2.12 routes, with their layers and state.
 pub fn router(state: AppState) -> Router {
     let router = Router::new();
     let router = mount(router, HEALTH_GET, get(daemon::health), &state);
@@ -71,6 +73,22 @@ pub fn router(state: AppState) -> Router {
     let router = mount(router, IMPORT_GET, get(import::get), &state);
     let router = mount(router, IMPORT_PLAN, get(import::plan), &state);
     let router = mount(router, IMPORT_APPLY, post(import::apply), &state);
+    let router = mount(router, DISCORD_GET, get(discord::get), &state);
+    let router = mount(router, DISCORD_AVAILABLE, get(discord::available), &state);
+    let router = mount(
+        router,
+        DISCORD_CHANNELS_UPDATE,
+        put(discord::update_channel),
+        &state,
+    );
+    let router = mount(
+        router,
+        DISCORD_CHANNELS_REMOVE,
+        delete(discord::remove_channel),
+        &state,
+    );
+    let router = mount(router, DISCORD_HIRE, post(discord::hire), &state);
+    let router = mount(router, DISCORD_FIRE, post(discord::fire), &state);
     let router = mount(
         router,
         PAIRING_CREATE,

@@ -100,6 +100,7 @@ error_codes! {
         PlanChanged,
         UseJobFrontmatter,
         ExportBusy,
+        AdapterUnavailable,
     ],
     410 => [PairingExpired],
     413 => [PayloadTooLarge],
@@ -167,11 +168,16 @@ mod tests {
             json!("use_job_frontmatter")
         );
         assert_eq!(ErrorCode::InsufficientStorage.status(), 507);
+        assert_eq!(
+            serde_json::to_value(ErrorCode::AdapterUnavailable).unwrap(),
+            json!("adapter_unavailable")
+        );
+        assert_eq!(ErrorCode::AdapterUnavailable.status(), 409);
     }
 
     #[test]
     fn the_catalogue_round_trips_and_leaves_unknown_out() {
-        assert_eq!(ErrorCode::KNOWN.len(), 36);
+        assert_eq!(ErrorCode::KNOWN.len(), 37);
         for &code in ErrorCode::KNOWN {
             let name = serde_json::to_value(code).unwrap();
             assert_ne!(name, "unknown");

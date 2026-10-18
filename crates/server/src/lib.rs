@@ -28,10 +28,16 @@ pub mod tokens;
 pub mod testing;
 
 #[cfg(test)]
+mod testing_discord;
+
+#[cfg(test)]
 mod testing_settings_import;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_discord;
 
 #[cfg(test)]
 mod tests_settings_import;

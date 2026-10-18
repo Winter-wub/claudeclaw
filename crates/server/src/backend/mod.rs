@@ -7,7 +7,7 @@
 //! panicking.
 //!
 //! The traits live one per submodule — [`status`], [`daemon`], [`audit`], [`turns`], [`jobs`],
-//! [`settings`], [`import`], [`logs`], [`runs`] and [`usage`] — and are re-exported here, so callers use
+//! [`settings`], [`discord`], [`import`], [`logs`], [`runs`] and [`usage`] — and are re-exported here, so callers use
 //! `backend::StatusBackend` regardless of where it is defined.
 
 use std::sync::Arc;
@@ -16,6 +16,10 @@ use futures_util::future::BoxFuture;
 use tokio::sync::broadcast;
 
 use claudeclaw_api::DaemonEvent;
+use claudeclaw_api::discord::{
+    AvailableChannelList, DiscordChannel, DiscordChannelPatch, DiscordChannelRemoved,
+    DiscordOverview, FireResult, HireResult,
+};
 use claudeclaw_api::error::{ApiError, ErrorCode};
 use claudeclaw_api::export::LogExport;
 use claudeclaw_api::import::{ImportApplyRequest, ImportPlan, ImportRecord, ImportResult};
@@ -37,6 +41,7 @@ use crate::auth::{TokenRecord, TokenStore};
 
 pub mod audit;
 pub mod daemon;
+pub mod discord;
 pub mod import;
 pub mod jobs;
 pub mod logs;
@@ -49,6 +54,7 @@ pub mod usage;
 
 pub use audit::{AuditBackend, AuditError, AuditFuture, AuditQuery};
 pub use daemon::{DaemonBackend, EventsBackend};
+pub use discord::DiscordBackend;
 pub use import::{ImportBackend, ImportPlanQuery};
 pub use jobs::{JobAuditQuery, JobCheckQuery, JobListQuery, JobsBackend};
 pub use logs::{
@@ -279,6 +285,36 @@ impl ImportBackend for MissingBackend {
 
     fn apply(&self, _request: ImportApplyRequest) -> BackendFuture<'_, ImportResult> {
         Box::pin(async { Err(missing("import")) })
+    }
+}
+
+impl DiscordBackend for MissingBackend {
+    fn get(&self) -> BackendFuture<'_, DiscordOverview> {
+        Box::pin(async { Err(missing("discord")) })
+    }
+
+    fn available(&self) -> BackendFuture<'_, AvailableChannelList> {
+        Box::pin(async { Err(missing("discord")) })
+    }
+
+    fn update(
+        &self,
+        _channel_id: &str,
+        _patch: DiscordChannelPatch,
+    ) -> BackendFuture<'_, DiscordChannel> {
+        Box::pin(async { Err(missing("discord")) })
+    }
+
+    fn remove(&self, _channel_id: &str) -> BackendFuture<'_, DiscordChannelRemoved> {
+        Box::pin(async { Err(missing("discord")) })
+    }
+
+    fn hire(&self, _channel_id: &str, _names: Vec<String>) -> BackendFuture<'_, HireResult> {
+        Box::pin(async { Err(missing("discord")) })
+    }
+
+    fn fire(&self, _thread_id: &str) -> BackendFuture<'_, FireResult> {
+        Box::pin(async { Err(missing("discord")) })
     }
 }
 
