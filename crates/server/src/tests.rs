@@ -447,6 +447,596 @@ mod pairing {
     }
 }
 
+mod logs {
+    use claudeclaw_api::error::{ApiError, ErrorCode};
+    use claudeclaw_api::logs::LogLevel;
+
+    use crate::backend::{LogCursor, LogSource, SequencedLog};
+
+    use super::*;
+
+    /// A `logs.stream` response, optionally carrying the `Last-Event-ID` a client resumes with.
+    async fn stream_from(
+        harness: &Harness,
+        uri: &str,
+        last_event_id: Option<&str>,
+    ) -> axum::response::Response {
+        let mut request = request(Method::GET, uri, LOCAL);
+        if let Some(id) = last_event_id {
+            request.headers_mut().insert(
+                header::HeaderName::from_static("last-event-id"),
+                id.parse().expect("a header value"),
+            );
+        }
+        call(&harness.router(), request).await
+    }
+
+    /// The replay a stream asks for: one line at `seq`, ready to publish.
+    fn replayed(seq: u64) -> SequencedLog {
+        SequencedLog {
+            seq,
+            entry: sample_log_line(seq),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_merged_daemon_source_hands_out_a_cursor_it_takes_back() {
+        let harness = Harness::new();
+        let response = call(
+            &harness.router(),
+            request(
+                Method::GET,
+                "/v1/logs/daemon?limit=50&min_level=INFO&event=run.&scope=job:example&q=start",
+                LOCAL,
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["lines"].as_array().unwrap().len(), 1);
+
+        let calls = harness.logs.tail_calls();
+        assert_eq!(calls.len(), 1);
+        let (source, query) = &calls[0];
+        assert_eq!(*source, LogSource::Daemon, "the merge is server-side");
+        assert_eq!(query.limit, 50);
+        assert_eq!(query.min_level, Some(LogLevel::Info));
+        assert_eq!(query.event.as_deref(), Some("run."));
+        assert_eq!(
+            query.scope.as_ref().map(ToString::to_string).as_deref(),
+            Some("job:example")
+        );
+        assert_eq!(query.q.as_deref(), Some("start"));
+
+        // The merged cursor comes back to the source that handed it out, and to no other.
+        let merged = "2026-10-13:4096%7C2026-10-12:512";
+        let accepted = call(
+            &harness.router(),
+            request(
+                Method::GET,
+                &format!("/v1/logs/daemon?before={merged}"),
+                LOCAL,
+            ),
+        )
+        .await;
+        assert_eq!(accepted.status(), StatusCode::OK);
+        let cursor = LogCursor::parse(LogSource::Daemon, "2026-10-13:4096|2026-10-12:512").unwrap();
+        assert_eq!(harness.logs.tail_calls()[1].1.before, Some(cursor));
+
+        let refused = call(
+            &harness.router(),
+            request(
+                Method::GET,
+                &format!("/v1/logs/worker?before={merged}"),
+                LOCAL,
+            ),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(code(&body_json(refused).await), "invalid_cursor");
+    }
+
+    #[tokio::test]
+    async fn a_logs_read_token_reads_logs_runs_and_audit_and_a_plain_one_does_not() {
+        let harness = Harness::new();
+        harness
+            .tokens
+            .add("plain", "tok-1", vec![TokenPermission::StatusRead], false);
+        harness
+            .tokens
+            .add("reader", "tok-2", vec![TokenPermission::LogsRead], false);
+
+        for uri in ["/v1/logs/worker", "/v1/runs", "/v1/audit"] {
+            let refused = call(&harness.router(), bearer_request(Method::GET, uri, "plain")).await;
+            assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{uri}");
+            let body = body_json(refused).await;
+            assert_eq!(code(&body), "missing_permission", "{uri}");
+            assert_eq!(required(&body), "logs:read", "{uri}");
+
+            let allowed = call(
+                &harness.router(),
+                bearer_request(Method::GET, uri, "reader"),
+            )
+            .await;
+            assert!(allowed.status().is_success(), "{uri}: {}", allowed.status());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_query_the_logs_routes_refuse_is_a_400() {
+        let harness = Harness::new();
+        let refusals = [
+            ("/v1/logs/gpu?limit=10", "bad_request"),
+            ("/v1/logs/worker?limit=0", "bad_request"),
+            ("/v1/logs/worker?limit=1001", "bad_request"),
+            ("/v1/logs/worker?min_level=notice", "bad_request"),
+            ("/v1/logs/worker?scope=nope", "invalid_scope"),
+            ("/v1/logs/worker?before=junk", "invalid_cursor"),
+            ("/v1/logs/daemon?before=2026-10-13:4096", "invalid_cursor"),
+            ("/v1/logs/worker/stream?backfill=many", "bad_request"),
+            ("/v1/logs/export?map=yes", "bad_request"),
+            ("/v1/logs/export?since=yesterday", "bad_request"),
+            ("/v1/logs/export?max_bytes=lots", "bad_request"),
+        ];
+        for (uri, expected) in refusals {
+            let response = call(&harness.router(), request(Method::GET, uri, LOCAL)).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+            assert_eq!(code(&body_json(response).await), expected, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_log_summary_serves_the_badges() {
+        let harness = Harness::new();
+        let response = call(
+            &harness.router(),
+            request(Method::GET, "/v1/logs/summary", LOCAL),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["level"], "info");
+        assert_eq!(body["since_boot"]["warn"], 1);
+        assert_eq!(body["disk"]["daemon_bytes"], 1024);
+    }
+
+    #[tokio::test]
+    async fn the_bug_report_export_is_served_and_never_audited() {
+        let harness = Harness::new();
+        let response = call(
+            &harness.router(),
+            request(
+                Method::GET,
+                "/v1/logs/export?map=true&max_bytes=1024&app_version=1.2.3",
+                LOCAL,
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["manifest"]["format"], "claudeclaw-export/1");
+
+        let calls = harness.logs.export_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].map, "the caller asked for the map");
+        assert_eq!(calls[0].max_bytes, Some(1024));
+        assert_eq!(calls[0].app_version.as_deref(), Some("1.2.3"));
+        assert!(
+            harness.audit.is_empty(),
+            "logs.export is a GET and is never audited"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_export_is_409_and_a_leak_fails_closed_500() {
+        let harness = Harness::new();
+        harness.logs.fail_export_with(ApiError::new(
+            ErrorCode::ExportBusy,
+            "an export is already running",
+        ));
+        let busy = call(
+            &harness.router(),
+            request(Method::GET, "/v1/logs/export", LOCAL),
+        )
+        .await;
+        assert_eq!(busy.status(), StatusCode::CONFLICT);
+        assert_eq!(code(&body_json(busy).await), "export_busy");
+
+        harness.logs.fail_export_with(ApiError::new(
+            ErrorCode::ExportLeak,
+            "the scrubber left a secret behind",
+        ));
+        let leak = call(
+            &harness.router(),
+            request(Method::GET, "/v1/logs/export", LOCAL),
+        )
+        .await;
+        assert_eq!(leak.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(code(&body_json(leak).await), "export_leak");
+    }
+
+    #[tokio::test]
+    async fn a_log_stream_opens_with_hello_then_carries_lines_with_their_ids() {
+        let harness = Harness::new();
+        harness.logs.set_backfill(vec![replayed(6)]);
+        let response = stream_from(&harness, "/v1/logs/worker/stream?backfill=2", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            content_type.starts_with("text/event-stream"),
+            "{content_type}"
+        );
+
+        let mut body = response.into_body().into_data_stream();
+        let hello = next_frame(&mut body).await;
+        assert!(hello.contains("event: hello"), "{hello}");
+        assert!(hello.contains("\"last_seq\""), "{hello}");
+
+        let replay = next_frame(&mut body).await;
+        assert!(replay.contains("event: log"), "{replay}");
+        assert!(replay.contains("id: boot-1:6"), "{replay}");
+
+        harness.logs.publish(7);
+        let live = next_frame(&mut body).await;
+        assert!(live.contains("event: log"), "{live}");
+        assert!(live.contains("id: boot-1:7"), "{live}");
+
+        let calls = harness.logs.stream_calls();
+        assert_eq!(calls[0].0, LogSource::Worker);
+        assert_eq!(calls[0].1.backfill, 2, "?backfill= lines to replay");
+    }
+
+    #[tokio::test]
+    async fn a_last_event_id_resumes_in_its_own_boot_and_reports_one_it_cannot() {
+        // Same boot: the replay continues after the last id the client saw.
+        let harness = Harness::new();
+        harness.logs.set_backfill(vec![replayed(6)]);
+        let response = stream_from(&harness, "/v1/logs/worker/stream", Some("boot-1:5")).await;
+        let mut body = response.into_body().into_data_stream();
+        let hello = next_frame(&mut body).await;
+        assert!(hello.contains("event: hello"), "{hello}");
+        let replay = next_frame(&mut body).await;
+        assert!(replay.contains("event: log"), "{replay}");
+        assert!(replay.contains("id: boot-1:6"), "{replay}");
+        assert_eq!(harness.logs.stream_calls()[0].1.resume, Some(5));
+
+        // Another boot: a `restart` gap says the client starts over (§1.6).
+        let harness = Harness::new();
+        let response = stream_from(&harness, "/v1/logs/worker/stream", Some("boot-0:5")).await;
+        let mut body = response.into_body().into_data_stream();
+        let hello = next_frame(&mut body).await;
+        assert!(hello.contains("event: hello"), "{hello}");
+        let gap = next_frame(&mut body).await;
+        assert!(gap.contains("event: gap"), "{gap}");
+        assert!(gap.contains("\"restart\""), "{gap}");
+
+        // A header that is not `<boot_id>:<seq>` still says so, rather than skipping silently.
+        let harness = Harness::new();
+        let response = stream_from(&harness, "/v1/logs/worker/stream", Some("junk")).await;
+        let mut body = response.into_body().into_data_stream();
+        let hello = next_frame(&mut body).await;
+        assert!(hello.contains("event: hello"), "{hello}");
+        let gap = next_frame(&mut body).await;
+        assert!(gap.contains("event: gap"), "{gap}");
+        assert!(gap.contains("\"evicted\""), "{gap}");
+        assert_eq!(
+            harness.logs.stream_calls()[0].1.resume,
+            None,
+            "there was no resume point to pass on"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_that_falls_behind_the_ring_gets_a_gap_frame() {
+        let harness = Harness::new();
+        let response = stream_from(&harness, "/v1/logs/worker/stream", None).await;
+        let mut body = response.into_body().into_data_stream();
+        let hello = next_frame(&mut body).await;
+        assert!(hello.contains("event: hello"), "{hello}");
+
+        for seq in 1..=20 {
+            harness.logs.publish(seq);
+        }
+        let gap = next_frame(&mut body).await;
+        assert!(gap.contains("event: gap"), "{gap}");
+        assert!(gap.contains("\"lagged\""), "{gap}");
+        assert!(gap.contains("\"missed\""), "{gap}");
+
+        let line = next_frame(&mut body).await;
+        assert!(line.contains("event: log"), "{line}");
+    }
+}
+
+mod runs {
+    use claudeclaw_api::runs::{RunOrigin, RunOutcome};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn a_run_page_carries_the_index_progress() {
+        let harness = Harness::new();
+        let response = call(
+            &harness.router(),
+            request(
+                Method::GET,
+                "/v1/runs?limit=10&origin=scheduler&job=daily-report",
+                LOCAL,
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["runs"][0]["run_id"], "run-1");
+        assert_eq!(
+            body["index"]["state"], "ready",
+            "the page labels partial history"
+        );
+
+        let calls = harness.runs.list_calls();
+        assert_eq!(calls[0].limit, 10);
+        assert_eq!(calls[0].origin, Some(RunOrigin::Scheduler));
+        assert_eq!(calls[0].job.as_deref(), Some("daily-report"));
+        assert!(calls[0].before.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_run_record_and_its_log_as_markdown() {
+        let harness = Harness::new();
+        let response = call(
+            &harness.router(),
+            request(Method::GET, "/v1/runs/run-1", LOCAL),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["run_id"], "run-1");
+        assert_eq!(harness.runs.get_calls(), ["run-1"]);
+
+        let response = call(
+            &harness.router(),
+            request(Method::GET, "/v1/runs/run-1/log?tail_lines=50", LOCAL),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(content_type.starts_with("text/markdown"), "{content_type}");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("The Run log"), "{text}");
+        assert_eq!(harness.runs.log_calls(), [Some(50)]);
+
+        let response = call(
+            &harness.router(),
+            request(Method::GET, "/v1/runs/run-1/log", LOCAL),
+        )
+        .await;
+        assert!(response.status().is_success());
+        assert_eq!(
+            harness.runs.log_calls(),
+            [Some(50), None],
+            "tail_lines is optional"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_run_log_needs_runs_content_as_well_as_logs_read() {
+        let harness = Harness::new();
+        harness
+            .tokens
+            .add("logs", "tok-1", vec![TokenPermission::LogsRead], false);
+
+        let refused = call(
+            &harness.router(),
+            bearer_request(Method::GET, "/v1/runs/run-1/log", "logs"),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let body = body_json(refused).await;
+        assert_eq!(code(&body), "missing_permission");
+        assert_eq!(required(&body), "runs:content");
+
+        let listed = call(
+            &harness.router(),
+            bearer_request(Method::GET, "/v1/runs", "logs"),
+        )
+        .await;
+        assert!(listed.status().is_success(), "runs.list is logs:read alone");
+    }
+
+    #[tokio::test]
+    async fn a_query_the_runs_routes_refuse_is_a_400() {
+        let harness = Harness::new();
+        let refusals = [
+            ("/v1/runs?limit=0", "bad_request"),
+            ("/v1/runs?origin=cloud", "bad_request"),
+            ("/v1/runs?outcome=maybe", "bad_request"),
+            ("/v1/runs?scope=nope", "invalid_scope"),
+            ("/v1/runs?before=2026-10:42", "invalid_cursor"),
+            ("/v1/runs/run-1/log?tail_lines=0", "bad_request"),
+        ];
+        for (uri, expected) in refusals {
+            let response = call(&harness.router(), request(Method::GET, uri, LOCAL)).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+            assert_eq!(code(&body_json(response).await), expected, "{uri}");
+        }
+
+        // `unknown` is a real outcome the set spells out; a word it does not, is not.
+        let accepted = call(
+            &harness.router(),
+            request(Method::GET, "/v1/runs?outcome=unknown", LOCAL),
+        )
+        .await;
+        assert_eq!(accepted.status(), StatusCode::OK);
+        assert_eq!(
+            harness.runs.list_calls().last().unwrap().outcome,
+            Some(RunOutcome::Unknown)
+        );
+    }
+}
+
+mod audit_list {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_audit_page_lists_what_the_layers_recorded_newest_first() {
+        let harness = Harness::new();
+        for action in ["stop", "restart"] {
+            let response = call(
+                &harness.router(),
+                request(Method::POST, &format!("/v1/daemon/{action}"), LOCAL),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::ACCEPTED, "{action}");
+        }
+
+        let response = call(
+            &harness.router(),
+            request(Method::GET, "/v1/audit?limit=10", LOCAL),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(entries[0]["action"], "daemon.restart", "newest first");
+        assert_eq!(entries[1]["action"], "daemon.stop");
+        assert_eq!(entries[0]["principal"], "local");
+        assert_eq!(harness.audit.list_calls()[0].limit, 10);
+        assert_eq!(harness.audit.len(), 2, "the GET added no entry");
+    }
+
+    #[tokio::test]
+    async fn an_audit_page_refuses_a_cursor_it_did_not_hand_out() {
+        let harness = Harness::new();
+        let response = call(
+            &harness.router(),
+            request(Method::GET, "/v1/audit?before=2026-10:42", LOCAL),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(code(&body_json(response).await), "invalid_cursor");
+
+        let response = call(
+            &harness.router(),
+            request(Method::GET, "/v1/audit?limit=0", LOCAL),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(code(&body_json(response).await), "bad_request");
+    }
+}
+
+mod usage {
+    use claudeclaw_api::usage::UsageGroup;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn usage_get_serves_the_window_and_the_group_it_was_asked_for() {
+        let harness = Harness::new();
+        let response = call(
+            &harness.router(),
+            request(
+                Method::GET,
+                "/v1/usage?from=2026-10-01&to=2026-10-02&tz=Asia/Bangkok&group_by=job",
+                LOCAL,
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["totals"]["runs"], 1);
+
+        let calls = harness.usage.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tz, "Asia/Bangkok");
+        assert_eq!(calls[0].group_by, UsageGroup::Job);
+        assert_eq!(calls[0].from.to_string(), "2026-10-01");
+        assert_eq!(calls[0].to.to_string(), "2026-10-02");
+
+        // A caller that leaves `group_by` out gets the first group §2.10 lists.
+        let response = call(
+            &harness.router(),
+            request(
+                Method::GET,
+                "/v1/usage?from=2026-10-01&to=2026-10-02&tz=UTC",
+                LOCAL,
+            ),
+        )
+        .await;
+        assert!(response.status().is_success());
+        assert_eq!(harness.usage.calls()[1].group_by, UsageGroup::Scope);
+    }
+
+    #[tokio::test]
+    async fn usage_get_is_admin_only() {
+        let harness = Harness::new();
+        harness
+            .tokens
+            .add("reader", "tok-1", vec![TokenPermission::LogsRead], false);
+        let response = call(
+            &harness.router(),
+            bearer_request(
+                Method::GET,
+                "/v1/usage?from=2026-10-01&to=2026-10-02&tz=UTC",
+                "reader",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = body_json(response).await;
+        assert_eq!(code(&body), "missing_permission");
+        assert_eq!(required(&body), "admin");
+        assert!(
+            harness.usage.calls().is_empty(),
+            "the gate runs before the handler"
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_get_wants_a_whole_window_and_a_zone_name() {
+        let harness = Harness::new();
+        let refusals = [
+            ("/v1/usage?to=2026-10-02&tz=UTC", "from"),
+            ("/v1/usage?from=2026-10-01&tz=UTC", "to"),
+            ("/v1/usage?from=2026-10-01&to=2026-10-02", "tz"),
+            ("/v1/usage?from=yesterday&to=2026-10-02&tz=UTC", "from"),
+            ("/v1/usage?from=2026-10-02&to=2026-10-01&tz=UTC", "from"),
+            (
+                "/v1/usage?from=2026-10-01&to=2026-10-02&tz=Europe/London/../etc",
+                "tz",
+            ),
+            (
+                "/v1/usage?from=2026-10-01&to=2026-10-02&tz=UTC&group_by=nonsense",
+                "group_by",
+            ),
+        ];
+        for (uri, mentioned) in refusals {
+            let response = call(&harness.router(), request(Method::GET, uri, LOCAL)).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+            let body = body_json(response).await;
+            assert_eq!(code(&body), "bad_request", "{uri}");
+            let message = body["error"]["message"].as_str().unwrap_or_default();
+            assert!(message.contains(mentioned), "{uri}: {message}");
+        }
+        assert!(
+            harness.usage.calls().is_empty(),
+            "nothing reached the backend"
+        );
+    }
+}
+
 #[cfg(unix)]
 mod listener {
     use std::path::{Path, PathBuf};

@@ -5,6 +5,7 @@
 
 #![cfg(test)]
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -12,25 +13,46 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use axum::response::Response;
+use chrono::{DateTime, Utc};
 use tokio::sync::broadcast;
 
 use claudeclaw_api::DaemonEvent;
-use claudeclaw_api::logs::AuditEntry;
+use claudeclaw_api::error::{ApiError, ErrorCode};
+use claudeclaw_api::events::{LogStreamHello, StreamGap};
+use claudeclaw_api::export::{
+    ExportManifest, ExportTrimmed, ExportVersions, ExportWindow, LogExport,
+};
+use claudeclaw_api::logs::{
+    AuditEntry, AuditPage, DiskHousekeeping, LogCounts, LogDisk, LogEntry, LogPage, LogSummary,
+};
 use claudeclaw_api::permission::TokenPermission;
+use claudeclaw_api::runs::{
+    CostBasis, CostStatus, RunIndexPhase, RunIndexState, RunModelUsage, RunOrigin, RunOutcome,
+    RunPage, RunPurpose, RunRecord, RunSession, RunSettle, SettleOutcome,
+};
 use claudeclaw_api::status::{
     DaemonHealth, DaemonStatus, Health, HealthState, HeartbeatStatus, HousekeepingReport,
     HousekeepingRequest, JobsStatus, LaunchersStatus, ReexecAccepted, ReexecRequest, RemoteStatus,
     RestartAccepted, StatusSource, StatusVersion, StopAccepted, UpdateInfo, UpdateStatus,
 };
 use claudeclaw_api::supervisor::DaemonReachability;
+use claudeclaw_api::usage::{
+    CostTrust, UsageCoverage, UsageDay, UsageGroup, UsageReport, UsageRow, UsageTotals,
+};
 
 use crate::auth::{Principal, TokenRecord, TokenStore, hash_token};
 use crate::backend::pairing::{PairingService, TestClock, TestHooks};
 use crate::backend::{
-    AuditBackend, AuditFuture, BackendFuture, DaemonBackend, EventsBackend, StatusBackend,
+    AuditBackend, AuditFuture, AuditQuery, BackendFuture, DaemonBackend, EventsBackend,
+    LogExportQuery, LogSource, LogStream, LogStreamQuery, LogTailQuery, LogsBackend, RunQuery,
+    RunsBackend, SequencedLog, StatusBackend, UsageBackend, UsageQuery,
 };
 use crate::pairing::PairingRegistry;
 use crate::state::AppState;
+
+fn at(s: &str) -> DateTime<Utc> {
+    s.parse().unwrap()
+}
 
 /// The sample `Health` the read routes return.
 pub fn sample_health(state: HealthState) -> Health {
@@ -260,10 +282,421 @@ impl EventsBackend for FakeEvents {
     }
 }
 
-/// An audit backend that keeps every entry it is handed.
+/// One parsed Daemon-log line, for the logs fakes.
+pub fn sample_log_line(seq: u64) -> LogEntry {
+    let text = format!(
+        r#"{{"seq":{seq},"timestamp":"2026-10-13T08:30:27.512585Z","level":"INFO","target":"claudeclaw_core::conversations","event":"run.start","message":"run started","span":{{"run_id":"run-1","scope":"job:example"}},"fields":{{"attempt":1}}}}"#
+    );
+    serde_json::from_str(&text).expect("a log line")
+}
+
+/// A one-line page with a cursor, so `logs.tail` has something to serve.
+pub fn sample_log_page() -> LogPage {
+    LogPage {
+        lines: vec![sample_log_line(1)],
+        next: Some("2026-10-13:128".into()),
+        scan_truncated: false,
+    }
+}
+
+/// The badges `logs.summary` serves.
+pub fn sample_log_summary() -> LogSummary {
+    LogSummary {
+        level: "info".into(),
+        since_boot: LogCounts { error: 0, warn: 1 },
+        dropped_lines: 0,
+        capped_today: false,
+        disk: LogDisk {
+            daemon_bytes: 1024,
+            run_log_files: 2,
+            run_log_bytes: 2048,
+            audit_bytes: 128,
+            inbox_files: 0,
+            inbox_bytes: 0,
+            inbox_foreign: 0,
+            run_index_bytes: 512,
+            outbox_bytes: 0,
+            archive_bytes: 0,
+            import_backup_bytes: 0,
+            free_bytes: Some(1_000_000),
+            housekeeping: DiskHousekeeping {
+                last_at: None,
+                next_at: None,
+                deleted: BTreeMap::new(),
+                freed_bytes: 0,
+            },
+        },
+    }
+}
+
+/// A scrubbed Bug-report export, for `logs.export`.
+pub fn sample_log_export() -> LogExport {
+    LogExport {
+        manifest: ExportManifest {
+            format: "claudeclaw-export/1".into(),
+            created_at: at("2026-10-13T09:00:00Z"),
+            versions: ExportVersions {
+                claudeclaw: "2.0.0".into(),
+                commit: "abcdef0".into(),
+                target: "release".into(),
+                daemon: Some("2.0.0".into()),
+                app: None,
+            },
+            window: ExportWindow {
+                since: at("2026-10-12T09:00:00Z"),
+                until: at("2026-10-13T09:00:00Z"),
+            },
+            lines: 1,
+            runs: 1,
+            pseudonyms: BTreeMap::new(),
+            trimmed: ExportTrimmed {
+                trace: 0,
+                debug: 0,
+                info: 0,
+                warn_plus: 0,
+                oldest_included: None,
+            },
+            map_written: false,
+        },
+        text: "# Bug report\n\nA scrubbed export.\n".into(),
+        map: None,
+    }
+}
+
+/// One Run-index record, for the runs fakes.
+pub fn sample_run() -> RunRecord {
+    RunRecord {
+        run_id: "run-1".into(),
+        turn_id: Some("turn-1".into()),
+        name: "daily-report".into(),
+        scope: Some("job:daily-report".parse().unwrap()),
+        origin: RunOrigin::Scheduler,
+        launcher: Some("direct".into()),
+        job: Some("daily-report".into()),
+        agent: None,
+        session_id: Some("5e55-1d".into()),
+        session: Some(RunSession::Resumed),
+        model: Some("claude-sonnet-5-5".into()),
+        started_at: at("2026-10-13T08:30:27.512Z"),
+        ended_at: Some(at("2026-10-13T08:31:02Z")),
+        duration_ms: Some(34_488),
+        outcome: Some(RunOutcome::Ok),
+        exit_code: Some(0),
+        is_error: Some(false),
+        api_error_status: None,
+        attempt: 1,
+        state: None,
+        tokens_in: Some(1200),
+        tokens_out: Some(300),
+        cache_read_tokens: Some(9000),
+        cache_write_tokens: Some(400),
+        cost_usd: Some(0.0125),
+        cost_status: CostStatus::Priced,
+        cost_basis: Some(CostBasis::List),
+        provider: Some("firstParty".into()),
+        api_key_source: Some("ANTHROPIC_API_KEY".into()),
+        models: vec![RunModelUsage {
+            model: "claude-sonnet-5-5".into(),
+            tokens_in: 1200,
+            tokens_out: 300,
+            cache_read_tokens: 9000,
+            cache_write_tokens: 400,
+            cost_usd: Some(0.0125),
+            cost_basis: CostBasis::List,
+        }],
+        run_log: Some("logs/daily-report-2026-10-13T08-30-27-512Z.log".into()),
+        launcher_resolved: Some("~/.local/bin/claude".into()),
+        purpose: Some(RunPurpose::Turn),
+        settle: Some(RunSettle {
+            stragglers: 0,
+            outcome: SettleOutcome::Clean,
+            pipe_held: false,
+            settle_ms: 3,
+        }),
+        awake_ms: Some(34_488),
+        suspended_ms: Some(0),
+        wake_grace: false,
+        claude_code_version: Some("2.1.296".into()),
+        lingered: false,
+    }
+}
+
+/// A one-record page with the Run index's state, for `runs.list`.
+pub fn sample_run_page() -> RunPage {
+    RunPage {
+        runs: vec![sample_run()],
+        next: Some("2026-10:42".into()),
+        index: RunIndexState {
+            state: RunIndexPhase::Ready,
+            done: 1,
+            total: 1,
+            since: at("2026-10-13T08:00:00Z"),
+        },
+    }
+}
+
+/// A small report, for `usage.get`.
+pub fn sample_usage_report() -> UsageReport {
+    UsageReport {
+        from: "2026-10-01".parse().unwrap(),
+        to: "2026-10-02".parse().unwrap(),
+        tz: "UTC".into(),
+        currency: "USD".into(),
+        totals: UsageTotals {
+            runs: 1,
+            tokens_in: 1200,
+            tokens_out: 300,
+            cache_read_tokens: 9000,
+            cache_write_tokens: 400,
+            cache_hit_pct: Some(88.2),
+            cost_usd: Some(0.0125),
+            cost_trust: Some(CostTrust::ApiList),
+        },
+        days: vec![UsageDay {
+            date: "2026-10-01".parse().unwrap(),
+            runs: 1,
+            tokens_in: 1200,
+            tokens_out: 300,
+            cost_usd: Some(0.0125),
+        }],
+        rows: vec![UsageRow {
+            key: "job:daily-report".into(),
+            label: "daily-report".into(),
+            kind: UsageGroup::Job,
+            launcher: Some("direct".into()),
+            runs: 1,
+            tokens_in: 1200,
+            tokens_out: 300,
+            cache_read_tokens: 9000,
+            cache_write_tokens: 400,
+            cache_hit_pct: Some(88.2),
+            cost_usd: Some(0.0125),
+            cost_trust: Some(CostTrust::ApiList),
+        }],
+        coverage: UsageCoverage {
+            index_from: Some(at("2026-09-01T09:00:00Z")),
+            runs_without_usage: 0,
+            runs_no_baseline: 0,
+            runs_unknown_price: 0,
+            index: RunIndexState {
+                state: RunIndexPhase::Ready,
+                done: 1,
+                total: 1,
+                since: at("2026-10-13T08:00:00Z"),
+            },
+        },
+    }
+}
+
+/// The `logs.*` backend: it serves the samples above, records what the routes asked for, and
+/// publishes live lines for `logs.stream`.
+#[derive(Clone)]
+pub struct FakeLogs {
+    tail_calls: Arc<Mutex<Vec<(LogSource, LogTailQuery)>>>,
+    stream_calls: Arc<Mutex<Vec<(LogSource, LogStreamQuery)>>>,
+    export_calls: Arc<Mutex<Vec<LogExportQuery>>>,
+    page: Arc<Mutex<LogPage>>,
+    hello: Arc<Mutex<LogStreamHello>>,
+    backfill: Arc<Mutex<Vec<SequencedLog>>>,
+    gap: Arc<Mutex<Option<StreamGap>>>,
+    sender: broadcast::Sender<SequencedLog>,
+    export_error: Arc<Mutex<Option<ApiError>>>,
+}
+
+impl Default for FakeLogs {
+    fn default() -> Self {
+        FakeLogs {
+            tail_calls: Arc::new(Mutex::new(Vec::new())),
+            stream_calls: Arc::new(Mutex::new(Vec::new())),
+            export_calls: Arc::new(Mutex::new(Vec::new())),
+            page: Arc::new(Mutex::new(sample_log_page())),
+            hello: Arc::new(Mutex::new(LogStreamHello {
+                boot_id: "boot-1".into(),
+                last_seq: 0,
+            })),
+            backfill: Arc::new(Mutex::new(Vec::new())),
+            gap: Arc::new(Mutex::new(None)),
+            sender: broadcast::channel(8).0,
+            export_error: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+impl FakeLogs {
+    /// The `(source, query)` pairs `logs.tail` served.
+    pub fn tail_calls(&self) -> Vec<(LogSource, LogTailQuery)> {
+        self.tail_calls.lock().unwrap().clone()
+    }
+
+    /// The `(source, query)` pairs `logs.stream` served.
+    pub fn stream_calls(&self) -> Vec<(LogSource, LogStreamQuery)> {
+        self.stream_calls.lock().unwrap().clone()
+    }
+
+    /// The queries `logs.export` served.
+    pub fn export_calls(&self) -> Vec<LogExportQuery> {
+        self.export_calls.lock().unwrap().clone()
+    }
+
+    /// What the next `logs.export` answers instead, e.g. `409 export_busy`.
+    pub fn fail_export_with(&self, error: ApiError) {
+        *self.export_error.lock().unwrap() = Some(error);
+    }
+
+    /// The lines the next `logs.stream` replays before the live feed.
+    pub fn set_backfill(&self, backfill: Vec<SequencedLog>) {
+        *self.backfill.lock().unwrap() = backfill;
+    }
+
+    /// The gap the backend reports for a resume point it couldn't line up (`evicted`).
+    pub fn set_gap(&self, gap: Option<StreamGap>) {
+        *self.gap.lock().unwrap() = gap;
+    }
+
+    /// Publishes one live line for every open `logs.stream`.
+    pub fn publish(&self, seq: u64) {
+        let _ = self.sender.send(SequencedLog {
+            seq,
+            entry: sample_log_line(seq),
+        });
+    }
+}
+
+impl LogsBackend for FakeLogs {
+    fn tail(&self, source: LogSource, query: LogTailQuery) -> BackendFuture<'_, LogPage> {
+        self.tail_calls.lock().unwrap().push((source, query));
+        let page = self.page.lock().unwrap().clone();
+        Box::pin(async move { Ok(page) })
+    }
+
+    fn stream(&self, source: LogSource, query: LogStreamQuery) -> BackendFuture<'_, LogStream> {
+        self.stream_calls.lock().unwrap().push((source, query));
+        let stream = LogStream {
+            hello: self.hello.lock().unwrap().clone(),
+            backfill: self.backfill.lock().unwrap().clone(),
+            receiver: self.sender.subscribe(),
+            gap: self.gap.lock().unwrap().clone(),
+        };
+        Box::pin(async move { Ok(stream) })
+    }
+
+    fn summary(&self) -> BackendFuture<'_, LogSummary> {
+        Box::pin(async { Ok(sample_log_summary()) })
+    }
+
+    fn export(&self, query: LogExportQuery) -> BackendFuture<'_, LogExport> {
+        self.export_calls.lock().unwrap().push(query);
+        let error = self.export_error.lock().unwrap().clone();
+        Box::pin(async move {
+            match error {
+                Some(error) => Err(error),
+                None => Ok(sample_log_export()),
+            }
+        })
+    }
+}
+
+/// The runs backend: it serves the samples above and records what the routes asked for. Like the
+/// store's Run index, a `before` it didn't hand out is `400 invalid_cursor` — its pages always
+/// end (`next: None`), so every `before` is one it didn't hand out.
+#[derive(Clone)]
+pub struct FakeRuns {
+    list_calls: Arc<Mutex<Vec<RunQuery>>>,
+    get_calls: Arc<Mutex<Vec<String>>>,
+    log_calls: Arc<Mutex<Vec<Option<u32>>>>,
+    log_text: Arc<Mutex<String>>,
+}
+
+impl Default for FakeRuns {
+    fn default() -> Self {
+        FakeRuns {
+            list_calls: Arc::new(Mutex::new(Vec::new())),
+            get_calls: Arc::new(Mutex::new(Vec::new())),
+            log_calls: Arc::new(Mutex::new(Vec::new())),
+            log_text: Arc::new(Mutex::new(
+                "# run daily-report\n\nThe Run log, already scrubbed.\n".into(),
+            )),
+        }
+    }
+}
+
+impl FakeRuns {
+    /// The queries `runs.list` served.
+    pub fn list_calls(&self) -> Vec<RunQuery> {
+        self.list_calls.lock().unwrap().clone()
+    }
+
+    /// The run ids `runs.get` served.
+    pub fn get_calls(&self) -> Vec<String> {
+        self.get_calls.lock().unwrap().clone()
+    }
+
+    /// The `tail_lines` values `runs.log` served.
+    pub fn log_calls(&self) -> Vec<Option<u32>> {
+        self.log_calls.lock().unwrap().clone()
+    }
+
+    /// The Markdown the next `runs.log` answers with (already scrubbed, by construction).
+    pub fn set_log_text(&self, text: &str) {
+        *self.log_text.lock().unwrap() = text.to_owned();
+    }
+}
+
+impl RunsBackend for FakeRuns {
+    fn list(&self, query: RunQuery) -> BackendFuture<'_, RunPage> {
+        self.list_calls.lock().unwrap().push(query.clone());
+        if query.before.is_some() {
+            return Box::pin(async {
+                Err(ApiError::new(
+                    ErrorCode::InvalidCursor,
+                    "the before cursor is not one this index handed out",
+                ))
+            });
+        }
+        let page = sample_run_page();
+        Box::pin(async move { Ok(page) })
+    }
+
+    fn get(&self, run_id: &str) -> BackendFuture<'_, RunRecord> {
+        self.get_calls.lock().unwrap().push(run_id.to_owned());
+        let record = sample_run();
+        Box::pin(async move { Ok(record) })
+    }
+
+    fn log(&self, _run_id: &str, tail_lines: Option<u32>) -> BackendFuture<'_, String> {
+        self.log_calls.lock().unwrap().push(tail_lines);
+        let text = self.log_text.lock().unwrap().clone();
+        Box::pin(async move { Ok(text) })
+    }
+}
+
+/// The usage backend: it serves one report and records the queries.
+#[derive(Clone, Default)]
+pub struct FakeUsage {
+    calls: Arc<Mutex<Vec<UsageQuery>>>,
+}
+
+impl FakeUsage {
+    /// The queries `usage.get` served.
+    pub fn calls(&self) -> Vec<UsageQuery> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl UsageBackend for FakeUsage {
+    fn usage(&self, query: UsageQuery) -> BackendFuture<'_, UsageReport> {
+        self.calls.lock().unwrap().push(query);
+        Box::pin(async { Ok(sample_usage_report()) })
+    }
+}
+
+/// An audit backend that keeps every entry it is handed. Its `audit.list` pages those entries
+/// newest first; like the store's audit log, a `before` is refused (`400 invalid_cursor`) because
+/// these pages always end.
 #[derive(Clone, Default)]
 pub struct RecordingAudit {
     entries: Arc<Mutex<Vec<AuditEntry>>>,
+    list_calls: Arc<Mutex<Vec<AuditQuery>>>,
 }
 
 impl RecordingAudit {
@@ -278,12 +711,55 @@ impl RecordingAudit {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// The queries `audit.list` served.
+    pub fn list_calls(&self) -> Vec<AuditQuery> {
+        self.list_calls.lock().unwrap().clone()
+    }
 }
 
 impl AuditBackend for RecordingAudit {
     fn record(&self, entry: AuditEntry) -> AuditFuture<'_> {
         self.entries.lock().unwrap().push(entry);
         Box::pin(async { Ok(()) })
+    }
+
+    fn list(&self, query: AuditQuery) -> BackendFuture<'_, AuditPage> {
+        self.list_calls.lock().unwrap().push(query.clone());
+        if query.before.is_some() {
+            return Box::pin(async {
+                Err(ApiError::new(
+                    ErrorCode::InvalidCursor,
+                    "the before cursor is not one this log handed out",
+                ))
+            });
+        }
+        let entries: Vec<AuditEntry> = self
+            .entries
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .filter(|entry| {
+                query
+                    .principal
+                    .as_deref()
+                    .is_none_or(|principal| entry.principal == principal)
+            })
+            .filter(|entry| {
+                query
+                    .action
+                    .as_deref()
+                    .is_none_or(|action| entry.action == action)
+            })
+            .take(query.limit as usize)
+            .cloned()
+            .collect();
+        let page = AuditPage {
+            entries,
+            next: None,
+        };
+        Box::pin(async move { Ok(page) })
     }
 }
 
@@ -324,6 +800,9 @@ pub struct Harness {
     pub status: FakeStatus,
     pub events: FakeEvents,
     pub tokens: FakeTokens,
+    pub logs: FakeLogs,
+    pub runs: FakeRuns,
+    pub usage: FakeUsage,
 }
 
 impl Harness {
@@ -333,6 +812,9 @@ impl Harness {
         let status = FakeStatus::ready();
         let events = FakeEvents::new("boot-1");
         let tokens = FakeTokens::default();
+        let logs = FakeLogs::default();
+        let runs = FakeRuns::default();
+        let usage = FakeUsage::default();
         // A real §2.12 service over an in-memory store, so the mounted routes are exercised
         // end to end.
         let clock = Arc::new(TestClock::at(9));
@@ -343,6 +825,9 @@ impl Harness {
             .events(events.clone())
             .audit(audit.clone())
             .tokens(tokens.clone())
+            .with_logs(logs.clone())
+            .with_runs(runs.clone())
+            .with_usage(usage.clone())
             .with_pairing(PairingService::for_test(
                 TestHooks::enabled(),
                 registry,
@@ -356,6 +841,9 @@ impl Harness {
             status,
             events,
             tokens,
+            logs,
+            runs,
+            usage,
         }
     }
 
