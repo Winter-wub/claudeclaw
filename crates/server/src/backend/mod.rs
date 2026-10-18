@@ -6,9 +6,9 @@
 //! event bus and a deny-all [`TokenStore`], so a half-wired server fails loudly rather than
 //! panicking.
 //!
-//! The traits live one per submodule — [`status`], [`daemon`], [`audit`], [`logs`], [`runs`] and
-//! [`usage`] — and are re-exported here, so callers use `backend::StatusBackend` regardless of
-//! where it is defined.
+//! The traits live one per submodule — [`status`], [`daemon`], [`audit`], [`turns`], [`jobs`],
+//! [`logs`], [`runs`] and [`usage`] — and are re-exported here, so callers use
+//! `backend::StatusBackend` regardless of where it is defined.
 
 use std::sync::Arc;
 
@@ -18,7 +18,12 @@ use tokio::sync::broadcast;
 use claudeclaw_api::DaemonEvent;
 use claudeclaw_api::error::{ApiError, ErrorCode};
 use claudeclaw_api::export::LogExport;
+use claudeclaw_api::jobs::{
+    JobCreate, JobDeleted, JobDetail, JobList, JobPatch, JobPreview, JobPreviewRequest, JobRaw,
+    JobsAudit, JobsCheck,
+};
 use claudeclaw_api::logs::{AuditEntry, AuditPage, LogPage, LogSummary};
+use claudeclaw_api::revision::Revision;
 use claudeclaw_api::runs::{RunPage, RunRecord};
 use claudeclaw_api::status::{
     DaemonStatus, Health, HealthState, HousekeepingReport, HousekeepingRequest, ReexecAccepted,
@@ -30,20 +35,24 @@ use crate::auth::{TokenRecord, TokenStore};
 
 pub mod audit;
 pub mod daemon;
+pub mod jobs;
 pub mod logs;
 pub mod pairing;
 pub mod runs;
 pub mod status;
+pub mod turns;
 pub mod usage;
 
 pub use audit::{AuditBackend, AuditError, AuditFuture, AuditQuery};
 pub use daemon::{DaemonBackend, EventsBackend};
+pub use jobs::{JobAuditQuery, JobCheckQuery, JobListQuery, JobsBackend};
 pub use logs::{
     LogCursor, LogExportQuery, LogPosition, LogSource, LogStream, LogStreamQuery, LogTailQuery,
     LogsBackend, SequencedLog,
 };
 pub use runs::{RunQuery, RunsBackend};
 pub use status::StatusBackend;
+pub use turns::{TurnAttachment, TurnCreate, TurnFeed, TurnHandle, TurnsBackend};
 pub use usage::{UsageBackend, UsageQuery};
 
 /// A boxed result a backend hands back. Boxing keeps the traits object-safe so [`AppState`] can
@@ -177,6 +186,68 @@ impl UsageBackend for MissingBackend {
     }
 }
 
+impl TurnsBackend for MissingBackend {
+    fn create(&self, _request: TurnCreate) -> BackendFuture<'_, TurnHandle> {
+        Box::pin(async { Err(missing("turns")) })
+    }
+
+    fn get(&self, _turn_id: &str) -> BackendFuture<'_, TurnFeed> {
+        Box::pin(async { Err(missing("turns")) })
+    }
+}
+
+impl JobsBackend for MissingBackend {
+    fn list(&self, _query: JobListQuery) -> BackendFuture<'_, JobList> {
+        Box::pin(async { Err(missing("jobs")) })
+    }
+
+    fn get(&self, _job: &str) -> BackendFuture<'_, JobDetail> {
+        Box::pin(async { Err(missing("jobs")) })
+    }
+
+    fn create(&self, _create: JobCreate) -> BackendFuture<'_, JobDetail> {
+        Box::pin(async { Err(missing("jobs")) })
+    }
+
+    fn update(
+        &self,
+        _job: &str,
+        _patch: JobPatch,
+        _expected: Option<Revision>,
+    ) -> BackendFuture<'_, JobDetail> {
+        Box::pin(async { Err(missing("jobs")) })
+    }
+
+    fn replace(
+        &self,
+        _job: &str,
+        _raw: JobRaw,
+        _expected: Revision,
+    ) -> BackendFuture<'_, JobDetail> {
+        Box::pin(async { Err(missing("jobs")) })
+    }
+
+    fn delete(&self, _job: &str, _expected: Option<Revision>) -> BackendFuture<'_, JobDeleted> {
+        Box::pin(async { Err(missing("jobs")) })
+    }
+
+    fn run(&self, _job: &str, _principal: String) -> BackendFuture<'_, TurnHandle> {
+        Box::pin(async { Err(missing("jobs")) })
+    }
+
+    fn preview(&self, _request: JobPreviewRequest) -> BackendFuture<'_, JobPreview> {
+        Box::pin(async { Err(missing("jobs")) })
+    }
+
+    fn check(&self, _query: JobCheckQuery) -> BackendFuture<'_, JobsCheck> {
+        Box::pin(async { Err(missing("jobs")) })
+    }
+
+    fn audit(&self, _query: JobAuditQuery) -> BackendFuture<'_, JobsAudit> {
+        Box::pin(async { Err(missing("jobs")) })
+    }
+}
+
 impl TokenStore for MissingBackend {
     fn lookup(&self, _hash: &[u8; 32]) -> Option<TokenRecord> {
         None
@@ -209,6 +280,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_unwired_turns_and_jobs_reads_and_writes_fail_loudly() {
+        let backend = MissingBackend::new();
+        assert!(
+            TurnsBackend::create(
+                &backend,
+                TurnCreate {
+                    scope: claudeclaw_api::Scope::Global,
+                    text: "hi".into(),
+                    attachments: Vec::new(),
+                    notify: false,
+                    principal: "local".into(),
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert!(TurnsBackend::get(&backend, "turn-1").await.is_err());
+        assert!(
+            JobsBackend::list(&backend, JobListQuery::default())
+                .await
+                .is_err()
+        );
+        assert!(JobsBackend::get(&backend, "daily-report").await.is_err());
+        assert!(backend.run("daily-report", "local".into()).await.is_err());
+        assert!(
+            backend
+                .preview(JobPreviewRequest {
+                    source: claudeclaw_api::jobs::PreviewSource::Schedule {
+                        schedule: "@daily".into()
+                    },
+                    count: 5,
+                })
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn the_unwired_logs_runs_usage_and_audit_reads_fail_loudly() {
         let backend = MissingBackend::new();
         let tail = backend
@@ -222,7 +331,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(backend.get("r1").await.is_err());
+        assert!(RunsBackend::get(&backend, "r1").await.is_err());
         assert!(backend.log("r1", None).await.is_err());
         assert!(
             backend

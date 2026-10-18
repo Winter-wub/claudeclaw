@@ -1095,3 +1095,854 @@ mod listener {
         server.abort();
     }
 }
+
+mod turns {
+    use std::time::Duration;
+
+    use claudeclaw_api::scope::Scope;
+    use claudeclaw_api::turns::{AttachmentUpload, TurnEvent, TurnOutcome, TurnRequest, TurnState};
+
+    use super::*;
+
+    fn ask(scope: Scope, text: &str) -> TurnRequest {
+        TurnRequest {
+            scope,
+            text: text.into(),
+            attachments: None,
+            notify: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_is_queued_and_answered_at_once() {
+        let harness = Harness::new();
+        let mut request = ask(Scope::Global, "deploy the thing");
+        request.notify = true;
+        let response = call(
+            &harness.router(),
+            json_request(Method::POST, "/v1/turns", LOCAL, &request),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let accepted = body_json(response).await;
+        assert_eq!(accepted["turn_id"], "turn-1");
+        assert_eq!(accepted["queue_position"], 1);
+
+        let started = &harness.turns.create_calls()[0];
+        assert_eq!(started.text, "deploy the thing");
+        assert!(started.notify);
+        assert_eq!(started.principal, "local");
+
+        // The audit entry carries the Turn's id as its target (§1.11).
+        let entry = &harness.audit.entries()[0];
+        assert_eq!(entry.action, "turns.create");
+        assert_eq!(entry.principal, "local");
+        assert_eq!(entry.target.as_deref(), Some("turn-1"));
+    }
+
+    #[tokio::test]
+    async fn a_send_token_starts_a_turn_it_can_read_back() {
+        let harness = Harness::new();
+        harness
+            .tokens
+            .add("secret", "tok-1", vec![TokenPermission::Send], false);
+        let response = call(
+            &harness.router(),
+            bearer_json_request(
+                Method::POST,
+                "/v1/turns",
+                "secret",
+                &ask(Scope::Global, "hi"),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(harness.turns.create_calls()[0].principal, "token:tok-1");
+
+        // The Turn it started is its own to read (§1.3).
+        let read = call(
+            &harness.router(),
+            bearer_request(Method::GET, "/v1/turns/turn-1", "secret"),
+        )
+        .await;
+        assert_eq!(read.status(), StatusCode::OK);
+        assert_eq!(body_json(read).await["turn_id"], "turn-1");
+    }
+
+    #[tokio::test]
+    async fn a_send_token_is_refused_on_any_other_scope() {
+        let harness = Harness::new();
+        harness
+            .tokens
+            .add("secret", "tok-1", vec![TokenPermission::Send], false);
+        let response = call(
+            &harness.router(),
+            bearer_json_request(
+                Method::POST,
+                "/v1/turns",
+                "secret",
+                &ask(Scope::Agent("ops".into()), "hi"),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = body_json(response).await;
+        assert_eq!(code(&body), "missing_permission");
+        assert_eq!(required(&body), "send");
+        assert!(
+            harness.turns.create_calls().is_empty(),
+            "the backend never saw the refused Turn (§1.3)"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_bounds_the_request_and_never_the_turn() {
+        let finishing = Harness::new();
+        finishing.turns.set_finish_after(Duration::from_secs(1));
+        let waited = call(
+            &finishing.router(),
+            json_request(
+                Method::POST,
+                "/v1/turns?wait=30",
+                LOCAL,
+                &ask(Scope::Global, "hi"),
+            ),
+        )
+        .await;
+        assert_eq!(waited.status(), StatusCode::OK, "a finished Turn is 200");
+        assert_eq!(body_json(waited).await["state"], "done");
+
+        // `wait=0` is "do not wait", so the answer stays 202 (§1.6).
+        let immediate = call(
+            &finishing.router(),
+            json_request(
+                Method::POST,
+                "/v1/turns?wait=0",
+                LOCAL,
+                &ask(Scope::Global, "again"),
+            ),
+        )
+        .await;
+        assert_eq!(immediate.status(), StatusCode::ACCEPTED);
+
+        let harness = Harness::new();
+        let response = call(
+            &harness.router(),
+            json_request(
+                Method::POST,
+                "/v1/turns?wait=30",
+                LOCAL,
+                &ask(Scope::Global, "hi"),
+            ),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::ACCEPTED,
+            "a Turn nobody finishes is still accepted"
+        );
+        assert_eq!(
+            harness.turns.record("turn-1").unwrap().state,
+            TurnState::Queued
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_belongs_to_the_token_that_started_it() {
+        let harness = Harness::new();
+        harness
+            .tokens
+            .add("one", "tok-1", vec![TokenPermission::Send], false);
+        harness
+            .tokens
+            .add("two", "tok-2", vec![TokenPermission::Send], false);
+        call(
+            &harness.router(),
+            bearer_json_request(Method::POST, "/v1/turns", "one", &ask(Scope::Global, "hi")),
+        )
+        .await;
+
+        let mine = call(
+            &harness.router(),
+            bearer_request(Method::GET, "/v1/turns/turn-1", "one"),
+        )
+        .await;
+        assert_eq!(mine.status(), StatusCode::OK);
+
+        // Another token cannot even learn the Turn exists (§1.3).
+        let theirs = call(
+            &harness.router(),
+            bearer_request(Method::GET, "/v1/turns/turn-1", "two"),
+        )
+        .await;
+        assert_eq!(theirs.status(), StatusCode::NOT_FOUND);
+        assert_eq!(code(&body_json(theirs).await), "not_found");
+        let stream = call(
+            &harness.router(),
+            bearer_request(Method::GET, "/v1/turns/turn-1/events", "two"),
+        )
+        .await;
+        assert_eq!(stream.status(), StatusCode::NOT_FOUND);
+
+        // An admin reads any Turn, and an unknown one is 404 for everyone (§2.3).
+        let admin = call(
+            &harness.router(),
+            request(Method::GET, "/v1/turns/turn-1", LOCAL),
+        )
+        .await;
+        assert_eq!(admin.status(), StatusCode::OK);
+        let missing = call(
+            &harness.router(),
+            request(Method::GET, "/v1/turns/turn-9", LOCAL),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn attachments_are_refused_before_the_backend_starts_anything() {
+        let harness = Harness::new();
+        let upload = |data_base64: &str| AttachmentUpload {
+            name: "notes.md".into(),
+            content_type: "text/markdown".into(),
+            data_base64: data_base64.into(),
+        };
+        let mut over_count = ask(Scope::Global, "hi");
+        over_count.attachments = Some(vec![upload("aGk="); 6]);
+        let response = call(
+            &harness.router(),
+            json_request(Method::POST, "/v1/turns", LOCAL, &over_count),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        // 10 MB plus a byte, base64'd: refused on its length, before it is decoded.
+        let mut oversized = ask(Scope::Global, "hi");
+        oversized.attachments = Some(vec![upload(&"A".repeat(13_981_017))]);
+        let response = call(
+            &harness.router(),
+            json_request(Method::POST, "/v1/turns", LOCAL, &oversized),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let mut broken = ask(Scope::Global, "hi");
+        broken.attachments = Some(vec![upload("not base64!")]);
+        let response = call(
+            &harness.router(),
+            json_request(Method::POST, "/v1/turns", LOCAL, &broken),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            harness.turns.create_calls().is_empty(),
+            "every refusal happened before the backend"
+        );
+
+        let mut fine = ask(Scope::Global, "hi");
+        fine.attachments = Some(vec![upload("aGk=")]);
+        let response = call(
+            &harness.router(),
+            json_request(Method::POST, "/v1/turns", LOCAL, &fine),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let attachment = &harness.turns.create_calls()[0].attachments[0];
+        assert_eq!(attachment.data, b"hi");
+        assert_eq!(attachment.name, "notes.md");
+        assert_eq!(attachment.content_type, "text/markdown");
+    }
+
+    #[tokio::test]
+    async fn the_stream_replays_then_lives_then_ends_after_outcome() {
+        let harness = Harness::new();
+        call(
+            &harness.router(),
+            json_request(Method::POST, "/v1/turns", LOCAL, &ask(Scope::Global, "hi")),
+        )
+        .await;
+        // Published before anyone subscribed, so it is replayed from the Turn's start (§2.3).
+        harness
+            .turns
+            .publish("turn-1", TurnEvent::Text { delta: "he".into() });
+
+        let response = call(
+            &harness.router(),
+            request(Method::GET, "/v1/turns/turn-1/events", LOCAL),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let hello = next_frame(&mut body).await;
+        assert!(hello.contains("event: hello"), "{hello}");
+        // The replay starts at the Turn's own `queued`, then the event published above (§2.3).
+        let queued = next_frame(&mut body).await;
+        assert!(queued.contains("\"queued\""), "{queued}");
+        let replayed = next_frame(&mut body).await;
+        assert!(replayed.contains("event: turn"), "{replayed}");
+        assert!(replayed.contains("\"text\""), "{replayed}");
+
+        harness.turns.publish(
+            "turn-1",
+            TurnEvent::Tool {
+                name: "Read".into(),
+                category: "read".into(),
+                summary: "notes.md".into(),
+            },
+        );
+        let live = next_frame(&mut body).await;
+        assert!(live.contains("Read"), "{live}");
+
+        harness.turns.finish("turn-1", TurnOutcome::Ok, "done");
+        let outcome = next_frame(&mut body).await;
+        assert!(outcome.contains("outcome"), "{outcome}");
+        assert!(
+            body.next().await.is_none(),
+            "the stream ends after outcome (§2.3)"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_turn_finishes_after_the_client_stopped_waiting() {
+        let harness = Harness::new();
+        harness.turns.set_finish_after(Duration::from_secs(2));
+        let response = call(
+            &harness.router(),
+            json_request(
+                Method::POST,
+                "/v1/turns?wait=1",
+                LOCAL,
+                &ask(Scope::Global, "hi"),
+            ),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::ACCEPTED,
+            "the wait bounds the request alone (§1.6)"
+        );
+
+        // The client stopped waiting; the Turn it started keeps running (§1.9).
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(harness.turns.finished("turn-1"));
+    }
+}
+
+mod body_limits {
+    use axum::body::Body;
+    use axum::http::Request;
+
+    use claudeclaw_api::jobs::{JobContent, JobCreate};
+    use claudeclaw_api::scope::Scope;
+    use claudeclaw_api::turns::TurnRequest;
+
+    use super::*;
+
+    const MIB: usize = 1024 * 1024;
+
+    /// A valid `jobs.create` body of `len` bytes or a little over, so only its size is in question.
+    fn job_of(len: usize) -> Request<Body> {
+        let create = JobCreate {
+            name: "weekly".into(),
+            agent: None,
+            content: JobContent::Raw {
+                raw: format!("---\nschedule: \"0 9 * * *\"\n---\n{}\n", "x".repeat(len)),
+            },
+        };
+        json_request(Method::POST, "/v1/jobs", LOCAL, &create)
+    }
+
+    /// A valid `turns.create` body of `len` bytes or a little over.
+    fn turn_of(len: usize) -> Request<Body> {
+        let turn = TurnRequest {
+            scope: Scope::Global,
+            text: "x".repeat(len),
+            attachments: None,
+            notify: false,
+        };
+        json_request(Method::POST, "/v1/turns", LOCAL, &turn)
+    }
+
+    async fn assert_payload_too_large(response: axum::response::Response) {
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let content_type = response.headers()[header::CONTENT_TYPE].to_str().unwrap();
+        assert!(
+            content_type.starts_with("application/json"),
+            "{content_type}"
+        );
+        assert_eq!(code(&body_json(response).await), "payload_too_large");
+    }
+
+    #[tokio::test]
+    async fn a_normal_route_refuses_a_body_over_1_mib_with_the_envelope() {
+        let harness = Harness::new();
+        let response = call(&harness.router(), job_of(MIB)).await;
+        assert_payload_too_large(response).await;
+
+        // A body with no declared length is cut off while it streams, and is the same envelope.
+        let chunks = futures_util::stream::iter([
+            Ok::<_, std::io::Error>(vec![b' '; MIB]),
+            Ok(vec![b' '; 1]),
+        ]);
+        let mut streamed = request(Method::POST, "/v1/jobs/weekly/run", LOCAL);
+        *streamed.body_mut() = Body::from_stream(chunks);
+        assert_payload_too_large(call(&harness.router(), streamed).await).await;
+    }
+
+    #[tokio::test]
+    async fn a_normal_route_still_takes_a_body_under_1_mib() {
+        let harness = Harness::new();
+        let response = call(&harness.router(), job_of(MIB - 1024)).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn turns_create_takes_what_other_routes_refuse_up_to_64_mib() {
+        let harness = Harness::new();
+        let response = call(&harness.router(), turn_of(MIB + 1)).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let response = call(&harness.router(), turn_of(64 * MIB)).await;
+        assert_payload_too_large(response).await;
+        assert_eq!(
+            harness.turns.create_calls().len(),
+            1,
+            "the oversized one never reached the backend"
+        );
+    }
+}
+
+mod jobs {
+    use std::time::Duration;
+
+    use axum::body::Body;
+    use axum::http::Request;
+
+    use claudeclaw_api::error::{ApiError, ErrorCode};
+    use claudeclaw_api::jobs::{
+        JobContent, JobCreate, JobPatch, JobPreviewRequest, JobRaw, PreviewSource,
+    };
+    use claudeclaw_api::logs::AuditOutcome;
+    use claudeclaw_api::revision::Revision;
+
+    use super::*;
+
+    /// A write with an optional `If-Match`, as the editor sends it (§1.5).
+    fn write(
+        method: Method,
+        uri: &str,
+        revision: Option<Revision>,
+        body: &impl serde::Serialize,
+    ) -> Request<Body> {
+        let mut request = json_request(method, uri, LOCAL, body);
+        if let Some(revision) = revision {
+            request
+                .headers_mut()
+                .insert(header::IF_MATCH, revision.to_string().parse().unwrap());
+        }
+        request
+    }
+
+    fn create(name: &str) -> JobCreate {
+        JobCreate {
+            name: name.into(),
+            agent: None,
+            content: JobContent::Raw {
+                raw: "---\nschedule: \"0 9 * * *\"\n---\nSummarise yesterday.\n".into(),
+            },
+        }
+    }
+
+    /// The revision the fakes' job file currently has.
+    fn current() -> Revision {
+        sample_job_summary().revision
+    }
+
+    #[tokio::test]
+    async fn the_list_reads_the_snapshot_and_filters_by_agent() {
+        let harness = Harness::new();
+        harness
+            .tokens
+            .add("secret", "tok-1", vec![TokenPermission::StatusRead], false);
+
+        let all = call(
+            &harness.router(),
+            bearer_request(Method::GET, "/v1/jobs", "secret"),
+        )
+        .await;
+        assert_eq!(all.status(), StatusCode::OK);
+        assert_eq!(body_json(all).await["jobs"][0]["name"], "daily-report");
+        assert_eq!(harness.jobs.list_calls()[0].agent, None);
+
+        let filtered = call(
+            &harness.router(),
+            bearer_request(Method::GET, "/v1/jobs?agent=ops", "secret"),
+        )
+        .await;
+        assert_eq!(filtered.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(filtered).await["jobs"].as_array().unwrap().len(),
+            0
+        );
+        assert_eq!(harness.jobs.list_calls()[1].agent.as_deref(), Some("ops"));
+    }
+
+    #[tokio::test]
+    async fn one_job_is_read_from_disk_and_a_miss_is_404() {
+        let harness = Harness::new();
+        let found = call(
+            &harness.router(),
+            request(Method::GET, "/v1/jobs/daily-report", LOCAL),
+        )
+        .await;
+        assert_eq!(found.status(), StatusCode::OK);
+        assert!(
+            body_json(found).await["raw"]
+                .as_str()
+                .unwrap()
+                .contains("Summarise")
+        );
+        assert_eq!(harness.jobs.get_calls(), ["daily-report"]);
+
+        let missing = call(
+            &harness.router(),
+            request(Method::GET, "/v1/jobs/nope", LOCAL),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(code(&body_json(missing).await), "not_found");
+    }
+
+    #[tokio::test]
+    async fn create_answers_201_and_refuses_a_taken_or_invalid_job() {
+        let harness = Harness::new();
+        let created = call(
+            &harness.router(),
+            json_request(Method::POST, "/v1/jobs", LOCAL, &create("weekly")),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        assert_eq!(body_json(created).await["name"], "weekly");
+
+        let taken = call(
+            &harness.router(),
+            json_request(Method::POST, "/v1/jobs", LOCAL, &create("daily-report")),
+        )
+        .await;
+        assert_eq!(taken.status(), StatusCode::CONFLICT);
+        assert_eq!(code(&body_json(taken).await), "job_exists");
+
+        harness
+            .jobs
+            .fail_create_with(ApiError::new(ErrorCode::JobInvalid, "no schedule"));
+        let invalid = call(
+            &harness.router(),
+            json_request(Method::POST, "/v1/jobs", LOCAL, &create("broken")),
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(code(&body_json(invalid).await), "job_invalid");
+
+        // Every write is audited, refusals included (§1.11).
+        let entries = harness.audit.entries();
+        let actions: Vec<&str> = entries.iter().map(|entry| entry.action.as_str()).collect();
+        assert_eq!(actions, ["jobs.create", "jobs.create", "jobs.create"]);
+    }
+
+    #[tokio::test]
+    async fn patches_carry_the_revision_they_read_and_refuse_a_stale_one() {
+        let harness = Harness::new();
+        let patch = JobPatch {
+            prompt: Some("Summarise the week.\n".into()),
+            ..JobPatch::default()
+        };
+
+        let patched = call(
+            &harness.router(),
+            write(
+                Method::PATCH,
+                "/v1/jobs/daily-report",
+                Some(current()),
+                &patch,
+            ),
+        )
+        .await;
+        assert_eq!(patched.status(), StatusCode::OK);
+        assert_eq!(
+            harness.jobs.update_calls()[0],
+            ("daily-report".to_owned(), Some(current()))
+        );
+
+        // Without `If-Match` a patch is a line edit over a fresh read (§1.5).
+        let unguarded = call(
+            &harness.router(),
+            write(Method::PATCH, "/v1/jobs/daily-report", None, &patch),
+        )
+        .await;
+        assert_eq!(unguarded.status(), StatusCode::OK);
+        assert_eq!(harness.jobs.update_calls()[1].1, None);
+
+        // A stale revision is a mismatch carrying the current one, never a lost update.
+        let stale = call(
+            &harness.router(),
+            write(
+                Method::PATCH,
+                "/v1/jobs/daily-report",
+                Some(Revision::of(b"an older file")),
+                &patch,
+            ),
+        )
+        .await;
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        let body = body_json(stale).await;
+        assert_eq!(code(&body), "revision_mismatch");
+        assert_eq!(body["error"]["details"]["current"], current().to_string());
+    }
+
+    #[tokio::test]
+    async fn a_whole_file_write_needs_the_matching_revision() {
+        let harness = Harness::new();
+        let raw = JobRaw {
+            raw: "---\nschedule: \"0 9 * * *\"\n---\nRewritten.\n".into(),
+        };
+
+        let unguarded = call(
+            &harness.router(),
+            write(Method::PUT, "/v1/jobs/daily-report/raw", None, &raw),
+        )
+        .await;
+        assert_eq!(unguarded.status(), StatusCode::PRECONDITION_REQUIRED);
+        assert_eq!(code(&body_json(unguarded).await), "revision_required");
+        assert!(
+            harness.jobs.replace_calls().is_empty(),
+            "refused in the route, before the backend"
+        );
+
+        let replaced = call(
+            &harness.router(),
+            write(
+                Method::PUT,
+                "/v1/jobs/daily-report/raw",
+                Some(current()),
+                &raw,
+            ),
+        )
+        .await;
+        assert_eq!(replaced.status(), StatusCode::OK);
+        assert_eq!(
+            harness.jobs.replace_calls(),
+            [("daily-report".to_owned(), current())]
+        );
+
+        let stale = call(
+            &harness.router(),
+            write(
+                Method::PUT,
+                "/v1/jobs/daily-report/raw",
+                Some(Revision::of(b"an older file")),
+                &raw,
+            ),
+        )
+        .await;
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn delete_removes_the_job_and_what_was_keyed_to_it() {
+        let harness = Harness::new();
+        let deleted = call(
+            &harness.router(),
+            request(Method::DELETE, "/v1/jobs/daily-report", LOCAL),
+        )
+        .await;
+        assert_eq!(deleted.status(), StatusCode::OK);
+        let body = body_json(deleted).await;
+        assert_eq!(body["deleted"], true);
+        assert_eq!(body["sessions_removed"], 1);
+        assert_eq!(body["state_removed"], true);
+        assert_eq!(
+            harness.jobs.delete_calls(),
+            [("daily-report".to_owned(), None)]
+        );
+
+        let stale = call(
+            &harness.router(),
+            write(
+                Method::DELETE,
+                "/v1/jobs/daily-report",
+                Some(Revision::of(b"an older file")),
+                &(),
+            ),
+        )
+        .await;
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn run_starts_a_turn_the_caller_reads_back_and_is_audited() {
+        let harness = Harness::new();
+        harness
+            .tokens
+            .add("secret", "tok-1", vec![TokenPermission::JobsRun], false);
+
+        let response = call(
+            &harness.router(),
+            bearer_request(Method::POST, "/v1/jobs/daily-report/run", "secret"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(body_json(response).await["turn_id"], "turn-1");
+        assert_eq!(
+            harness.jobs.run_calls(),
+            [("daily-report".to_owned(), "token:tok-1".to_owned())]
+        );
+
+        // The Turn belongs to the principal that asked for the run (§1.3).
+        let turn = call(
+            &harness.router(),
+            bearer_request(Method::GET, "/v1/turns/turn-1", "secret"),
+        )
+        .await;
+        assert_eq!(turn.status(), StatusCode::OK);
+
+        let entries = harness.audit.entries();
+        let entry = entries.last().unwrap();
+        assert_eq!(entry.action, "jobs.run");
+        assert_eq!(entry.target.as_deref(), Some("daily-report"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_wait_is_the_same_202_or_200_exchange() {
+        let harness = Harness::new();
+        harness.turns.set_finish_after(Duration::from_secs(1));
+        let waited = call(
+            &harness.router(),
+            request(Method::POST, "/v1/jobs/daily-report/run?wait=30", LOCAL),
+        )
+        .await;
+        assert_eq!(waited.status(), StatusCode::OK);
+        assert_eq!(body_json(waited).await["state"], "done");
+
+        let immediate = call(
+            &harness.router(),
+            request(Method::POST, "/v1/jobs/daily-report/run", LOCAL),
+        )
+        .await;
+        assert_eq!(immediate.status(), StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn preview_writes_nothing_and_is_never_audited() {
+        let harness = Harness::new();
+        let preview = JobPreviewRequest {
+            source: PreviewSource::Schedule {
+                schedule: "0 9 * * *".into(),
+            },
+            count: 3,
+        };
+        let response = call(
+            &harness.router(),
+            json_request(Method::POST, "/v1/schedule/preview", LOCAL, &preview),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(response).await["next_fires"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert!(
+            harness.audit.is_empty(),
+            "jobs.preview writes nothing, so it writes no audit line (§2.4)"
+        );
+
+        // Every other mutation is audited.
+        call(
+            &harness.router(),
+            json_request(Method::POST, "/v1/jobs", LOCAL, &create("weekly")),
+        )
+        .await;
+        let entry = &harness.audit.entries()[0];
+        assert_eq!(entry.action, "jobs.create");
+        assert_eq!(entry.outcome, AuditOutcome::Ok);
+    }
+
+    #[tokio::test]
+    async fn check_and_audit_resolve_their_queries() {
+        let harness = Harness::new();
+        harness
+            .tokens
+            .add("secret", "tok-1", vec![TokenPermission::StatusRead], false);
+
+        let check = call(
+            &harness.router(),
+            bearer_request(Method::GET, "/v1/schedule/check", "secret"),
+        )
+        .await;
+        assert_eq!(check.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(check).await["jobs"][0]["next_fires"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(harness.jobs.check_calls()[0].next, 5);
+        assert_eq!(harness.jobs.check_calls()[0].job, None);
+
+        let one = call(
+            &harness.router(),
+            bearer_request(
+                Method::GET,
+                "/v1/schedule/check?job=daily-report&next=2",
+                "secret",
+            ),
+        )
+        .await;
+        assert_eq!(one.status(), StatusCode::OK);
+        assert_eq!(
+            harness.jobs.check_calls()[1].job.as_deref(),
+            Some("daily-report")
+        );
+        assert_eq!(harness.jobs.check_calls()[1].next, 2);
+
+        let none = call(
+            &harness.router(),
+            bearer_request(Method::GET, "/v1/schedule/check?next=0", "secret"),
+        )
+        .await;
+        assert_eq!(none.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(code(&body_json(none).await), "bad_request");
+
+        let audit = call(
+            &harness.router(),
+            bearer_request(
+                Method::GET,
+                "/v1/schedule/audit?since=2026-10-13T10:00:00Z&until=2026-10-14T10:00:00Z&late=90",
+                "secret",
+            ),
+        )
+        .await;
+        assert_eq!(audit.status(), StatusCode::OK);
+        let query = harness.jobs.audit_calls()[0].clone();
+        assert!(
+            query.since.is_some() && query.until.is_some(),
+            "the window passed"
+        );
+        assert_eq!(query.late, Duration::from_secs(90));
+
+        let crossed = call(
+            &harness.router(),
+            bearer_request(
+                Method::GET,
+                "/v1/schedule/audit?since=2026-10-14T10:00:00Z&until=2026-10-13T10:00:00Z",
+                "secret",
+            ),
+        )
+        .await;
+        assert_eq!(crossed.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(code(&body_json(crossed).await), "bad_request");
+    }
+}

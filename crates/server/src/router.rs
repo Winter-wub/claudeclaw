@@ -2,28 +2,34 @@
 //!
 //! One router serves every listener; the only per-listener difference is the [`PeerIdentity`]
 //! stamped onto each request by [`with_peer_identity`]. Each route is wrapped by three layers,
-//! outermost first: auth, then audit, then the deadline backstop.
+//! outermost first: auth, then audit, then the deadline backstop. Innermost sit the route's body
+//! limit (§1.6) and the mapping that renders an oversized body as §1.4's envelope.
+
+use std::convert::Infallible;
 
 use axum::Router;
-use axum::extract::Request;
+use axum::extract::{DefaultBodyLimit, Request};
 use axum::middleware::{self, Next};
-use axum::routing::{MethodRouter, delete, get, patch, post};
+use axum::routing::{MethodRouter, delete, get, patch, post, put};
 
 use claudeclaw_api::routes::{
     AUDIT_LIST, DAEMON_REEXEC, DAEMON_RESTART, DAEMON_STOP, DEVICES_LIST, DEVICES_REVOKE,
-    DEVICES_UPDATE, EVENTS_STREAM, HEALTH_GET, HOUSEKEEPING_RUN, LOGS_EXPORT, LOGS_STREAM,
-    LOGS_SUMMARY, LOGS_TAIL, OPENAPI_GET, PAIR, PAIRING_CANCEL, PAIRING_CREATE, PAIRING_GET,
-    RUNS_GET, RUNS_LIST, RUNS_LOG, Route, STATUS_GET, TOKENS_CREATE, TOKENS_LIST, TOKENS_REVOKE,
-    UPDATE_CHECK, UPDATE_GET, USAGE_GET,
+    DEVICES_UPDATE, EVENTS_STREAM, HEALTH_GET, HOUSEKEEPING_RUN, JOBS_AUDIT, JOBS_CHECK,
+    JOBS_CREATE, JOBS_DELETE, JOBS_GET, JOBS_LIST, JOBS_PREVIEW, JOBS_REPLACE, JOBS_RUN,
+    JOBS_UPDATE, LOGS_EXPORT, LOGS_STREAM, LOGS_SUMMARY, LOGS_TAIL, OPENAPI_GET, PAIR,
+    PAIRING_CANCEL, PAIRING_CREATE, PAIRING_GET, RUNS_GET, RUNS_LIST, RUNS_LOG, Route, STATUS_GET,
+    TOKENS_CREATE, TOKENS_LIST, TOKENS_REVOKE, TURNS_CREATE, TURNS_EVENTS, TURNS_GET, UPDATE_CHECK,
+    UPDATE_GET, USAGE_GET,
 };
 
 use crate::audit::AuditCtx;
 use crate::auth::{AuthCtx, PeerIdentity};
 use crate::deadline::DeadlineCtx;
-use crate::routes::{audit, daemon, events, logs, pairing, runs, usage};
+use crate::error::BodyLimit;
+use crate::routes::{audit, daemon, events, jobs, logs, pairing, runs, turns, usage};
 use crate::state::AppState;
 
-/// The router: the §2.1, §2.2, §2.9, §2.10 and §2.12 routes, with their layers and state.
+/// The router: the §2.1–§2.4, §2.9, §2.10 and §2.12 routes, with their layers and state.
 pub fn router(state: AppState) -> Router {
     let router = Router::new();
     let router = mount(router, HEALTH_GET, get(daemon::health), &state);
@@ -36,6 +42,19 @@ pub fn router(state: AppState) -> Router {
     let router = mount(router, UPDATE_CHECK, post(daemon::check_update), &state);
     let router = mount(router, HOUSEKEEPING_RUN, post(daemon::housekeeping), &state);
     let router = mount(router, EVENTS_STREAM, get(events::stream), &state);
+    let router = mount(router, TURNS_CREATE, post(turns::create), &state);
+    let router = mount(router, TURNS_GET, get(turns::get), &state);
+    let router = mount(router, TURNS_EVENTS, get(turns::events), &state);
+    let router = mount(router, JOBS_LIST, get(jobs::list), &state);
+    let router = mount(router, JOBS_GET, get(jobs::get), &state);
+    let router = mount(router, JOBS_CREATE, post(jobs::create), &state);
+    let router = mount(router, JOBS_UPDATE, patch(jobs::update), &state);
+    let router = mount(router, JOBS_REPLACE, put(jobs::replace), &state);
+    let router = mount(router, JOBS_DELETE, delete(jobs::delete), &state);
+    let router = mount(router, JOBS_RUN, post(jobs::run), &state);
+    let router = mount(router, JOBS_PREVIEW, post(jobs::preview), &state);
+    let router = mount(router, JOBS_CHECK, get(jobs::check), &state);
+    let router = mount(router, JOBS_AUDIT, get(jobs::audit), &state);
     let router = mount(router, LOGS_TAIL, get(logs::tail), &state);
     let router = mount(router, LOGS_STREAM, get(logs::stream), &state);
     let router = mount(router, LOGS_SUMMARY, get(logs::summary), &state);
@@ -101,14 +120,32 @@ pub fn with_peer_identity(router: Router, identity: PeerIdentity) -> Router {
     ))
 }
 
-/// Registers one route, applying auth, audit and deadline (outermost first).
+/// §1.6: `turns.create` takes a 64 MiB body (the attachments), every other route 1 MiB.
+fn body_limit(route: Route) -> usize {
+    if route == TURNS_CREATE {
+        64 * 1024 * 1024
+    } else {
+        1024 * 1024
+    }
+}
+
+/// Registers one route, applying auth, audit and deadline (outermost first), then the body
+/// limit around the handler.
 fn mount(
     router: Router<AppState>,
     route: Route,
     method: MethodRouter<AppState>,
     state: &AppState,
 ) -> Router<AppState> {
+    let limit = body_limit(route);
     let method = method
+        // Innermost: the limit is enforced by the extractors that read the body, and an
+        // oversized one comes back as §1.4's envelope, so audit still sees the final response.
+        .layer::<_, Infallible>(middleware::from_fn_with_state(
+            BodyLimit(limit),
+            crate::error::payload_too_large_envelope,
+        ))
+        .layer(DefaultBodyLimit::max(limit))
         .layer(middleware::from_fn_with_state(
             DeadlineCtx {
                 deadline: route.deadline,

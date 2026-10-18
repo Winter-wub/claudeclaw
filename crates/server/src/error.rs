@@ -6,7 +6,9 @@
 //! `Retry-After`, as §1.8 requires.
 
 use axum::Json;
+use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
 use claudeclaw_api::error::{ApiError, ErrorCode};
@@ -107,6 +109,34 @@ impl IntoResponse for ApiFailure {
         }
         response
     }
+}
+
+/// A route's body limit in bytes (§1.6), the state of [`payload_too_large_envelope`].
+#[derive(Clone, Copy)]
+pub struct BodyLimit(pub usize);
+
+/// Renders axum's own plain-text `413` (a body past `DefaultBodyLimit`) as §1.4's envelope with
+/// `payload_too_large`. A `413` a handler built itself is already an [`ApiFailure`], carries its
+/// code in the extensions, and passes through untouched.
+pub async fn payload_too_large_envelope(
+    State(BodyLimit(limit)): State<BodyLimit>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let response = next.run(request).await;
+    if response.status() == StatusCode::PAYLOAD_TOO_LARGE
+        && response.extensions().get::<ErrorCode>().is_none()
+    {
+        return ApiFailure::new(
+            ErrorCode::PayloadTooLarge,
+            format!(
+                "the request body is larger than {} MiB",
+                limit / (1024 * 1024)
+            ),
+        )
+        .into_response();
+    }
+    response
 }
 
 /// The wire name of an [`ErrorCode`], e.g. `deadline_exceeded`, without a per-code `match`.
