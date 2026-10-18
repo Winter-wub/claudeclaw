@@ -5,6 +5,7 @@
 //! whole number of pages is 1..=[`MAX_PAGE_LIMIT`], a closed wire set takes only the values
 //! §1.1 lists — and each refusal is the §1.4 envelope, not a plain-text rejection.
 
+pub mod agents;
 pub mod audit;
 pub mod daemon;
 pub mod events;

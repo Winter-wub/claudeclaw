@@ -13,13 +13,15 @@ use axum::middleware::{self, Next};
 use axum::routing::{MethodRouter, delete, get, patch, post, put};
 
 use claudeclaw_api::routes::{
-    AUDIT_LIST, DAEMON_REEXEC, DAEMON_RESTART, DAEMON_STOP, DEVICES_LIST, DEVICES_REVOKE,
-    DEVICES_UPDATE, EVENTS_STREAM, HEALTH_GET, HOUSEKEEPING_RUN, IMPORT_APPLY, IMPORT_GET,
-    IMPORT_PLAN, JOBS_AUDIT, JOBS_CHECK, JOBS_CREATE, JOBS_DELETE, JOBS_GET, JOBS_LIST,
-    JOBS_PREVIEW, JOBS_REPLACE, JOBS_RUN, JOBS_UPDATE, LOGS_EXPORT, LOGS_STREAM, LOGS_SUMMARY,
-    LOGS_TAIL, OPENAPI_GET, PAIR, PAIRING_CANCEL, PAIRING_CREATE, PAIRING_GET, RUNS_GET, RUNS_LIST,
-    RUNS_LOG, Route, SETTINGS_GET, SETTINGS_UPDATE, STATUS_GET, TOKENS_CREATE, TOKENS_LIST,
-    TOKENS_REVOKE, TURNS_CREATE, TURNS_EVENTS, TURNS_GET, UPDATE_CHECK, UPDATE_GET, USAGE_GET,
+    AGENTS_ARCHIVE, AGENTS_ARCHIVED, AGENTS_CREATE, AGENTS_LIST, AGENTS_PERSONA_GET,
+    AGENTS_PERSONA_PUT, AGENTS_PURGE, AGENTS_RESTORE, AUDIT_LIST, DAEMON_REEXEC, DAEMON_RESTART,
+    DAEMON_STOP, DEVICES_LIST, DEVICES_REVOKE, DEVICES_UPDATE, EVENTS_STREAM, HEALTH_GET,
+    HOUSEKEEPING_RUN, IMPORT_APPLY, IMPORT_GET, IMPORT_PLAN, JOBS_AUDIT, JOBS_CHECK, JOBS_CREATE,
+    JOBS_DELETE, JOBS_GET, JOBS_LIST, JOBS_PREVIEW, JOBS_REPLACE, JOBS_RUN, JOBS_UPDATE,
+    LOGS_EXPORT, LOGS_STREAM, LOGS_SUMMARY, LOGS_TAIL, OPENAPI_GET, PAIR, PAIRING_CANCEL,
+    PAIRING_CREATE, PAIRING_GET, RUNS_GET, RUNS_LIST, RUNS_LOG, Route, SETTINGS_GET,
+    SETTINGS_UPDATE, STATUS_GET, TOKENS_CREATE, TOKENS_LIST, TOKENS_REVOKE, TURNS_CREATE,
+    TURNS_EVENTS, TURNS_GET, UPDATE_CHECK, UPDATE_GET, USAGE_GET,
 };
 
 use crate::audit::AuditCtx;
@@ -27,7 +29,7 @@ use crate::auth::{AuthCtx, PeerIdentity};
 use crate::deadline::DeadlineCtx;
 use crate::error::BodyLimit;
 use crate::routes::{
-    audit, daemon, events, import, jobs, logs, pairing, runs, settings, turns, usage,
+    agents, audit, daemon, events, import, jobs, logs, pairing, runs, settings, turns, usage,
 };
 use crate::state::AppState;
 
@@ -57,6 +59,14 @@ pub fn router(state: AppState) -> Router {
     let router = mount(router, JOBS_PREVIEW, post(jobs::preview), &state);
     let router = mount(router, JOBS_CHECK, get(jobs::check), &state);
     let router = mount(router, JOBS_AUDIT, get(jobs::audit), &state);
+    let router = mount(router, AGENTS_LIST, get(agents::list), &state);
+    let router = mount(router, AGENTS_ARCHIVED, get(agents::archived), &state);
+    let router = mount(router, AGENTS_CREATE, post(agents::create), &state);
+    let router = mount(router, AGENTS_PERSONA_GET, get(agents::persona_get), &state);
+    let router = mount(router, AGENTS_PERSONA_PUT, put(agents::persona_put), &state);
+    let router = mount(router, AGENTS_ARCHIVE, post(agents::archive), &state);
+    let router = mount(router, AGENTS_RESTORE, post(agents::restore), &state);
+    let router = mount(router, AGENTS_PURGE, delete(agents::purge), &state);
     let router = mount(router, LOGS_TAIL, get(logs::tail), &state);
     let router = mount(router, LOGS_STREAM, get(logs::stream), &state);
     let router = mount(router, LOGS_SUMMARY, get(logs::summary), &state);

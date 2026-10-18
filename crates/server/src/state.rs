@@ -10,8 +10,9 @@ use axum::extract::FromRef;
 use crate::auth::TokenStore;
 use crate::backend::pairing::PairingBackend;
 use crate::backend::{
-    AuditBackend, DaemonBackend, EventsBackend, ImportBackend, JobsBackend, LogsBackend,
-    MissingBackend, RunsBackend, SettingsBackend, StatusBackend, TurnsBackend, UsageBackend,
+    AgentsBackend, AuditBackend, DaemonBackend, EventsBackend, ImportBackend, JobsBackend,
+    LogsBackend, MissingBackend, RunsBackend, SettingsBackend, StatusBackend, TurnsBackend,
+    UsageBackend,
 };
 
 /// Everything the router needs, erased behind `Arc<dyn …>`. Cheap to clone: the router clones it
@@ -26,6 +27,7 @@ pub struct AppState {
     pub pairing: Arc<dyn PairingBackend>,
     pub turns: Arc<dyn TurnsBackend>,
     pub jobs: Arc<dyn JobsBackend>,
+    pub agents: Arc<dyn AgentsBackend>,
     pub logs: Arc<dyn LogsBackend>,
     pub runs: Arc<dyn RunsBackend>,
     pub usage: Arc<dyn UsageBackend>,
@@ -50,6 +52,7 @@ pub struct AppStateBuilder {
     pairing: Option<Arc<dyn PairingBackend>>,
     turns: Option<Arc<dyn TurnsBackend>>,
     jobs: Option<Arc<dyn JobsBackend>>,
+    agents: Option<Arc<dyn AgentsBackend>>,
     logs: Option<Arc<dyn LogsBackend>>,
     runs: Option<Arc<dyn RunsBackend>>,
     usage: Option<Arc<dyn UsageBackend>>,
@@ -98,6 +101,11 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_agents(mut self, backend: impl AgentsBackend) -> Self {
+        self.agents = Some(Arc::new(backend));
+        self
+    }
+
     pub fn with_logs(mut self, backend: impl LogsBackend) -> Self {
         self.logs = Some(Arc::new(backend));
         self
@@ -133,6 +141,7 @@ impl AppStateBuilder {
             pairing: self.pairing.unwrap_or_else(missing_pairing),
             turns: self.turns.unwrap_or_else(missing_turns),
             jobs: self.jobs.unwrap_or_else(missing_jobs),
+            agents: self.agents.unwrap_or_else(missing_agents),
             logs: self.logs.unwrap_or_else(missing_logs),
             runs: self.runs.unwrap_or_else(missing_runs),
             usage: self.usage.unwrap_or_else(missing_usage),
@@ -151,6 +160,10 @@ fn missing_turns() -> Arc<dyn TurnsBackend> {
 }
 
 fn missing_jobs() -> Arc<dyn JobsBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_agents() -> Arc<dyn AgentsBackend> {
     Arc::new(MissingBackend::new())
 }
 
