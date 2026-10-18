@@ -11,7 +11,8 @@ use crate::auth::TokenStore;
 use crate::backend::pairing::PairingBackend;
 use crate::backend::{
     AuditBackend, DaemonBackend, EventsBackend, ImportBackend, JobsBackend, LogsBackend,
-    MissingBackend, RunsBackend, SettingsBackend, StatusBackend, TurnsBackend, UsageBackend,
+    MissingBackend, RunsBackend, ScopesBackend, SessionsBackend, SettingsBackend, StatusBackend,
+    TurnsBackend, UsageBackend,
 };
 
 /// Everything the router needs, erased behind `Arc<dyn …>`. Cheap to clone: the router clones it
@@ -29,6 +30,8 @@ pub struct AppState {
     pub logs: Arc<dyn LogsBackend>,
     pub runs: Arc<dyn RunsBackend>,
     pub usage: Arc<dyn UsageBackend>,
+    pub scopes: Arc<dyn ScopesBackend>,
+    pub sessions: Arc<dyn SessionsBackend>,
     pub settings: Arc<dyn SettingsBackend>,
     pub import: Arc<dyn ImportBackend>,
 }
@@ -53,6 +56,8 @@ pub struct AppStateBuilder {
     logs: Option<Arc<dyn LogsBackend>>,
     runs: Option<Arc<dyn RunsBackend>>,
     usage: Option<Arc<dyn UsageBackend>>,
+    scopes: Option<Arc<dyn ScopesBackend>>,
+    sessions: Option<Arc<dyn SessionsBackend>>,
     settings: Option<Arc<dyn SettingsBackend>>,
     import: Option<Arc<dyn ImportBackend>>,
 }
@@ -113,6 +118,16 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_scopes(mut self, backend: impl ScopesBackend) -> Self {
+        self.scopes = Some(Arc::new(backend));
+        self
+    }
+
+    pub fn with_sessions(mut self, backend: impl SessionsBackend) -> Self {
+        self.sessions = Some(Arc::new(backend));
+        self
+    }
+
     pub fn with_settings(mut self, backend: impl SettingsBackend) -> Self {
         self.settings = Some(Arc::new(backend));
         self
@@ -136,6 +151,8 @@ impl AppStateBuilder {
             logs: self.logs.unwrap_or_else(missing_logs),
             runs: self.runs.unwrap_or_else(missing_runs),
             usage: self.usage.unwrap_or_else(missing_usage),
+            scopes: self.scopes.unwrap_or_else(missing_scopes),
+            sessions: self.sessions.unwrap_or_else(missing_sessions),
             settings: self.settings.unwrap_or_else(missing_settings),
             import: self.import.unwrap_or_else(missing_import),
         }
@@ -183,6 +200,14 @@ fn missing_runs() -> Arc<dyn RunsBackend> {
 }
 
 fn missing_usage() -> Arc<dyn UsageBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_scopes() -> Arc<dyn ScopesBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_sessions() -> Arc<dyn SessionsBackend> {
     Arc::new(MissingBackend::new())
 }
 
