@@ -11,7 +11,7 @@ use crate::auth::TokenStore;
 use crate::backend::pairing::PairingBackend;
 use crate::backend::{
     AuditBackend, DaemonBackend, EventsBackend, JobsBackend, LogsBackend, MissingBackend,
-    RunsBackend, StatusBackend, TurnsBackend, UsageBackend,
+    RunsBackend, ScopesBackend, SessionsBackend, StatusBackend, TurnsBackend, UsageBackend,
 };
 
 /// Everything the router needs, erased behind `Arc<dyn …>`. Cheap to clone: the router clones it
@@ -29,6 +29,8 @@ pub struct AppState {
     pub logs: Arc<dyn LogsBackend>,
     pub runs: Arc<dyn RunsBackend>,
     pub usage: Arc<dyn UsageBackend>,
+    pub scopes: Arc<dyn ScopesBackend>,
+    pub sessions: Arc<dyn SessionsBackend>,
 }
 
 impl AppState {
@@ -51,6 +53,8 @@ pub struct AppStateBuilder {
     logs: Option<Arc<dyn LogsBackend>>,
     runs: Option<Arc<dyn RunsBackend>>,
     usage: Option<Arc<dyn UsageBackend>>,
+    scopes: Option<Arc<dyn ScopesBackend>>,
+    sessions: Option<Arc<dyn SessionsBackend>>,
 }
 
 impl AppStateBuilder {
@@ -109,6 +113,16 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_scopes(mut self, backend: impl ScopesBackend) -> Self {
+        self.scopes = Some(Arc::new(backend));
+        self
+    }
+
+    pub fn with_sessions(mut self, backend: impl SessionsBackend) -> Self {
+        self.sessions = Some(Arc::new(backend));
+        self
+    }
+
     pub fn build(self) -> AppState {
         AppState {
             status: self.status.unwrap_or_else(missing_status),
@@ -122,6 +136,8 @@ impl AppStateBuilder {
             logs: self.logs.unwrap_or_else(missing_logs),
             runs: self.runs.unwrap_or_else(missing_runs),
             usage: self.usage.unwrap_or_else(missing_usage),
+            scopes: self.scopes.unwrap_or_else(missing_scopes),
+            sessions: self.sessions.unwrap_or_else(missing_sessions),
         }
     }
 }
@@ -167,6 +183,14 @@ fn missing_runs() -> Arc<dyn RunsBackend> {
 }
 
 fn missing_usage() -> Arc<dyn UsageBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_scopes() -> Arc<dyn ScopesBackend> {
+    Arc::new(MissingBackend::new())
+}
+
+fn missing_sessions() -> Arc<dyn SessionsBackend> {
     Arc::new(MissingBackend::new())
 }
 

@@ -35,6 +35,8 @@ async fn next_frame(body: &mut BodyDataStream) -> String {
     String::from_utf8_lossy(&chunk).into_owned()
 }
 
+mod scopes_sessions;
+
 mod access {
     use super::*;
 

@@ -1,4 +1,4 @@
-//! The route handlers (management-api §2.1–§2.4, §2.9 and §2.10).
+//! The route handlers (management-api §2.1–§2.5, §2.9 and §2.10).
 //!
 //! [`Params`] reads the query string every list and filter route shares. axum hands it the pairs
 //! already percent-decoded; the helpers here apply §1 on top of that — cursors stay opaque, a
@@ -12,6 +12,8 @@ pub mod jobs;
 pub mod logs;
 pub mod pairing;
 pub mod runs;
+pub mod scopes;
+pub mod sessions;
 pub mod turns;
 pub mod usage;
 
