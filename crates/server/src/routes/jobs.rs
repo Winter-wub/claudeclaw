@@ -223,7 +223,7 @@ pub(crate) fn if_match(headers: &HeaderMap) -> Result<Option<Revision>, ApiFailu
 }
 
 /// A whole-file write without `If-Match` (§1.5): `428 revision_required`.
-fn revision_required() -> ApiFailure {
+pub(crate) fn revision_required() -> ApiFailure {
     ApiFailure::new(
         ErrorCode::RevisionRequired,
         "a whole-file write needs the If-Match revision it replaces",

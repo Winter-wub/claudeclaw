@@ -7,7 +7,7 @@
 //! panicking.
 //!
 //! The traits live one per submodule — [`status`], [`daemon`], [`audit`], [`turns`], [`jobs`],
-//! [`logs`], [`runs`], [`usage`], [`settings`], [`import`], [`scopes`] and [`sessions`] — and are re-exported here, so callers use
+//! [`agents`], [`logs`], [`runs`], [`usage`], [`settings`], [`import`], [`scopes`] and [`sessions`] — and are re-exported here, so callers use
 //! `backend::StatusBackend` regardless of where it is defined.
 
 use std::sync::Arc;
@@ -16,6 +16,9 @@ use futures_util::future::BoxFuture;
 use tokio::sync::broadcast;
 
 use claudeclaw_api::DaemonEvent;
+use claudeclaw_api::agents::{
+    AgentArchived, AgentCreate, AgentInfo, AgentList, AgentPersona, AgentPurged, ArchivedAgentList,
+};
 use claudeclaw_api::error::{ApiError, ErrorCode};
 use claudeclaw_api::export::LogExport;
 use claudeclaw_api::import::{ImportApplyRequest, ImportPlan, ImportRecord, ImportResult};
@@ -43,6 +46,7 @@ use claudeclaw_api::usage::UsageReport;
 
 use crate::auth::{TokenRecord, TokenStore};
 
+pub mod agents;
 pub mod audit;
 pub mod daemon;
 pub mod import;
@@ -57,6 +61,7 @@ pub mod status;
 pub mod turns;
 pub mod usage;
 
+pub use agents::AgentsBackend;
 pub use audit::{AuditBackend, AuditError, AuditFuture, AuditQuery};
 pub use daemon::{DaemonBackend, EventsBackend};
 pub use import::{ImportBackend, ImportPlanQuery};
@@ -266,6 +271,45 @@ impl JobsBackend for MissingBackend {
     }
 }
 
+impl AgentsBackend for MissingBackend {
+    fn list(&self) -> BackendFuture<'_, AgentList> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn archived(&self) -> BackendFuture<'_, ArchivedAgentList> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn create(&self, _create: AgentCreate) -> BackendFuture<'_, AgentInfo> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn persona_get(&self, _name: &str) -> BackendFuture<'_, AgentPersona> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn persona_put(
+        &self,
+        _name: &str,
+        _text: String,
+        _expected: Revision,
+    ) -> BackendFuture<'_, AgentPersona> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn archive(&self, _name: &str) -> BackendFuture<'_, AgentArchived> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn restore(&self, _entry: &str) -> BackendFuture<'_, AgentInfo> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+
+    fn purge(&self, _entry: &str) -> BackendFuture<'_, AgentPurged> {
+        Box::pin(async { Err(missing("agents")) })
+    }
+}
+
 impl ScopesBackend for MissingBackend {
     fn list(&self, _query: ScopeListQuery) -> BackendFuture<'_, ScopeList> {
         Box::pin(async { Err(missing("scopes")) })
@@ -428,6 +472,34 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn the_unwired_agents_calls_fail_loudly() {
+        let backend = MissingBackend::new();
+        assert!(AgentsBackend::list(&backend).await.is_err());
+        assert!(backend.archived().await.is_err());
+        assert!(
+            AgentsBackend::create(
+                &backend,
+                AgentCreate {
+                    name: "scribe".into(),
+                    persona: None,
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert!(backend.persona_get("scribe").await.is_err());
+        assert!(
+            backend
+                .persona_put("scribe", String::new(), Revision::of(b""))
+                .await
+                .is_err()
+        );
+        assert!(backend.archive("scribe").await.is_err());
+        assert!(backend.restore("scribe-20261014T090000Z").await.is_err());
+        assert!(backend.purge("scribe-20261014T090000Z").await.is_err());
     }
 
     #[tokio::test]
