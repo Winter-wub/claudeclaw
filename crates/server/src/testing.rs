@@ -56,6 +56,7 @@ use crate::backend::{
 };
 use crate::pairing::PairingRegistry;
 use crate::state::AppState;
+use crate::testing_settings_import::{FakeImport, FakeSettings};
 
 fn at(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
@@ -1348,6 +1349,8 @@ pub struct Harness {
     pub usage: FakeUsage,
     pub turns: FakeTurns,
     pub jobs: FakeJobs,
+    pub settings: FakeSettings,
+    pub import: FakeImport,
 }
 
 impl Harness {
@@ -1363,6 +1366,8 @@ impl Harness {
         let turns = FakeTurns::default();
         // `jobs.run` must reach the same Turn as `turns.create`, so one fake serves both.
         let jobs = FakeJobs::new(turns.clone());
+        let settings = FakeSettings::default();
+        let import = FakeImport::default();
         // A real §2.12 service over an in-memory store, so the mounted routes are exercised
         // end to end.
         let clock = Arc::new(TestClock::at(9));
@@ -1378,6 +1383,8 @@ impl Harness {
             .with_usage(usage.clone())
             .with_turns(turns.clone())
             .with_jobs(jobs.clone())
+            .with_settings(settings.clone())
+            .with_import(import.clone())
             .with_pairing(PairingService::for_test(
                 TestHooks::enabled(),
                 registry,
@@ -1396,6 +1403,8 @@ impl Harness {
             usage,
             turns,
             jobs,
+            settings,
+            import,
         }
     }
 
