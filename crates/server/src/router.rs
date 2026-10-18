@@ -18,10 +18,12 @@ use claudeclaw_api::routes::{
     DAEMON_STOP, DEVICES_LIST, DEVICES_REVOKE, DEVICES_UPDATE, EVENTS_STREAM, HEALTH_GET,
     HOUSEKEEPING_RUN, IMPORT_APPLY, IMPORT_GET, IMPORT_PLAN, JOBS_AUDIT, JOBS_CHECK, JOBS_CREATE,
     JOBS_DELETE, JOBS_GET, JOBS_LIST, JOBS_PREVIEW, JOBS_REPLACE, JOBS_RUN, JOBS_UPDATE,
-    LOGS_EXPORT, LOGS_STREAM, LOGS_SUMMARY, LOGS_TAIL, OPENAPI_GET, PAIR, PAIRING_CANCEL,
-    PAIRING_CREATE, PAIRING_GET, RUNS_GET, RUNS_LIST, RUNS_LOG, Route, SETTINGS_GET,
-    SETTINGS_UPDATE, STATUS_GET, TOKENS_CREATE, TOKENS_LIST, TOKENS_REVOKE, TURNS_CREATE,
-    TURNS_EVENTS, TURNS_GET, UPDATE_CHECK, UPDATE_GET, USAGE_GET,
+    LAUNCHERS_LIST, LAUNCHERS_SET, LAUNCHERS_TEST, LAUNCHERS_UNSET, LOGS_EXPORT, LOGS_STREAM,
+    LOGS_SUMMARY, LOGS_TAIL, OPENAPI_GET, PAIR, PAIRING_CANCEL, PAIRING_CREATE, PAIRING_GET,
+    RUNS_GET, RUNS_LIST, RUNS_LOG, Route, SCOPES_LIST, SESSIONS_COMPACT, SESSIONS_DELETE,
+    SESSIONS_GET, SESSIONS_LIST, SESSIONS_MESSAGES, SESSIONS_RESET, SETTINGS_GET, SETTINGS_UPDATE,
+    STATUS_GET, TOKENS_CREATE, TOKENS_LIST, TOKENS_REVOKE, TURNS_CREATE, TURNS_EVENTS, TURNS_GET,
+    UPDATE_CHECK, UPDATE_GET, USAGE_GET,
 };
 
 use crate::audit::AuditCtx;
@@ -29,11 +31,12 @@ use crate::auth::{AuthCtx, PeerIdentity};
 use crate::deadline::DeadlineCtx;
 use crate::error::BodyLimit;
 use crate::routes::{
-    agents, audit, daemon, events, import, jobs, logs, pairing, runs, settings, turns, usage,
+    agents, audit, daemon, events, import, jobs, logs, pairing, runs, scopes, sessions, settings,
+    turns, usage,
 };
 use crate::state::AppState;
 
-/// The router: the §2.1–§2.4, §2.6, §2.9–§2.12 routes, with their layers and state.
+/// The router: the §2.1–§2.6, §2.9–§2.12 routes, with their layers and state.
 pub fn router(state: AppState) -> Router {
     let router = Router::new();
     let router = mount(router, HEALTH_GET, get(daemon::health), &state);
@@ -67,6 +70,22 @@ pub fn router(state: AppState) -> Router {
     let router = mount(router, AGENTS_ARCHIVE, post(agents::archive), &state);
     let router = mount(router, AGENTS_RESTORE, post(agents::restore), &state);
     let router = mount(router, AGENTS_PURGE, delete(agents::purge), &state);
+    let router = mount(router, SCOPES_LIST, get(scopes::list), &state);
+    let router = mount(router, LAUNCHERS_LIST, get(scopes::launchers), &state);
+    let router = mount(router, LAUNCHERS_SET, put(scopes::set_launcher), &state);
+    let router = mount(
+        router,
+        LAUNCHERS_UNSET,
+        delete(scopes::unset_launcher),
+        &state,
+    );
+    let router = mount(router, LAUNCHERS_TEST, post(scopes::test_launcher), &state);
+    let router = mount(router, SESSIONS_LIST, get(sessions::list), &state);
+    let router = mount(router, SESSIONS_GET, get(sessions::get), &state);
+    let router = mount(router, SESSIONS_MESSAGES, get(sessions::messages), &state);
+    let router = mount(router, SESSIONS_RESET, post(sessions::reset), &state);
+    let router = mount(router, SESSIONS_COMPACT, post(sessions::compact), &state);
+    let router = mount(router, SESSIONS_DELETE, delete(sessions::delete), &state);
     let router = mount(router, LOGS_TAIL, get(logs::tail), &state);
     let router = mount(router, LOGS_STREAM, get(logs::stream), &state);
     let router = mount(router, LOGS_SUMMARY, get(logs::summary), &state);

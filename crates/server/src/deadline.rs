@@ -22,6 +22,11 @@ pub struct DeadlineCtx {
 
 /// Enforces [`DeadlineCtx::deadline`]'s server bound around the rest of the stack.
 pub async fn enforce(State(ctx): State<DeadlineCtx>, request: Request, next: Next) -> Response {
+    // `launchers.test` names its `timeout_s` in the body, which this layer cannot read, so its
+    // handler applies the backstop itself rather than this layer guessing the default.
+    if ctx.deadline == Deadline::Test {
+        return next.run(request).await;
+    }
     let call = call_from_query(request.uri().query());
     match ctx.deadline.server(call) {
         Some(limit) => match tokio::time::timeout(limit, next.run(request)).await {

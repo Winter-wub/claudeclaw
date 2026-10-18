@@ -10,6 +10,7 @@
 //! refusal too, once the name has passed validation; the reads are never audited.
 
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -23,6 +24,7 @@ use crate::audit::AuditTarget;
 use crate::error::ApiFailure;
 use crate::routes::bad_request;
 use crate::routes::jobs::{if_match, revision_required};
+use crate::routes::scopes::json_object;
 use crate::state::AppState;
 
 /// The longest agent name: a directory name is at most 255 bytes, and archiving appends
@@ -47,10 +49,8 @@ pub async fn archived(State(state): State<AppState>) -> Result<Response, ApiFail
 
 /// `POST /v1/agents`: a new agent, with its persona when the body carried one (§2.8) → `201`.
 /// `409 agent_exists` when the name is taken.
-pub async fn create(
-    State(state): State<AppState>,
-    Json(create): Json<AgentCreate>,
-) -> Result<Response, ApiFailure> {
+pub async fn create(State(state): State<AppState>, body: Bytes) -> Result<Response, ApiFailure> {
+    let create: AgentCreate = json_object(&body, "AgentCreate")?;
     let name = agent_name(&create.name)?.to_owned();
     let result = state.agents.create(create).await;
     let created = result
@@ -74,8 +74,9 @@ pub async fn persona_put(
     State(state): State<AppState>,
     Path(name): Path<String>,
     headers: HeaderMap,
-    Json(put): Json<AgentPersonaPut>,
+    body: Bytes,
 ) -> Result<Response, ApiFailure> {
+    let put: AgentPersonaPut = json_object(&body, "AgentPersonaPut")?;
     let name = agent_name(&name)?.to_owned();
     let Some(expected) = if_match(&headers)? else {
         return Ok(audited(name, Err(revision_required())));

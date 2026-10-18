@@ -196,7 +196,7 @@ pub async fn audit(
 
 /// `jobs.run`'s body: `{}` (§2.4). An empty body is accepted too, so a bare `POST` works;
 /// anything that is not a JSON object is `400 bad_request`.
-fn run_body(body: &[u8]) -> Result<(), ApiFailure> {
+pub(super) fn run_body(body: &[u8]) -> Result<(), ApiFailure> {
     if body.is_empty() {
         return Ok(());
     }
