@@ -5,6 +5,10 @@
 //! it is held, the file's contents are the holder record, one JSON line such as
 //! `{"pid":1234,"role":"cli","command":"jobs import"}`, so a racing start or `status` can say
 //! who holds it (#22 §3).
+//!
+//! On Windows `File::try_lock` locks the whole file, and that lock is mandatory: other processes
+//! couldn't read the record. So there the lock is one byte at [`LOCK_OFFSET`], far past any
+//! record, taken with `LockFileEx` (#80); the record's own bytes stay readable.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -15,6 +19,98 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
 use crate::layout::Layout;
+
+/// Where the Windows byte-range lock sits, far past the end of any holder record (#80).
+#[cfg(windows)]
+const LOCK_OFFSET: u64 = 1 << 62;
+
+/// Takes the exclusive lock without blocking. `WouldBlock` when another process holds it.
+#[cfg(unix)]
+fn os_try_lock(file: &File) -> Result<(), TryLockError> {
+    file.try_lock()
+}
+
+/// Takes a shared lock without blocking. `WouldBlock` when an exclusive lock is held.
+#[cfg(unix)]
+fn os_try_lock_shared(file: &File) -> Result<(), TryLockError> {
+    file.try_lock_shared()
+}
+
+/// Releases the lock taken by [`os_try_lock`] or [`os_try_lock_shared`].
+#[cfg(unix)]
+fn os_unlock(file: &File) -> std::io::Result<()> {
+    file.unlock()
+}
+
+#[cfg(windows)]
+fn os_try_lock(file: &File) -> Result<(), TryLockError> {
+    lock_range(
+        file,
+        windows_sys::Win32::Storage::FileSystem::LOCKFILE_EXCLUSIVE_LOCK,
+    )
+}
+
+#[cfg(windows)]
+fn os_try_lock_shared(file: &File) -> Result<(), TryLockError> {
+    lock_range(file, 0)
+}
+
+#[cfg(windows)]
+fn os_unlock(file: &File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+
+    let mut overlapped = lock_overlapped();
+    // SAFETY: the handle is open for as long as `file` is borrowed, and `overlapped` outlives
+    // the call.
+    let ok = unsafe { UnlockFileEx(file.as_raw_handle(), 0, 1, 0, &mut overlapped) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Locks the single byte at [`LOCK_OFFSET`], failing at once when another handle holds it.
+#[cfg(windows)]
+fn lock_range(
+    file: &File,
+    flags: windows_sys::Win32::Storage::FileSystem::LOCK_FILE_FLAGS,
+) -> Result<(), TryLockError> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, ERROR_LOCK_VIOLATION};
+    use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_FAIL_IMMEDIATELY, LockFileEx};
+
+    let mut overlapped = lock_overlapped();
+    // SAFETY: the handle is open for as long as `file` is borrowed, and `overlapped` outlives
+    // the call (it is not an overlapped handle, so nothing completes later).
+    let ok = unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            flags | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
+    if ok != 0 {
+        return Ok(());
+    }
+    let e = std::io::Error::last_os_error();
+    match e.raw_os_error().map(|code| code as u32) {
+        Some(ERROR_LOCK_VIOLATION | ERROR_IO_PENDING) => Err(TryLockError::WouldBlock),
+        _ => Err(TryLockError::Error(e)),
+    }
+}
+
+/// An `OVERLAPPED` carrying [`LOCK_OFFSET`], which is how `LockFileEx` takes a byte offset.
+#[cfg(windows)]
+fn lock_overlapped() -> windows_sys::Win32::System::IO::OVERLAPPED {
+    let mut overlapped = windows_sys::Win32::System::IO::OVERLAPPED::default();
+    overlapped.Anonymous.Anonymous.Offset = LOCK_OFFSET as u32;
+    overlapped.Anonymous.Anonymous.OffsetHigh = (LOCK_OFFSET >> 32) as u32;
+    overlapped
+}
 
 /// Who holds `daemon.lock` (#22 §3). Written into the lock file once the lock is taken.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,7 +249,7 @@ impl DaemonLock {
         // fall back to the short limit and give up.
         let mut saw_offline = false;
         loop {
-            match file.try_lock() {
+            match os_try_lock(&file) {
                 Ok(()) => {
                     let mut lock = DaemonLock { file, path };
                     lock.write_holder(holder)?;
@@ -210,7 +306,7 @@ impl Drop for DaemonLock {
     fn drop(&mut self) {
         // Best effort: a stale record is harmless, because it is only read while the lock is held.
         let _ = self.file.set_len(0);
-        let _ = self.file.unlock();
+        let _ = os_unlock(&self.file);
     }
 }
 
@@ -235,9 +331,9 @@ pub fn probe(layout: &Layout) -> Result<LockProbe, StoreError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(LockProbe::Absent),
         Err(e) => return Err(StoreError::io("open", &path)(e)),
     };
-    match file.try_lock_shared() {
+    match os_try_lock_shared(&file) {
         Ok(()) => {
-            let _ = file.unlock();
+            let _ = os_unlock(&file);
             Ok(LockProbe::Free)
         }
         Err(TryLockError::WouldBlock) => Ok(LockProbe::Held {
@@ -248,7 +344,8 @@ pub fn probe(layout: &Layout) -> Result<LockProbe, StoreError> {
 }
 
 /// Reads the holder record through a fresh handle. `None` when it is empty, torn by a concurrent
-/// rewrite, or unreadable (on Windows a held lock also blocks reads).
+/// rewrite, or unreadable. A held lock doesn't block it on any OS, because on Windows the lock is
+/// a byte range past the record (#80).
 fn read_holder(path: &Path) -> Option<Holder> {
     let mut text = String::new();
     File::open(path).ok()?.read_to_string(&mut text).ok()?;
@@ -275,10 +372,7 @@ mod tests {
         let first = DaemonLock::try_acquire(&layout, &Holder::watchdog(4321)).unwrap();
         let err = DaemonLock::try_acquire(&layout, &Holder::watchdog(1)).unwrap_err();
         match err {
-            LockError::Held { holder } if !cfg!(windows) => {
-                assert_eq!(holder, Some(Holder::watchdog(4321)));
-            }
-            LockError::Held { .. } => {}
+            LockError::Held { holder } => assert_eq!(holder, Some(Holder::watchdog(4321))),
             other => panic!("{other:?}"),
         }
         drop(first);
@@ -321,8 +415,6 @@ mod tests {
         assert!(waited < Duration::from_secs(5), "{waited:?}");
     }
 
-    // On Windows a held lock blocks reading the record, so the longer wait can't be seen there.
-    #[cfg(unix)]
     #[test]
     fn an_offline_write_gets_the_longer_wait() {
         let (_dir, layout) = layout();
@@ -349,7 +441,6 @@ mod tests {
 
     // An Offline write's release empties the record just before it unlocks. A waiter that reads
     // the empty record in that window must keep the longer wait, not give up on the short one.
-    #[cfg(unix)]
     #[test]
     fn an_emptied_record_keeps_the_offline_write_wait() {
         let (_dir, layout) = layout();
@@ -390,10 +481,9 @@ mod tests {
         let lock =
             DaemonLock::try_acquire(&layout, &Holder::offline_write(9, "clear-give-up")).unwrap();
         match probe(&layout).unwrap() {
-            LockProbe::Held { holder } if !cfg!(windows) => {
+            LockProbe::Held { holder } => {
                 assert_eq!(holder, Some(Holder::offline_write(9, "clear-give-up")));
             }
-            LockProbe::Held { .. } => {}
             other => panic!("{other:?}"),
         }
         drop(lock);
